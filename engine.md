@@ -1,61 +1,99 @@
 # Building a Modern Game Engine with a Material Shader Pipeline
 
-This document outlines how to architect a cross-platform game engine in C# using Silk.NET, covering the rendering abstraction, the material/shader pipeline, and how it maps to both desktop (native OpenGL/Vulkan) and WASM (WebGL).
+This document outlines how to architect a cross-platform game engine in C# using Silk.NET, covering the sokol-style GL abstraction, the material/shader pipeline, and how it maps to both desktop (native OpenGL) and WASM (WebGL).
 
 ---
 
-## 1. High-Level Architecture
+## 1. High-Level Architecture (The Sokol Pattern)
+
+The engine follows the same pattern as [sokol](https://github.com/floooh/sokol) — split the platform layer into two concerns:
+
+- **GL proxy** (`sokol_gfx` equivalent) — platform-agnostic OpenGL-like API
+- **App shell** (`sokol_app` equivalent) — window/canvas lifecycle, input, frame loop
+
+Engine code calls `GL.bindBuffer()`, `GL.drawElements()` etc. — pure C#, zero awareness of what platform it's running on.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Game / Application                       │
-│   Scenes, entities, game logic, scripting, UI                   │
+│                     Game / Application                          │
+│          Scenes, entities, game logic, UI                       │
 ├─────────────────────────────────────────────────────────────────┤
-│                        Engine Core                              │
-│   ECS, transform hierarchy, camera system, input pipeline       │
-├──────────────┬──────────────┬──────────────┬────────────────────┤
-│  Renderer    │  Asset Mgr   │  Physics     │  Audio             │
-│  (abstract)  │  (meshes,    │  (optional)  │  (optional)        │
-│              │   textures,  │              │                    │
-│              │   shaders)   │              │                    │
-├──────────────┴──────────────┴──────────────┴────────────────────┤
-│                     Platform Backends                           │
-│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────┐    │
-│  │   Desktop    │  │     WASM     │  │   Mobile / Other   │    │
-│  │ Silk.NET.GL  │  │  WebGL via   │  │   Silk.NET.GL ES   │    │
-│  │ Silk.NET.Win │  │  JS interop  │  │   or native        │    │
-│  │ Silk.NET.Inp │  │  thin bridge │  │   platform APIs    │    │
-│  └──────────────┘  └──────────────┘  └────────────────────┘    │
-└─────────────────────────────────────────────────────────────────┘
+│                     Engine Core                                 │
+│    GameEngine.cs, CubeRenderer.cs, Camera, ECS, etc.           │
+│    Uses: GL.* (rendering) + IRenderBackend (windowing/input)   │
+│    Uses: Silk.NET.Maths (vectors, matrices)                    │
+├─────────────────────────────────────────────────────────────────┤
+│          GL Proxy (sokol_gfx equivalent)                       │
+│    GL.cs — static class with OpenGL-like methods               │
+│    Same C# API surface on every platform                       │
+├──────────────────────────┬──────────────────────────────────────┤
+│     Desktop backend      │         WASM backend                 │
+│  Silk.NET.OpenGL         │  gl-proxy.js                         │
+│  P/Invoke → native GL    │  integer handles → WebGL objects     │
+│  (no JS at all)          │  (Emscripten-style translation)      │
+├──────────────────────────┼──────────────────────────────────────┤
+│    App Shell (sokol_app equivalent)                             │
+│  IRenderBackend — canvas/window, input, frame loop              │
+│  Desktop: Silk.NET.Windowing   │  WASM: app-shell.js           │
+└──────────────────────────┴──────────────────────────────────────┘
 ```
 
-### Why JS exists in the WASM build
+### How sokol does it vs how we do it
 
-Browsers expose GPU access exclusively through WebGL/WebGPU JavaScript APIs. The .NET WASM runtime cannot P/Invoke into native OpenGL — there is no native GL driver in a browser sandbox. So the WASM backend uses a thin JS adapter that:
+| Layer | Sokol (C) | This engine (C#) |
+|---|---|---|
+| Rendering API | `sokol_gfx.h` → Emscripten GL shim → WebGL | `GL.cs` → `gl-proxy.js` → WebGL |
+| App shell | `sokol_app.h` → Emscripten HTML5 API | `IRenderBackend` → `app-shell.js` |
+| Desktop rendering | `sokol_gfx.h` → native GL/Metal/D3D | `GL.cs` → Silk.NET.OpenGL P/Invoke |
+| Desktop shell | `sokol_app.h` → GLFW/Win32/Cocoa | `IRenderBackend` → Silk.NET.Windowing |
+| Engine code | Pure C, no platform awareness | Pure C#, no platform awareness |
 
-1. Creates a WebGL context on a `<canvas>` element
-2. Exposes `init()`, `render(mvp)`, `dispose()` to C# via JS interop
-3. Forwards input events (touch, mouse, wheel) back to C#
-
-On desktop, this JS layer does not exist. Silk.NET.OpenGL calls the system's native OpenGL driver directly via P/Invoke. The engine itself never touches JS — only the `WebGLRenderBackend` adapter does.
+The JS files (`gl-proxy.js`, `app-shell.js`) are infrastructure written once — the engine developer never touches them, just like you never touch Emscripten's GL shim when using sokol.
 
 ---
 
-## 2. The Render Backend Abstraction
+## 2. The GL Proxy (sokol_gfx equivalent)
 
-The critical boundary that enables cross-platform is `IRenderBackend`:
+`GL.cs` is a static class that mirrors the OpenGL ES 2.0 / WebGL 1.0 API:
+
+```csharp
+// Engine code — reads like native OpenGL
+var vbo = await GL.CreateBuffer();
+GL.BindBuffer(GL.ARRAY_BUFFER, vbo);
+GL.BufferDataFloat(GL.ARRAY_BUFFER, vertices, GL.STATIC_DRAW);
+
+GL.UniformMatrix4fv(mvpLoc, false, mvpData);
+GL.DrawElements(GL.TRIANGLES, 36, GL.UNSIGNED_SHORT, 0);
+```
+
+### WASM: routes through gl-proxy.js
+
+`gl-proxy.js` maps integer handles to WebGL objects (same pattern Emscripten uses internally):
+
+```javascript
+const buffers = [null]; // index 0 = null sentinel
+createBuffer() { return register(buffers, gl.createBuffer()); }
+bindBuffer(target, id) { gl.bindBuffer(target, buffers[id]); }
+drawElements(mode, count, type, offset) { gl.drawElements(mode, count, type, offset); }
+```
+
+### Desktop: routes through Silk.NET.OpenGL
+
+On desktop, `GL.cs` would delegate to Silk.NET's managed GL wrapper which P/Invokes into the system's native OpenGL driver — zero JS, zero browser APIs.
+
+## 3. The App Shell (sokol_app equivalent)
+
+`IRenderBackend` handles everything that isn't rendering:
 
 ```csharp
 public interface IRenderBackend : IDisposable
 {
-    bool Initialize();
-    void Render(float[] mvpColumnMajor);
-    void StartLoop(Func<Task> onTick);
-    void StopLoop();
-
     float CanvasWidth { get; }
     float CanvasHeight { get; }
-    float AspectRatio => CanvasHeight > 0 ? CanvasWidth / CanvasHeight : 16f / 9f;
+    float AspectRatio { get; }
+
+    void StartLoop(Func<Task> onTick);
+    void StopLoop();
 
     event Action<float, float>? PointerDrag;
     event Action<float>? ScrollWheel;
@@ -64,53 +102,8 @@ public interface IRenderBackend : IDisposable
 }
 ```
 
-### Desktop implementation (Silk.NET.OpenGL)
-
-```csharp
-public class SilkNetRenderBackend : IRenderBackend
-{
-    private IWindow _window;
-    private GL _gl;
-
-    public bool Initialize()
-    {
-        var opts = WindowOptions.Default with { Size = new(1280, 720) };
-        _window = Window.Create(opts);
-        _window.Load += () => {
-            _gl = _window.CreateOpenGL();
-            // compile shaders, create buffers — same GL calls as WebGL
-            // but via Silk.NET's managed API, no JS involved
-        };
-        return true;
-    }
-
-    public void Render(float[] mvp)
-    {
-        _gl.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
-        _gl.UniformMatrix4(mvpLocation, 1, false, mvp);
-        _gl.DrawElements(PrimitiveType.Triangles, 36, DrawElementsType.UnsignedShort, null);
-    }
-    // ...
-}
-```
-
-### WASM implementation (WebGL via JS interop)
-
-```csharp
-public class WebGLRenderBackend : IRenderBackend
-{
-    private readonly IJSRuntime _js;
-
-    public void Render(float[] mvp)
-    {
-        // Single JS interop call per frame — thin bridge to WebGL
-        _ = _js.InvokeVoidAsync("WebGLEngine.render", mvp);
-    }
-    // ...
-}
-```
-
-Same `IRenderBackend` interface, same `GameEngine` code, different platform wiring.
+On WASM, `WebGLRenderBackend` + `app-shell.js` implements this.
+On desktop, a `SilkNetAppBackend` using `Silk.NET.Windowing` + `Silk.NET.Input` would implement it.
 
 ---
 
