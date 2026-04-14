@@ -29,19 +29,20 @@
     {
         if (!firstRender) return;
 
-        // 1. Init WebGPU device + canvas context (like sokol_gfx setup)
-        var gpuOk = await GPU.Init(JS, "gpuCanvas");
-        if (!gpuOk) return;
+        // Platform GPU backend
+        var gpu = new WebGPU(JS);
+        if (!await gpu.Init("gpuCanvas")) return;
 
-        // 2. Init app shell — canvas resize + input + loop (like sokol_app)
+        // App shell
         _app = new WebGLRenderBackend(JS);
         await _app.InitializeAsync("gpuCanvas");
 
-        // 3. Create GPU resources — shaders, buffers, pipeline — all C# GPU.* calls
-        _cube = new CubeRenderer(Http);
-        await _cube.Setup();
+        // Game renderer — uses IGPU, lives in Game, no platform awareness
+        var shaderCode = await Http.GetStringAsync("shaders/cube.wgsl");
+        _cube = new CubeRenderer(gpu);
+        await _cube.Setup(shaderCode);
 
-        // 4. Run engine — pure C#, zero platform awareness
+        // Engine
         _engine = new GameEngine(_app, _cube);
         _engine.OnFrameRendered += () => InvokeAsync(StateHasChanged);
         _engine.Run();
