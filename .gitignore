@@ -1,0 +1,22 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+*.cache
+*.vs/
+.vscode/
+*.DotSettings.user
+
+## Build outputs
+release/
+publish/
+
+## OS files
+.DS_Store
+Thumbs.db
+
+## IDE
+.idea/
+*.swp
+*.swo
