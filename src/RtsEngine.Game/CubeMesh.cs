@@ -1,4 +1,4 @@
-namespace RtsEngine.Core;
+namespace RtsEngine.Game;
 
 /// <summary>
 /// Shared cube mesh data — vertices and indices used by all platforms.

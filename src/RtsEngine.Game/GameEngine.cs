@@ -1,6 +1,7 @@
+using RtsEngine.Core;
 using Silk.NET.Maths;
 
-namespace RtsEngine.Core;
+namespace RtsEngine.Game;
 
 /// <summary>
 /// Platform-agnostic game engine. Shared by WASM and Desktop.

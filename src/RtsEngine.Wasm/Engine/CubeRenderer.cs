@@ -1,4 +1,5 @@
 using RtsEngine.Core;
+using RtsEngine.Game;
 
 namespace RtsEngine.Wasm.Engine;
 

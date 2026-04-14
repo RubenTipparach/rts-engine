@@ -14,6 +14,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\RtsEngine.Core\RtsEngine.Core.csproj" />
+    <ProjectReference Include="..\RtsEngine.Game\RtsEngine.Game.csproj" />
   </ItemGroup>
 
 </Project>
