@@ -1,11 +1,19 @@
 using Silk.NET.Maths;
 
-namespace RtsEngine.Wasm.Engine;
+namespace RtsEngine.Core;
 
+/// <summary>
+/// Platform-agnostic game engine. Shared by WASM and Desktop.
+///
+/// Depends only on:
+///   - IRenderBackend (app shell — input, loop)
+///   - IRenderer (draw calls)
+///   - Silk.NET.Maths (matrix math)
+/// </summary>
 public class GameEngine
 {
     private readonly IRenderBackend _app;
-    private readonly CubeRenderer _cube;
+    private readonly IRenderer _renderer;
 
     private float _rotationX;
     private float _rotationY;
@@ -13,9 +21,7 @@ public class GameEngine
     private float _velocityY;
     private bool _dragging;
 
-    // Damping per second — velocity multiplied by this^dt each frame
-    private const float FreeDamping = 0.04f;  // decays ~96% per second when free
-    private const float DragDamping = 0.001f;  // near-instant stop when pointer is down
+    private const float FreeDamping = 0.04f;
     private const float PixelsToRadians = 0.005f;
 
     private DateTime _lastFrameTime = DateTime.UtcNow;
@@ -27,16 +33,15 @@ public class GameEngine
 
     public event Action? OnFrameRendered;
 
-    public GameEngine(IRenderBackend app, CubeRenderer cube)
+    public GameEngine(IRenderBackend app, IRenderer renderer)
     {
         _app = app;
-        _cube = cube;
+        _renderer = renderer;
 
         _app.PointerDown += () => _dragging = true;
 
         _app.PointerDrag += (dx, dy) =>
         {
-            // Rotate cube directly with pointer motion
             _rotationY += dx * PixelsToRadians;
             _rotationX -= dy * PixelsToRadians;
             _velocityY = dx * PixelsToRadians;
@@ -62,24 +67,31 @@ public class GameEngine
 
         if (!_dragging)
         {
-            // Coast with inherited velocity, damping to a stop
-            _rotationX += _velocityX * dt * 60f; // scale to ~60fps feel
+            _rotationX += _velocityX * dt * 60f;
             _rotationY += _velocityY * dt * 60f;
-
-            var damping = MathF.Pow(_dragging ? DragDamping : FreeDamping, dt);
+            var damping = MathF.Pow(FreeDamping, dt);
             _velocityX *= damping;
             _velocityY *= damping;
-
             if (MathF.Abs(_velocityX) < 0.0001f) _velocityX = 0;
             if (MathF.Abs(_velocityY) < 0.0001f) _velocityY = 0;
         }
 
-        _cube.Draw(BuildMvp(_app.AspectRatio));
+        _renderer.Draw(BuildMvp(_app.AspectRatio));
         OnFrameRendered?.Invoke();
         return Task.CompletedTask;
     }
 
-    private float[] BuildMvp(float aspectRatio)
+    /// <summary>
+    /// Build MVP matrix. Uses Silk.NET's built-in CreatePerspectiveFieldOfView
+    /// which maps z to [0,1] — correct for WebGPU and D3D.
+    ///
+    /// For desktop OpenGL (z:[-1,1]), the platform renderer can override
+    /// the projection or use glClipControl. The MVP math itself is shared.
+    ///
+    /// Raw row-major floats passed to GPU — WGSL/GL column-major
+    /// reinterpretation gives automatic transpose = correct.
+    /// </summary>
+    public float[] BuildMvp(float aspectRatio)
     {
         var model = Matrix4X4.Multiply(
             Matrix4X4.CreateRotationX(_rotationX),
@@ -97,14 +109,6 @@ public class GameEngine
             100.0f);
 
         var mvp = Matrix4X4.Multiply(Matrix4X4.Multiply(model, view), proj);
-        return ToRawFloats(mvp);
+        return MatrixHelper.ToRawFloats(mvp);
     }
-
-    private static float[] ToRawFloats(Matrix4X4<float> m) => new[]
-    {
-        m.M11, m.M12, m.M13, m.M14,
-        m.M21, m.M22, m.M23, m.M24,
-        m.M31, m.M32, m.M33, m.M34,
-        m.M41, m.M42, m.M43, m.M44,
-    };
 }

@@ -1,4 +1,5 @@
 using Microsoft.JSInterop;
+using RtsEngine.Core;
 
 namespace RtsEngine.Wasm.Engine;
 

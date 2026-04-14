@@ -1,9 +1,8 @@
-namespace RtsEngine.Wasm.Engine;
+namespace RtsEngine.Core;
 
 /// <summary>
 /// Platform abstraction for the application shell — equivalent to sokol_app.
 /// Handles window/canvas lifecycle, the frame loop, and input forwarding.
-/// Does NOT handle rendering — that goes through the GPU proxy directly.
 /// </summary>
 public interface IRenderBackend : IDisposable
 {

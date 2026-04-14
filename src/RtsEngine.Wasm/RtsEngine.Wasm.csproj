@@ -12,4 +12,8 @@
     <PackageReference Include="Silk.NET.Maths" Version="2.21.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\RtsEngine.Core\RtsEngine.Core.csproj" />
+  </ItemGroup>
+
 </Project>

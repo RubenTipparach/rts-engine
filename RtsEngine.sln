@@ -9,6 +9,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RtsEngine.Wasm", "src\RtsEn
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RtsEngine.Desktop", "src\RtsEngine.Desktop\RtsEngine.Desktop.csproj", "{8F5535D5-4BBF-49C3-9EB7-AB5C613DF811}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RtsEngine.Core", "src\RtsEngine.Core\RtsEngine.Core.csproj", "{D9A74B81-246E-49F4-B6E4-2B77ED9ABA14}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -26,9 +28,14 @@ Global
 		{8F5535D5-4BBF-49C3-9EB7-AB5C613DF811}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{8F5535D5-4BBF-49C3-9EB7-AB5C613DF811}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{8F5535D5-4BBF-49C3-9EB7-AB5C613DF811}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D9A74B81-246E-49F4-B6E4-2B77ED9ABA14}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D9A74B81-246E-49F4-B6E4-2B77ED9ABA14}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D9A74B81-246E-49F4-B6E4-2B77ED9ABA14}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D9A74B81-246E-49F4-B6E4-2B77ED9ABA14}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{112B0184-9548-4B65-BA1F-0797E9AF98AE} = {99595AA6-C589-43AD-B4B9-210EC1E27A74}
 		{8F5535D5-4BBF-49C3-9EB7-AB5C613DF811} = {99595AA6-C589-43AD-B4B9-210EC1E27A74}
+		{D9A74B81-246E-49F4-B6E4-2B77ED9ABA14} = {99595AA6-C589-43AD-B4B9-210EC1E27A74}
 	EndGlobalSection
 EndGlobal
