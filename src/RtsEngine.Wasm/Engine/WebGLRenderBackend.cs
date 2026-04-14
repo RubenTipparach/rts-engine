@@ -5,7 +5,7 @@ namespace RtsEngine.Wasm.Engine;
 /// <summary>
 /// WASM app shell — equivalent to sokol_app.
 /// Manages canvas lifecycle, the requestAnimationFrame loop, and input.
-/// Does NOT do any rendering — that goes through the GL proxy.
+/// Does NOT do any rendering — that goes through the GPU proxy.
 /// </summary>
 public sealed class WebGLRenderBackend : IRenderBackend
 {
@@ -15,10 +15,9 @@ public sealed class WebGLRenderBackend : IRenderBackend
     public float CanvasWidth { get; private set; } = 800;
     public float CanvasHeight { get; private set; } = 600;
 
+    public event Action? PointerDown;
     public event Action<float, float>? PointerDrag;
-    public event Action<float>? ScrollWheel;
-    public event Action? TapStart;
-    public event Action? ResetRequested;
+    public event Action? PointerUp;
 
     private Func<Task>? _onTick;
 
@@ -48,10 +47,9 @@ public sealed class WebGLRenderBackend : IRenderBackend
 
     [JSInvokable] public async Task GameLoopTick() { if (_onTick != null) await _onTick(); }
     [JSInvokable] public void OnCanvasResize(float w, float h) { CanvasWidth = w; CanvasHeight = h; }
+    [JSInvokable] public void OnPointerDown() => PointerDown?.Invoke();
     [JSInvokable] public void OnPointerDrag(float dx, float dy) => PointerDrag?.Invoke(dx, dy);
-    [JSInvokable] public void OnScrollWheel(float delta) => ScrollWheel?.Invoke(delta);
-    [JSInvokable] public void OnTapStart() => TapStart?.Invoke();
-    [JSInvokable] public void OnReset() => ResetRequested?.Invoke();
+    [JSInvokable] public void OnPointerUp() => PointerUp?.Invoke();
 
     public void Dispose()
     {
