@@ -38,10 +38,9 @@ public class GameEngine
         {
             // Rotate cube directly with pointer motion
             _rotationY += dx * PixelsToRadians;
-            _rotationX += dy * PixelsToRadians;
-            // Track velocity so release inherits momentum
+            _rotationX -= dy * PixelsToRadians;
             _velocityY = dx * PixelsToRadians;
-            _velocityX = dy * PixelsToRadians;
+            _velocityX = -dy * PixelsToRadians;
         };
 
         _app.PointerUp += () => _dragging = false;
