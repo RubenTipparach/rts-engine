@@ -7,6 +7,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{99595AA6-C58
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RtsEngine.Wasm", "src\RtsEngine.Wasm\RtsEngine.Wasm.csproj", "{112B0184-9548-4B65-BA1F-0797E9AF98AE}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RtsEngine.Desktop", "src\RtsEngine.Desktop\RtsEngine.Desktop.csproj", "{8F5535D5-4BBF-49C3-9EB7-AB5C613DF811}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -20,8 +22,13 @@ Global
 		{112B0184-9548-4B65-BA1F-0797E9AF98AE}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{112B0184-9548-4B65-BA1F-0797E9AF98AE}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{112B0184-9548-4B65-BA1F-0797E9AF98AE}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8F5535D5-4BBF-49C3-9EB7-AB5C613DF811}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8F5535D5-4BBF-49C3-9EB7-AB5C613DF811}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8F5535D5-4BBF-49C3-9EB7-AB5C613DF811}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8F5535D5-4BBF-49C3-9EB7-AB5C613DF811}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{112B0184-9548-4B65-BA1F-0797E9AF98AE} = {99595AA6-C589-43AD-B4B9-210EC1E27A74}
+		{8F5535D5-4BBF-49C3-9EB7-AB5C613DF811} = {99595AA6-C589-43AD-B4B9-210EC1E27A74}
 	EndGlobalSection
 EndGlobal
