@@ -15,7 +15,8 @@
 
 @code {
     private GameEngine? _engine;
-    private WebGLRenderBackend? _backend;
+    private WebGLRenderBackend? _app;
+    private CubeRenderer? _cube;
 
     private string SpeedDisplay => _engine?.SpeedMagnitude.ToString("F2") ?? "---";
     private string VelXDisplay => _engine?.VelocityX.ToString("F2") ?? "---";
@@ -25,18 +26,27 @@
     {
         if (!firstRender) return;
 
-        _backend = new WebGLRenderBackend(JS);
-        var ok = await _backend.InitializeAsync();
-        if (!ok) return;
+        // 1. Init GL context (like sokol_gfx setup)
+        var glOk = await GL.Init(JS, "glCanvas");
+        if (!glOk) return;
 
-        // Engine owns the game loop — component just refreshes the HUD
-        _engine = new GameEngine(_backend);
+        // 2. Init app shell — canvas + input + loop (like sokol_app setup)
+        _app = new WebGLRenderBackend(JS);
+        await _app.InitializeAsync("glCanvas");
+
+        // 3. Create GPU resources — all through GL.* calls in C#
+        _cube = new CubeRenderer();
+        await _cube.Setup();
+
+        // 4. Run engine — pure C#, zero platform awareness
+        _engine = new GameEngine(_app, _cube);
         _engine.OnFrameRendered += () => InvokeAsync(StateHasChanged);
         _engine.Run();
     }
 
     public void Dispose()
     {
-        _backend?.Dispose();
+        _cube?.Dispose();
+        _app?.Dispose();
     }
 }
