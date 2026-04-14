@@ -1,6 +1,7 @@
 @page "/"
 @using RtsEngine.Wasm.Engine
 @inject IJSRuntime JS
+@inject HttpClient Http
 @implements IDisposable
 
 <div id="game-container">
@@ -35,7 +36,7 @@
         await _app.InitializeAsync("gpuCanvas");
 
         // 3. Create GPU resources — shaders, buffers, pipeline — all C# GPU.* calls
-        _cube = new CubeRenderer();
+        _cube = new CubeRenderer(Http);
         await _cube.Setup();
 
         // 4. Run engine — pure C#, zero platform awareness

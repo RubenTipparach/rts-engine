@@ -16,6 +16,8 @@ namespace RtsEngine.Wasm.Engine;
 /// </summary>
 public class CubeRenderer
 {
+    private readonly HttpClient _http;
+
     private int _pipeline;
     private int _vertexBuffer;
     private int _indexBuffer;
@@ -23,34 +25,10 @@ public class CubeRenderer
     private int _bindGroup;
     private const int IndexCount = 36;
 
-    // WGSL shader — vertex colors, MVP uniform
-    private const string ShaderCode = @"
-struct Uniforms {
-    mvp : mat4x4f,
-}
-@binding(0) @group(0) var<uniform> uniforms : Uniforms;
-
-struct VSOutput {
-    @builtin(position) position : vec4f,
-    @location(0) color : vec3f,
-}
-
-@vertex
-fn vs_main(
-    @location(0) pos : vec3f,
-    @location(1) col : vec3f
-) -> VSOutput {
-    var out : VSOutput;
-    out.position = uniforms.mvp * vec4f(pos, 1.0);
-    out.color = col;
-    return out;
-}
-
-@fragment
-fn fs_main(@location(0) color : vec3f) -> @location(0) vec4f {
-    return vec4f(color, 1.0);
-}
-";
+    public CubeRenderer(HttpClient http)
+    {
+        _http = http;
+    }
 
     // Cube: 6 faces × 4 verts, each = pos(3f) + color(3f) = 24 bytes/vert
     private static readonly float[] Vertices =
@@ -99,8 +77,9 @@ fn fs_main(@location(0) color : vec3f) -> @location(0) vec4f {
 
     public async Task Setup()
     {
-        // Create shader module
-        var shaderModule = await GPU.CreateShaderModule(ShaderCode);
+        // Load shader from file — keeps WGSL as a standalone asset
+        var shaderCode = await _http.GetStringAsync("shaders/cube.wgsl");
+        var shaderModule = await GPU.CreateShaderModule(shaderCode);
 
         // Create buffers
         _vertexBuffer = await GPU.CreateVertexBuffer(Vertices);
