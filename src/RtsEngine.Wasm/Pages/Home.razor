@@ -4,9 +4,9 @@
 @implements IDisposable
 
 <div id="game-container">
-    <canvas id="glCanvas"></canvas>
+    <canvas id="gpuCanvas"></canvas>
     <div id="hud">
-        <div class="hud-title">Silk.NET WASM Engine</div>
+        <div class="hud-title">Silk.NET WASM Engine (WebGPU)</div>
         <div class="hud-stat">Speed: @SpeedDisplay</div>
         <div class="hud-stat">VelX: @VelXDisplay &nbsp; VelY: @VelYDisplay</div>
         <div class="hud-hint">Drag to spin &bull; Scroll to boost &bull; Tap for impulse &bull; DblClick to reset</div>
@@ -14,75 +14,39 @@
 </div>
 
 @code {
-    private GameEngine _engine = new();
-    private DotNetObjectReference<Home>? _dotnetRef;
-    private bool _initialized;
+    private GameEngine? _engine;
+    private WebGLRenderBackend? _app;
+    private CubeRenderer? _cube;
 
-    private string SpeedDisplay => _engine.SpeedMagnitude.ToString("F2");
-    private string VelXDisplay => _engine.VelocityX.ToString("F2");
-    private string VelYDisplay => _engine.VelocityY.ToString("F2");
+    private string SpeedDisplay => _engine?.SpeedMagnitude.ToString("F2") ?? "---";
+    private string VelXDisplay => _engine?.VelocityX.ToString("F2") ?? "---";
+    private string VelYDisplay => _engine?.VelocityY.ToString("F2") ?? "---";
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (firstRender)
-        {
-            _dotnetRef = DotNetObjectReference.Create(this);
-            _initialized = await JS.InvokeAsync<bool>("WebGLEngine.init", "glCanvas", _dotnetRef);
-            if (_initialized)
-            {
-                await JS.InvokeVoidAsync("WebGLEngine.startLoop");
-            }
-        }
-    }
+        if (!firstRender) return;
 
-    [JSInvokable]
-    public async Task GameLoopTick()
-    {
-        _engine.Update();
+        // 1. Init WebGPU device + canvas context (like sokol_gfx setup)
+        var gpuOk = await GPU.Init(JS, "gpuCanvas");
+        if (!gpuOk) return;
 
-        // Get canvas aspect ratio
-        var aspect = 16f / 9f;
-        try
-        {
-            var width = await JS.InvokeAsync<double>("eval", "document.getElementById('glCanvas').width");
-            var height = await JS.InvokeAsync<double>("eval", "document.getElementById('glCanvas').height");
-            if (height > 0) aspect = (float)(width / height);
-        }
-        catch { }
+        // 2. Init app shell — canvas resize + input + loop (like sokol_app)
+        _app = new WebGLRenderBackend(JS);
+        await _app.InitializeAsync("gpuCanvas");
 
-        var mvp = _engine.GetMvpMatrix(aspect);
-        await JS.InvokeVoidAsync("WebGLEngine.render", mvp);
+        // 3. Create GPU resources — shaders, buffers, pipeline — all C# GPU.* calls
+        _cube = new CubeRenderer();
+        await _cube.Setup();
 
-        StateHasChanged();
-    }
-
-    [JSInvokable]
-    public void OnPointerDrag(float dx, float dy)
-    {
-        _engine.ApplyDragVelocity(dx, dy);
-    }
-
-    [JSInvokable]
-    public void OnScrollWheel(float delta)
-    {
-        _engine.ApplyScrollBoost(delta);
-    }
-
-    [JSInvokable]
-    public void OnTapStart()
-    {
-        _engine.ApplyTapBoost();
-    }
-
-    [JSInvokable]
-    public void OnReset()
-    {
-        _engine.Reset();
+        // 4. Run engine — pure C#, zero platform awareness
+        _engine = new GameEngine(_app, _cube);
+        _engine.OnFrameRendered += () => InvokeAsync(StateHasChanged);
+        _engine.Run();
     }
 
     public void Dispose()
     {
-        _ = JS.InvokeVoidAsync("WebGLEngine.dispose");
-        _dotnetRef?.Dispose();
+        _cube?.Dispose();
+        _app?.Dispose();
     }
 }
