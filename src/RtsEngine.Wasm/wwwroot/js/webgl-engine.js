@@ -1,5 +1,6 @@
-// WebGL Spinning Cube Engine
-// Handles all WebGL rendering, called from C# via JS interop
+// Thin WebGL adapter — sole purpose is to bridge C# IRenderBackend calls to
+// the browser's WebGL API.  All game logic, matrix math, and input live in C#.
+// On desktop builds, this file doesn't exist; Silk.NET.OpenGL calls native GL.
 
 let gl = null;
 let shaderProgram = null;
@@ -139,36 +140,38 @@ window.WebGLEngine = {
         gl.enable(gl.DEPTH_TEST);
         gl.clearColor(0.05, 0.05, 0.12, 1.0);
 
-        // Handle resize
-        this.resize(canvasId);
+        // Initial resize + observer
+        this._resizeCanvas(canvas);
+        const resizeObserver = new ResizeObserver(() => this._resizeCanvas(canvas));
+        resizeObserver.observe(canvas);
 
-        // Input events
+        // Input events — forward raw pointer data to C# engine
         this._setupInput(canvas);
 
         return true;
     },
 
-    resize: function (canvasId) {
-        const canvas = document.getElementById(canvasId);
-        if (!canvas || !gl) return;
-
+    _resizeCanvas: function (canvas) {
+        if (!gl || !canvas) return;
         const dpr = window.devicePixelRatio || 1;
         const rect = canvas.getBoundingClientRect();
         canvas.width = rect.width * dpr;
         canvas.height = rect.height * dpr;
         gl.viewport(0, 0, canvas.width, canvas.height);
+        if (dotnetRef) {
+            dotnetRef.invokeMethodAsync('OnCanvasResize', canvas.width, canvas.height);
+        }
     },
 
     render: function (mvpArray) {
         if (!gl || !shaderProgram) return;
-
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         gl.uniformMatrix4fv(mvpUniformLocation, false, new Float32Array(mvpArray));
         gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
     },
 
     _setupInput: function (canvas) {
-        // Mouse events
+        // Mouse drag
         let isDragging = false;
         let lastX = 0, lastY = 0;
 
@@ -178,7 +181,6 @@ window.WebGLEngine = {
             lastY = e.clientY;
             e.preventDefault();
         });
-
         canvas.addEventListener('mousemove', (e) => {
             if (!isDragging || !dotnetRef) return;
             const dx = e.clientX - lastX;
@@ -187,19 +189,16 @@ window.WebGLEngine = {
             lastY = e.clientY;
             dotnetRef.invokeMethodAsync('OnPointerDrag', dx, dy);
         });
-
         canvas.addEventListener('mouseup', () => { isDragging = false; });
         canvas.addEventListener('mouseleave', () => { isDragging = false; });
 
-        // Mouse wheel for zoom/velocity boost
+        // Scroll wheel
         canvas.addEventListener('wheel', (e) => {
             e.preventDefault();
-            if (dotnetRef) {
-                dotnetRef.invokeMethodAsync('OnScrollWheel', e.deltaY);
-            }
+            if (dotnetRef) dotnetRef.invokeMethodAsync('OnScrollWheel', e.deltaY);
         }, { passive: false });
 
-        // Touch events
+        // Touch
         let lastTouchX = 0, lastTouchY = 0;
         let touchActive = false;
 
@@ -209,12 +208,9 @@ window.WebGLEngine = {
                 touchActive = true;
                 lastTouchX = e.touches[0].clientX;
                 lastTouchY = e.touches[0].clientY;
-                if (dotnetRef) {
-                    dotnetRef.invokeMethodAsync('OnTapStart');
-                }
+                if (dotnetRef) dotnetRef.invokeMethodAsync('OnTapStart');
             }
         }, { passive: false });
-
         canvas.addEventListener('touchmove', (e) => {
             e.preventDefault();
             if (!touchActive || e.touches.length !== 1 || !dotnetRef) return;
@@ -224,7 +220,6 @@ window.WebGLEngine = {
             lastTouchY = e.touches[0].clientY;
             dotnetRef.invokeMethodAsync('OnPointerDrag', dx, dy);
         }, { passive: false });
-
         canvas.addEventListener('touchend', (e) => {
             e.preventDefault();
             touchActive = false;
@@ -233,27 +228,20 @@ window.WebGLEngine = {
         // Double click/tap to reset
         canvas.addEventListener('dblclick', (e) => {
             e.preventDefault();
-            if (dotnetRef) {
-                dotnetRef.invokeMethodAsync('OnReset');
-            }
+            if (dotnetRef) dotnetRef.invokeMethodAsync('OnReset');
         });
     },
 
     startLoop: function () {
         const loop = () => {
-            if (dotnetRef) {
-                dotnetRef.invokeMethodAsync('GameLoopTick');
-            }
+            if (dotnetRef) dotnetRef.invokeMethodAsync('GameLoopTick');
             animFrameId = requestAnimationFrame(loop);
         };
         animFrameId = requestAnimationFrame(loop);
     },
 
     stopLoop: function () {
-        if (animFrameId) {
-            cancelAnimationFrame(animFrameId);
-            animFrameId = null;
-        }
+        if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = null; }
     },
 
     dispose: function () {
