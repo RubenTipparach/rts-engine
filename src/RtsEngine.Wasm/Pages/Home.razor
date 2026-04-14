@@ -4,9 +4,9 @@
 @implements IDisposable
 
 <div id="game-container">
-    <canvas id="glCanvas"></canvas>
+    <canvas id="gpuCanvas"></canvas>
     <div id="hud">
-        <div class="hud-title">Silk.NET WASM Engine</div>
+        <div class="hud-title">Silk.NET WASM Engine (WebGPU)</div>
         <div class="hud-stat">Speed: @SpeedDisplay</div>
         <div class="hud-stat">VelX: @VelXDisplay &nbsp; VelY: @VelYDisplay</div>
         <div class="hud-hint">Drag to spin &bull; Scroll to boost &bull; Tap for impulse &bull; DblClick to reset</div>
@@ -26,15 +26,15 @@
     {
         if (!firstRender) return;
 
-        // 1. Init GL context (like sokol_gfx setup)
-        var glOk = await GL.Init(JS, "glCanvas");
-        if (!glOk) return;
+        // 1. Init WebGPU device + canvas context (like sokol_gfx setup)
+        var gpuOk = await GPU.Init(JS, "gpuCanvas");
+        if (!gpuOk) return;
 
-        // 2. Init app shell — canvas + input + loop (like sokol_app setup)
+        // 2. Init app shell — canvas resize + input + loop (like sokol_app)
         _app = new WebGLRenderBackend(JS);
-        await _app.InitializeAsync("glCanvas");
+        await _app.InitializeAsync("gpuCanvas");
 
-        // 3. Create GPU resources — all through GL.* calls in C#
+        // 3. Create GPU resources — shaders, buffers, pipeline — all C# GPU.* calls
         _cube = new CubeRenderer();
         await _cube.Setup();
 

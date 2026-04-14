@@ -1,36 +1,58 @@
+using Silk.NET.Maths;
+
 namespace RtsEngine.Wasm.Engine;
 
 /// <summary>
-/// Sets up and draws a colored cube using the GL proxy.
-/// All GPU resource creation and draw calls are plain C# GL.* calls —
-/// identical to how you'd write sokol_gfx or raw OpenGL.
+/// Sets up and draws a colored cube using the GPU (WebGPU) proxy.
+/// All GPU resource creation and draw calls are plain C# GPU.* calls.
 /// No JS, no platform awareness.
+///
+/// Matrix convention:
+///   Silk.NET stores row-major (M_rc = row r, col c).
+///   WGSL mat4x4f is column-major in memory.
+///   Passing raw Silk.NET bytes → WGSL interprets rows as columns → automatic transpose.
+///   This is correct: (v_row * M) == M^T * v_col, and the reinterpretation gives M^T.
+///   So: NO manual transposing. Pass raw floats directly.
 /// </summary>
 public class CubeRenderer
 {
-    private int _program;
-    private int _vbo;
-    private int _ibo;
-    private int _mvpLocation;
+    private int _pipeline;
+    private int _vertexBuffer;
+    private int _indexBuffer;
+    private int _uniformBuffer;
+    private int _bindGroup;
+    private const int IndexCount = 36;
 
-    private const string VertexShaderSrc = @"
-        attribute vec3 aPosition;
-        attribute vec3 aColor;
-        uniform mat4 uMVP;
-        varying vec3 vColor;
-        void main() {
-            gl_Position = uMVP * vec4(aPosition, 1.0);
-            vColor = aColor;
-        }";
+    // WGSL shader — vertex colors, MVP uniform
+    private const string ShaderCode = @"
+struct Uniforms {
+    mvp : mat4x4f,
+}
+@binding(0) @group(0) var<uniform> uniforms : Uniforms;
 
-    private const string FragmentShaderSrc = @"
-        precision mediump float;
-        varying vec3 vColor;
-        void main() {
-            gl_FragColor = vec4(vColor, 1.0);
-        }";
+struct VSOutput {
+    @builtin(position) position : vec4f,
+    @location(0) color : vec3f,
+}
 
-    // Cube: 6 faces × 4 verts, each vert = pos(3) + color(3)
+@vertex
+fn vs_main(
+    @location(0) pos : vec3f,
+    @location(1) col : vec3f
+) -> VSOutput {
+    var out : VSOutput;
+    out.position = uniforms.mvp * vec4f(pos, 1.0);
+    out.color = col;
+    return out;
+}
+
+@fragment
+fn fs_main(@location(0) color : vec3f) -> @location(0) vec4f {
+    return vec4f(color, 1.0);
+}
+";
+
+    // Cube: 6 faces × 4 verts, each = pos(3f) + color(3f) = 24 bytes/vert
     private static readonly float[] Vertices =
     {
         // Front (red)
@@ -77,69 +99,54 @@ public class CubeRenderer
 
     public async Task Setup()
     {
-        // Compile shaders — same flow as native OpenGL / sokol_gfx
-        var vs = await CompileShader(GL.VERTEX_SHADER, VertexShaderSrc);
-        var fs = await CompileShader(GL.FRAGMENT_SHADER, FragmentShaderSrc);
+        // Create shader module
+        var shaderModule = await GPU.CreateShaderModule(ShaderCode);
 
-        _program = await GL.CreateProgram();
-        GL.AttachShader(_program, vs);
-        GL.AttachShader(_program, fs);
-        GL.LinkProgram(_program);
-        GL.UseProgram(_program);
-        GL.DeleteShader(vs);
-        GL.DeleteShader(fs);
+        // Create buffers
+        _vertexBuffer = await GPU.CreateVertexBuffer(Vertices);
+        _indexBuffer = await GPU.CreateIndexBuffer(Indices);
+        _uniformBuffer = await GPU.CreateUniformBuffer(64); // mat4x4f = 64 bytes
 
-        // Create vertex buffer
-        _vbo = await GL.CreateBuffer();
-        GL.BindBuffer(GL.ARRAY_BUFFER, _vbo);
-        GL.BufferDataFloat(GL.ARRAY_BUFFER, Vertices, GL.STATIC_DRAW);
+        // Vertex layout: pos(float32x3) + color(float32x3), stride = 24 bytes
+        var vertexLayouts = new object[]
+        {
+            new
+            {
+                arrayStride = 24,
+                attributes = new object[]
+                {
+                    new { format = "float32x3", offset = 0,  shaderLocation = 0 }, // position
+                    new { format = "float32x3", offset = 12, shaderLocation = 1 }, // color
+                }
+            }
+        };
 
-        // Create index buffer
-        _ibo = await GL.CreateBuffer();
-        GL.BindBuffer(GL.ELEMENT_ARRAY_BUFFER, _ibo);
-        GL.BufferDataUshort(GL.ELEMENT_ARRAY_BUFFER, Indices, GL.STATIC_DRAW);
+        // Create pipeline
+        _pipeline = await GPU.CreateRenderPipeline(shaderModule, vertexLayouts);
 
-        // Vertex layout: position(3f) + color(3f), stride = 24 bytes
-        var posAttr = await GL.GetAttribLocation(_program, "aPosition");
-        GL.EnableVertexAttribArray(posAttr);
-        GL.VertexAttribPointer(posAttr, 3, GL.FLOAT, false, 24, 0);
-
-        var colAttr = await GL.GetAttribLocation(_program, "aColor");
-        GL.EnableVertexAttribArray(colAttr);
-        GL.VertexAttribPointer(colAttr, 3, GL.FLOAT, false, 24, 12);
-
-        _mvpLocation = await GL.GetUniformLocation(_program, "uMVP");
-
-        // GL state
-        GL.Enable(GL.DEPTH_TEST);
-        GL.ClearColor(0.05f, 0.05f, 0.12f, 1.0f);
+        // Create bind group (uniform buffer at binding 0)
+        var entries = new object[]
+        {
+            new { binding = 0, bufferId = _uniformBuffer }
+        };
+        _bindGroup = await GPU.CreateBindGroup(_pipeline, 0, entries);
     }
 
-    public void Draw(float[] mvpColumnMajor)
+    public void Draw(float[] mvpRawBytes)
     {
-        GL.Clear(GL.COLOR_BUFFER_BIT | GL.DEPTH_BUFFER_BIT);
-        GL.UniformMatrix4fv(_mvpLocation, false, mvpColumnMajor);
-        GL.DrawElements(GL.TRIANGLES, 36, GL.UNSIGNED_SHORT, 0);
+        // Upload MVP matrix — raw Silk.NET row-major bytes.
+        // WGSL column-major reinterpretation gives automatic transpose.
+        // This is correct: shader does M^T * v = (v * M)^T.
+        GPU.WriteBuffer(_uniformBuffer, mvpRawBytes);
+
+        // Draw
+        GPU.Render(_pipeline, _vertexBuffer, _indexBuffer, _bindGroup, IndexCount);
     }
 
     public void Dispose()
     {
-        GL.DeleteBuffer(_vbo);
-        GL.DeleteBuffer(_ibo);
-        GL.DeleteProgram(_program);
-    }
-
-    private static async Task<int> CompileShader(int type, string source)
-    {
-        var shader = await GL.CreateShader(type);
-        GL.ShaderSource(shader, source);
-        GL.CompileShader(shader);
-        var ok = await GL.GetShaderParameter(shader, GL.COMPILE_STATUS);
-        if (!ok)
-        {
-            var log = await GL.GetShaderInfoLog(shader);
-            throw new Exception($"Shader compile failed: {log}");
-        }
-        return shader;
+        GPU.DestroyBuffer(_vertexBuffer);
+        GPU.DestroyBuffer(_indexBuffer);
+        GPU.DestroyBuffer(_uniformBuffer);
     }
 }

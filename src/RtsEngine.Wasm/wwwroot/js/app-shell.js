@@ -1,6 +1,6 @@
 // App shell — equivalent to sokol_app for WASM.
 // Manages canvas sizing, the frame loop, and raw input forwarding.
-// Does NOT do any GL calls — those go through gl-proxy.js.
+// Does NOT do any GPU calls — those go through gpu-proxy.js.
 
 (() => {
     let animFrameId = null;
@@ -16,10 +16,10 @@
             const resize = () => {
                 const dpr = window.devicePixelRatio || 1;
                 const rect = canvas.getBoundingClientRect();
-                canvas.width = rect.width * dpr;
-                canvas.height = rect.height * dpr;
-                // Notify GL proxy of viewport change
-                if (window.GLProxy) GLProxy.viewport(0, 0, canvas.width, canvas.height);
+                canvas.width = Math.floor(rect.width * dpr);
+                canvas.height = Math.floor(rect.height * dpr);
+                // Notify GPU proxy of canvas resize (reconfigures WebGPU surface)
+                if (window.GPUProxy) GPUProxy.resizeCanvas();
                 dotnetRef.invokeMethodAsync('OnCanvasResize', canvas.width, canvas.height);
             };
             new ResizeObserver(resize).observe(canvas);
