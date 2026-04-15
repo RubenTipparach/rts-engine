@@ -967,3 +967,186 @@ Variable {
 
 Variables bridge triggers together: one trigger sets a variable, another reads it. Campaign-global variables persist across mission transitions.
 
+---
+
+## 6. Cutscenes & Briefing Screens
+
+### 6.1 Cutscene System Overview
+
+Cutscenes are **in-engine cinematics** — they use the same map, units, and renderer as gameplay but take control of the camera and script unit actions. Like WC3, cutscenes are not pre-rendered video; they are real-time sequences authored in the editor.
+
+**During a cutscene:**
+- Player input is disabled (no unit selection, no commands)
+- Camera is script-controlled (pans, zooms, follows units)
+- UI is hidden (or replaced with cinematic bars / letterbox)
+- Units execute scripted movements, animations, and dialog
+- The game world may be modified (spawn units, change terrain, trigger effects)
+- Player can **skip** the cutscene (jumps to end state)
+
+### 6.2 Cutscene Timeline
+
+A cutscene is a **timeline** of tracks, similar to a video editor NLE:
+
+```
+Cutscene {
+    id: string
+    name: string
+    duration: float                     // Total length in seconds
+    skippable: bool                     // Can the player press ESC to skip
+    letterbox: bool                     // Show cinematic black bars
+
+    tracks: CutsceneTrack[]
+}
+```
+
+Tracks run in parallel along the timeline:
+
+```
+Time: 0s     2s     4s     6s     8s     10s
+      ├──────┼──────┼──────┼──────┼──────┤
+
+Camera:  [Pan to castle───────][Zoom in──][Follow hero──]
+
+Unit A:  [Walk to gate──────────][Stand───][Attack──────]
+
+Unit B:  ·····[Spawn][Walk to bridge────────────────────]
+
+Dialog:  ·····[Hero: "The gate is breached!"]···········
+              ···········[Villain: "You're too late!"]···
+
+Sound:   [Ambient wind──────────────────────────────────]
+         ·····[Explosion SFX]·····[Battle music────────]
+
+Effects: ·····[Fire particle at gate]····················
+```
+
+### 6.3 Track Types
+
+```
+CutsceneTrack types:
+├── CameraTrack
+│   ├── CameraMove(target, duration, easing)        // Pan to position
+│   ├── CameraFollow(unit, offset, duration)         // Track a unit
+│   ├── CameraZoom(fov, duration, easing)
+│   ├── CameraShake(intensity, duration)
+│   └── CameraFade(color, alpha, duration)           // Fade to black/white
+│
+├── UnitTrack (one track per scripted unit)
+│   ├── UnitMove(destination, speed)                 // Walk/run to point
+│   ├── UnitFace(target|angle, duration)             // Turn to face
+│   ├── UnitPlayAnimation(animName, duration)        // Force specific animation
+│   ├── UnitSetVisibility(visible)                   // Show/hide
+│   ├── UnitCreate(type, position, player)           // Spawn mid-cutscene
+│   ├── UnitDie()                                    // Kill with death animation
+│   └── UnitPause(bool)                              // Freeze in place
+│
+├── DialogTrack
+│   ├── DialogLine(speaker, text, duration, voiceover?)
+│   ├── DialogChoice(options[], variable)            // Branching dialog (rare in RTS)
+│   └── ClearDialog()
+│
+├── SoundTrack
+│   ├── PlaySound(soundId, volume, position?)
+│   ├── PlayMusic(trackId, fadeIn)
+│   ├── StopMusic(fadeOut)
+│   └── SetAmbience(ambienceId, volume)
+│
+├── EffectTrack
+│   ├── SpawnEffect(particleId, position, duration)
+│   ├── AttachEffect(particleId, unit, attachPoint)
+│   ├── SetWeather(region, weatherType)
+│   └── SetTimeOfDay(hour, transitionDuration)
+│
+└── GameStateTrack
+    ├── SetVariable(name, value)
+    ├── EnableTrigger(triggerName)
+    ├── CreateDestructable(type, position)
+    ├── ModifyTerrain(position, texture)
+    └── SetPlayerState(player, property, value)
+```
+
+### 6.4 Cutscene Skip Handling
+
+When a player skips a cutscene, the engine must fast-forward game state to the cutscene's end state without playing animations. This requires each cutscene to declare its **end state snapshot:**
+
+```
+CutsceneEndState {
+    unitPositions: { unitId: position }[]   // Where units should be after cutscene
+    unitStates: { unitId: alive|dead }[]    // Whether units survived
+    variableValues: { name: value }[]       // Variable changes that happened
+    cameraPosition: vec3                    // Where camera should end up
+    triggersEnabled: string[]               // Triggers toggled during cutscene
+}
+```
+
+When skipped, the engine applies the end state instantly and resumes gameplay.
+
+### 6.5 Briefing Screens
+
+Briefing screens appear **before** a mission starts. They set the story context, display objectives, and let the player prepare.
+
+```
+BriefingDefinition {
+    id: string
+    missionName: string
+    screens: BriefingScreen[]
+}
+
+BriefingScreen {
+    type: enum                      // Narrative, Objectives, Map
+    background: string              // Background image/art asset
+    
+    // For Narrative screens
+    title: string
+    bodyText: string                // Story text (supports rich formatting)
+    speakerPortrait: string         // Character portrait image
+    speakerName: string
+    voiceoverSound: string?         // Audio narration
+
+    // For Objectives screens
+    objectives: [
+        {
+            text: string            // "Destroy the Undead base"
+            type: enum              // Primary, Secondary, Optional
+            hintText: string?       // Expanded description
+        }
+    ]
+
+    // For Map screens (shows a tactical map)
+    mapRegion: rect                 // Area of the map to show
+    mapMarkers: [
+        {
+            position: vec2
+            icon: string            // "ally", "enemy", "objective", "start"
+            label: string
+        }
+    ]
+}
+```
+
+**Briefing flow:**
+1. Campaign triggers mission load
+2. Briefing screens display sequentially (player clicks "Next" to advance)
+3. Final screen shows objectives summary
+4. Player clicks "Start Mission" → map loads, gameplay begins
+5. Objectives display in-game in the quest log UI
+
+### 6.6 In-Game Dialog System
+
+Beyond cutscenes, the game needs a dialog system for real-time conversations during gameplay (like WC3's transmission messages):
+
+```
+TransmissionMessage {
+    speaker: string              // Unit instance ID or hero name
+    speakerName: string          // Display name
+    portrait: string             // Portrait to show in dialog box
+    text: string                 // Dialog text
+    voiceover: string?           // Audio file
+    duration: float              // How long to display (auto-calculated from text length if omitted)
+    pingMinimap: bool            // Flash the speaker's position on minimap
+    pauseGame: bool              // Pause gameplay during message (rare)
+}
+```
+
+Transmissions appear as a portrait + text box at the bottom of the screen and auto-advance after their duration. Multiple transmissions can be queued.
+
