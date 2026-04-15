@@ -1557,9 +1557,11 @@ CommandType enum:
 ├── Stop(unitIds[])
 ├── LoadUnit(transportId, unitId)
 ├── UnloadUnit(transportId, position?)
+├── LaunchTransport(shipId, routeId)          // Send ship to another planet
 ├── DropItem(heroId, itemSlot)
 ├── GiveItem(heroId, targetHeroId, itemSlot)
 ├── SelectGroup(groupNumber, unitIds[])       // Ctrl+# group assignment
+├── SwitchPlanetView(planetId)                // Player switches to viewing another planet
 ├── ChatMessage(text, channel)                // All, allies, observers
 ├── AllianceChange(targetPlayer, state)
 ├── Surrender()
@@ -1691,32 +1693,37 @@ Option C: Authoritative Server (alternative to lockstep)
 
 ## 8. Editor UI & Workflow
 
-The editor is a **web application** (matching our WASM engine target) that provides visual authoring tools for all map content. It renders the map in real-time using the same engine renderer, with overlay gizmos for selection, placement, and region visualization.
+The editor is a **web application** (matching our WASM engine target) that provides visual authoring tools for all map content. It renders planets in real-time using the same engine renderer, with overlay gizmos for selection, placement, and region visualization. The editor supports two primary views: **Planet View** (editing a single planet's surface) and **System View** (editing the star system layout and space routes).
 
 ### 8.1 Editor Layout
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│  Menu Bar: File│Edit│View│Map│Layer│Test│Help                       │
+│  Menu Bar: File│Edit│View│Planet│System│Layer│Test│Help              │
 ├──────────┬──────────────────────────────────────────────┬───────────┤
 │          │                                              │           │
 │  Tool    │            3D Viewport                       │  Property │
 │  Palette │         (engine renderer +                   │  Inspector│
 │          │          editor overlays)                    │           │
 │ ──────── │                                              │  ──────── │
-│ Terrain  │     Camera: orbit, pan, zoom                │  Selected │
-│  ▪ Raise │     Grid overlay toggle                      │  object's │
-│  ▪ Lower │     Region wireframes                        │  fields   │
-│  ▪ Paint │     Unit selection boxes                     │           │
-│  ▪ Cliff │     Pathing overlay                          │  Context- │
-│  ▪ Water │     Fog-of-war preview                       │  sensitive │
-│          │                                              │  based on │
-│ Entities │                                              │  what's   │
-│  ▪ Units │                                              │  selected │
+│ Planet ▼ │     Planet View: orbit globe, paint surface  │  Selected │
+│ [🌍 P0 ] │     System View: arrange planets, draw routes│  object's │
+│ [🌑 P1 ] │     Grid overlay toggle                      │  fields   │
+│ [🪐 P2 ] │     Region wireframes                        │           │
+│ [+ Add]  │     Unit selection boxes                     │  Context- │
+│ ──────── │     Pathing overlay                          │  sensitive │
+│ Terrain  │     Fog-of-war preview                       │  based on │
+│  ▪ Raise │                                              │  what's   │
+│  ▪ Lower │                                              │  selected │
+│  ▪ Paint │                                              │           │
+│  ▪ Cliff │                                              │           │
+│  ▪ Water │                                              │           │
+│ Entities │                                              │           │
+│  ▪ Units │                                              │           │
 │  ▪ Build │                                              │           │
-│  ▪ Items │                                              │           │
+│  ▪ Ships │                                              │           │
 │  ▪ Doodad│                                              │           │
-│          │                                              │           │
+│ Routes   │                                              │           │
 │ Triggers │                                              │           │
 │ Cameras  │                                              │           │
 │ Regions  │                                              │           │
@@ -1731,30 +1738,41 @@ The editor is a **web application** (matching our WASM engine target) that provi
 The editor operates in **modes** selected from the tool palette:
 
 ```
-Terrain Mode:
-├── Raise/Lower brush (adjustable size + strength)
+Terrain Mode (Planet View — paints on the active planet's sphere):
+├── Raise/Lower brush (adjustable angular radius + strength)
 ├── Flatten brush (sets height to a target level)
 ├── Smooth brush (averages heights with neighbors)
-├── Cliff raise/lower (discrete level changes)
-├── Ramp placement (connect two cliff levels)
+├── Cliff raise/lower (discrete level changes on sphere surface)
+├── Ramp placement (connect two cliff levels along surface)
 ├── Texture paint brush (select from palette, paint base/overlay)
-├── Water level brush (raise/lower water plane)
+├── Water level (set planet sea level, paint inland water)
+├── Biome paint (assign biome type per cell region)
 └── Undo/redo per stroke
 
-Entity Mode:
-├── Place entity (select from object browser, click to stamp)
+Entity Mode (Planet View — places on the active planet):
+├── Place entity (select from object browser, click on sphere surface to stamp)
+├── Auto-orient to surface normal (entities "stand up" on curved ground)
 ├── Select entity (click, box-select, shift-click to multi-select)
-├── Move entity (drag or type coordinates)
-├── Rotate entity (drag handle or type angle)
+├── Move entity (drag along sphere surface, or type lat/long)
+├── Rotate entity (yaw around local surface normal)
 ├── Scale entity (drag handle or type value)
 ├── Delete selected (DEL key)
 ├── Duplicate selected (Ctrl+D)
 ├── Set owner/player (dropdown)
 └── Edit properties (opens in Property Inspector)
 
-Region Mode:
-├── Draw rectangular region (click + drag)
-├── Draw polygonal region (click vertices, close loop)
+System Mode (System View — edit star system layout):
+├── Add/remove planets (set radius, subdivision level, tileset)
+├── Position planets in system orbit (drag or type coordinates)
+├── Draw space routes between planets (click planet A, drag to planet B)
+├── Set route properties (travel time, hazard level, capacity)
+├── Place launch/landing points on planet surfaces for routes
+├── Preview system map as players will see it
+└── Edit star properties (color, position)
+
+Region Mode (Planet View — spherical regions on active planet):
+├── Draw spherical cap region (click center + drag radius)
+├── Draw spherical polygon region (click vertices on surface)
 ├── Select/move/resize regions
 ├── Name region
 └── Set region properties (weather, ambient sound, color)
@@ -1762,8 +1780,8 @@ Region Mode:
 Camera Mode:
 ├── Save named camera position (current viewport → saved camera)
 ├── Preview camera (snap viewport to saved camera)
-├── Edit camera properties (position, target, FOV, roll)
-└── Create camera paths (sequence of positions with interpolation)
+├── Edit camera properties (planet, lat/long anchor, altitude, FOV)
+└── Create camera paths (sequence of positions with interpolation along sphere)
 ```
 
 ### 8.3 Object Editor
