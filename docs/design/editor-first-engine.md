@@ -2014,10 +2014,12 @@ my_rts_project/
 │   │   ├── upgrades.json
 │   │   ├── items.json
 │   │   └── buffs.json
-│   ├── tilesets/                   # Terrain texture palettes
-│   │   ├── lordaeron_summer.json
-│   │   ├── northrend.json
-│   │   └── barrens.json
+│   ├── tilesets/                   # Planet terrain texture palettes
+│   │   ├── temperate.json
+│   │   ├── desert.json
+│   │   ├── ice_world.json
+│   │   ├── volcanic.json
+│   │   └── alien.json
 │   └── ui/                        # UI layout definitions
 │       ├── game_hud.json
 │       ├── minimap.json
@@ -2067,12 +2069,14 @@ Packaging:
 Runtime loading:
 1. Open .rtsmap archive
 2. Parse metadata.json for map info
-3. Load terrain.json → build terrain mesh
-4. Load entities.json → instantiate placed units/buildings
-5. Load triggers.json → register event listeners
-6. Load player_setup.json → configure player slots
-7. Pre-load referenced assets (models, textures, sounds)
-8. Signal ready → game begins
+3. Load starsystem.json → build system map (planets, routes, star)
+4. For each planet: load planets/planet_N.json → build icosphere terrain mesh
+5. Load entities.json → instantiate placed units/buildings per planet
+6. Load triggers.json → register event listeners
+7. Load player_setup.json → configure player slots + starting planets
+8. Pre-load referenced assets (models, textures, sounds)
+9. Set initial camera to each player's starting planet
+10. Signal ready → game begins
 ```
 
 ### 9.6 Versioning & Compatibility
@@ -2106,27 +2110,29 @@ The editor produces structured data. The LLM's job is to implement the C# engine
 ```
 Editor Output (data)         →    Engine System (code, LLM implements)
 ─────────────────────────         ─────────────────────────────────────
-terrain.json                 →    TerrainLoader, TerrainRenderer, TerrainCollision
+starsystem.json              →    StarSystemLoader, SystemMapRenderer, RouteManager
+planets/planet_N.json        →    IcosphereGenerator, PlanetRenderer, SphericalCollision
 entities.json + object defs  →    EntityFactory, EntityManager (ECS)
 triggers.json                →    TriggerInterpreter, EventBus, ConditionEvaluator
 cutscenes.json               →    CutscenePlayer, TimelineExecutor
 briefing.json                →    BriefingUI, ScreenFlow
 player_setup.json            →    PlayerManager, TeamSystem, ResourceTracker
-regions.json                 →    RegionSystem, SpatialQueries
-cameras.json                 →    CameraController, CameraPathInterpolator
+regions.json                 →    SphericalRegionSystem, SpatialQueries
+cameras.json                 →    PlanetaryCameraController, CameraPathInterpolator
 ```
 
 ### 10.2 What the Human Does (Editor Authoring)
 
 The human uses the editor to define **content** — things that require creative judgment:
 
-- Drawing terrain: hills, valleys, cliffs, rivers, forests
-- Placing units: army compositions, patrol routes, ambush positions
+- Sculpting planets: mountains, valleys, cliffs, oceans, biomes
+- Designing star systems: planet count, routes, hazards, travel times
+- Placing units: army compositions, patrol routes, ambush positions, across planets
 - Writing dialog: character voices, briefing text, objective descriptions
-- Designing missions: pacing, difficulty curve, optional objectives
+- Designing missions: pacing, difficulty curve, multi-planet objectives
 - Choreographing cutscenes: camera angles, character blocking, dramatic timing
-- Balancing stats: unit costs, damage values, build times
-- Creating multiplayer maps: balanced start positions, resource distribution
+- Balancing stats: unit costs, damage values, build times, ship capacities
+- Creating multiplayer maps: balanced start planets, resource distribution, route symmetry
 
 ### 10.3 The Contract Between Editor & Engine
 
@@ -2144,41 +2150,54 @@ This means the LLM never needs to ask "what should the camera do here?" — that
 Suggested order for implementing engine systems:
 
 ```
-Phase 1: Foundation
-├── Terrain loading & rendering (Section 2)
-├── Entity instantiation from definitions (Section 3)
-├── Basic camera system (orbit, pan, zoom)
-├── Selection & command input (click to select, right-click to move)
-└── Basic pathfinding (A* on terrain grid)
+Phase 1: Planetary Foundation
+├── Icosphere generation (subdivided icosahedron mesh from radius + level)
+├── Planet terrain loading & rendering (per-cell textures, height displacement)
+├── Spherical coordinate system (lat/long ↔ Cartesian conversion)
+├── Planetary camera (orbit globe, pan along surface, zoom altitude)
+├── Entity instantiation from definitions on planet surfaces
+├── Auto-orient entities to surface normal
+├── Selection & command input (click on sphere to select, right-click to move)
+└── Spherical A* pathfinding (great-circle heuristic on icosphere graph)
 
-Phase 2: Gameplay
+Phase 2: Star System & Travel
+├── Star system loader (multiple planets, routes, star)
+├── System map view (zoomed-out view of all planets and routes)
+├── Planet view ↔ System view camera transitions
+├── Spaceport building (launch/landing point)
+├── Transport ship units (embark, transit, disembark)
+├── Space route traversal (travel time, in-transit state)
+├── Route hazards (optional asteroid/patrol encounters)
+└── Per-planet fog of war & line of sight
+
+Phase 3: Gameplay
 ├── Combat system (attack, damage types, armor)
 ├── Resource gathering (workers, gold mines, lumber)
-├── Building construction (placement, build timer, production queue)
+├── Building construction (spherical placement, build timer, production queue)
 ├── Upgrades & research
-├── Fog of war & line of sight
-└── Basic AI (computer player behaviors)
+├── Basic AI (computer player behaviors, multi-planet strategy)
+└── Cliff system gameplay (high ground advantage, LOS blocking)
 
-Phase 3: Content Systems
-├── Trigger interpreter (event → condition → action)
-├── Cutscene player (timeline execution)
+Phase 4: Content Systems
+├── Trigger interpreter (event → condition → action, including interplanetary)
+├── Cutscene player (timeline execution, cross-planet camera moves)
 ├── Briefing screen flow
 ├── Campaign progression (mission sequence, persistent heroes)
 └── Dialog / transmission system
 
-Phase 4: Multiplayer
+Phase 5: Multiplayer
 ├── Deterministic simulation (fixed-point math, deterministic iteration)
-├── Command serialization & networking
+├── Command serialization & networking (including interplanetary commands)
 ├── Lockstep turn system
-├── Lobby & player management
+├── Lobby & player management (starting planet assignment)
 ├── Replay recording & playback
 └── Desync detection
 
-Phase 5: Polish
-├── Audio system (positional sound, music, ambience)
+Phase 6: Polish
+├── Audio system (positional sound, music, per-planet ambience)
 ├── Particle effects
-├── Advanced rendering (shadows, water reflections, post-processing)
-├── Minimap
+├── Advanced rendering (shadows, planetary water, atmosphere, post-processing)
+├── Minimap (globe minimap for current planet, system overview)
 ├── Hero system (leveling, inventory, abilities)
 └── Shop / neutral buildings
 ```
