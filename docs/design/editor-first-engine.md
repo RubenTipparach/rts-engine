@@ -1150,3 +1150,234 @@ TransmissionMessage {
 
 Transmissions appear as a portrait + text box at the bottom of the screen and auto-advance after their duration. Multiple transmissions can be queued.
 
+---
+
+## 7. Multiplayer Architecture
+
+### 7.1 Networking Model: Lockstep Simulation
+
+RTS games with hundreds of units cannot afford to sync every unit's position every frame. Instead, we use **deterministic lockstep** — the same model used by WC3, StarCraft, and Age of Empires:
+
+```
+┌──────────┐     commands     ┌──────────┐
+│ Player A │ ───────────────► │  Server  │
+│  (sim)   │ ◄─────────────── │ (relay)  │
+│          │   all commands    │          │
+│ Player B │ ───────────────► │          │
+│  (sim)   │ ◄─────────────── │          │
+└──────────┘                  └──────────┘
+
+Each client runs the FULL simulation.
+Only player COMMANDS are sent over the network.
+The server collects commands and broadcasts them to all players.
+```
+
+**How it works:**
+1. Game time is divided into **turns** (e.g., every 100ms = 10 turns/second)
+2. Each turn, every player sends their commands to the server (move unit X to Y, build Z, attack Q)
+3. The server collects all commands for turn N and broadcasts them to all players
+4. Each client executes the same commands in the same order on the same game state
+5. Because the simulation is **deterministic**, all clients arrive at the same result
+
+**Bandwidth:** Only commands are sent — maybe 50-200 bytes per turn per player, regardless of unit count. A 4-player game with 400 units total uses less bandwidth than a single FPS player.
+
+### 7.2 Determinism Requirements
+
+For lockstep to work, the simulation must be **bit-for-bit identical** on all clients. This means:
+
+**Must be deterministic:**
+- Pathfinding (same algorithm, same tie-breaking)
+- Combat calculations (same damage, same order of operations)
+- AI behavior (same decisions given same inputs)
+- Random number generation (same seed, same sequence)
+- Entity update order (deterministic iteration, e.g., by entity ID)
+- Fixed-point or integer math for gameplay (no floating-point drift)
+
+**Does NOT need to be deterministic (client-local):**
+- Rendering (different resolutions, quality settings)
+- Audio (local mixing)
+- Camera position (each player has their own view)
+- UI state (selection, hover, minimap)
+- Particle effects (visual only)
+- Animation blending (visual only)
+
+### 7.3 Turn Structure
+
+```
+Turn Timeline:
+
+    Turn N-1        Turn N          Turn N+1
+    ┌───────┐      ┌───────┐      ┌───────┐
+    │execute│      │execute│      │execute│
+    │cmds   │      │cmds   │      │cmds   │
+    └───┬───┘      └───┬───┘      └───┬───┘
+        │              │              │
+   ┌────▼────┐    ┌────▼────┐    ┌────▼────┐
+   │ collect │    │ collect │    │ collect │
+   │ input   │    │ input   │    │ input   │
+   └────┬────┘    └────┬────┘    └────┬────┘
+        │              │              │
+   ┌────▼────┐    ┌────▼────┐    ┌────▼────┐
+   │  send   │    │  send   │    │  send   │
+   │ commands│    │ commands│    │ commands│
+   └─────────┘    └─────────┘    └─────────┘
+
+Input latency = 1 turn (~100-200ms) — commands issued in turn N
+are executed in turn N+1 (or N+2 for high-latency connections).
+```
+
+### 7.4 Command Protocol
+
+Commands are the only data sent over the network:
+
+```
+GameCommand {
+    playerId: int               // Who issued this command
+    turnNumber: int             // Which simulation turn to execute on
+    type: CommandType
+    payload: bytes              // Command-specific data
+}
+
+CommandType enum:
+├── MoveUnits(unitIds[], targetPosition, isAttackMove)
+├── AttackTarget(unitIds[], targetUnitId)
+├── BuildStructure(workerId, buildingType, position)
+├── TrainUnit(buildingId, unitType)
+├── ResearchUpgrade(buildingId, upgradeId)
+├── UseAbility(unitId, abilityId, target?)
+├── SetRallyPoint(buildingId, position)
+├── Patrol(unitIds[], waypoints[])
+├── HoldPosition(unitIds[])
+├── Stop(unitIds[])
+├── LoadUnit(transportId, unitId)
+├── UnloadUnit(transportId, position?)
+├── DropItem(heroId, itemSlot)
+├── GiveItem(heroId, targetHeroId, itemSlot)
+├── SelectGroup(groupNumber, unitIds[])       // Ctrl+# group assignment
+├── ChatMessage(text, channel)                // All, allies, observers
+├── AllianceChange(targetPlayer, state)
+├── Surrender()
+└── Checksum(hash)                            // Desync detection
+```
+
+### 7.5 Desync Detection
+
+Since all clients must stay in sync, we need to detect when they diverge:
+
+```
+Checksum Verification:
+1. Every N turns (e.g., every 10 turns), each client computes a hash of critical game state:
+   - All unit positions, HP, mana
+   - All player resources
+   - Random number generator state
+   - Turn counter
+
+2. Clients send their checksum to the server
+3. Server compares all checksums
+4. If mismatch → DESYNC detected
+
+Desync handling options:
+├── Log & alert (development: dump state for debugging)
+├── Resync from host (one client's state becomes authoritative)
+└── Disconnect desync'd player (competitive: anti-cheat)
+```
+
+### 7.6 Lobby & Matchmaking
+
+```
+Game Lobby:
+├── Host creates lobby with map selection
+├── Players join lobby (via invite link, server browser, or matchmaking)
+├── Host assigns player slots to map slots
+├── Each player selects:
+│   ├── Race / faction
+│   ├── Team
+│   ├── Color
+│   └── Ready status
+├── Map settings configured:
+│   ├── Game speed
+│   ├── Starting resources
+│   ├── Victory conditions (melee, custom)
+│   └── Observers allowed
+└── Host starts game when all players ready
+
+Matchmaking (ranked play):
+├── Player queues for game mode (1v1, 2v2, 3v3, FFA)
+├── Server matches players by skill rating (ELO/MMR)
+├── Map selected from ranked map pool (random or veto)
+├── Automatic slot assignment
+└── Game starts after countdown
+```
+
+### 7.7 Game Modes
+
+```
+Melee:
+- Standard competitive RTS. Each player starts with a town hall and workers.
+- Victory: destroy all enemy buildings, or all enemies surrender.
+- Map provides start locations, resources, neutral creeps/shops.
+
+Custom Game:
+- Map triggers define everything: objectives, win/loss, special rules.
+- Supports PvE, co-op, tower defense, hero arenas, RPGs, etc.
+- The trigger system is the scripting layer (Section 5).
+
+Observer / Replay:
+- Observers see all players' views (full map revealed).
+- Replays are stored as command logs — replay = re-simulate from turn 0.
+- Replay files are tiny (just commands + initial RNG seed + map reference).
+```
+
+### 7.8 Replay System
+
+Because the simulation is deterministic, replays are just command logs:
+
+```
+ReplayFile {
+    formatVersion: int
+    mapFile: string                 // Which map was played
+    mapChecksum: hash               // Verify map hasn't changed
+    randomSeed: int                 // Initial RNG seed
+    gameSpeed: float                // Simulation speed multiplier
+    players: [
+        { id: int, name: string, race: string, color: string }
+    ]
+    commands: GameCommand[]         // Every command, in order, with turn numbers
+    result: {
+        winner: int                 // Player ID or team
+        duration: float             // Game length in seconds
+        endReason: string           // "victory", "surrender", "disconnect"
+    }
+}
+```
+
+To replay: load the map, set the RNG seed, and feed commands turn by turn. The simulation reproduces the exact game. Playback supports fast-forward, rewind (by re-simulating from start), and player-perspective switching.
+
+### 7.9 Network Architecture Options
+
+```
+Option A: Peer-to-Peer with Host
+├── One player acts as relay (host)
+├── Simplest to implement
+├── Host has latency advantage
+├── If host disconnects, game ends (or host migration)
+└── Good for: casual games, LAN play
+
+Option B: Dedicated Relay Server
+├── Server collects and broadcasts commands
+├── No latency advantage for any player
+├── Server does NOT run simulation (just relays)
+├── Server can enforce turn timing
+└── Good for: ranked play, competitive
+
+Option C: Authoritative Server (alternative to lockstep)
+├── Server runs the simulation
+├── Clients send commands, receive state updates
+├── No determinism requirement
+├── Much higher bandwidth (sending unit positions)
+├── Better for games with few units, worse for RTS scale
+└── NOT recommended for this engine
+```
+
+**Recommendation:** Start with Option A (P2P with host) for development, migrate to Option B (relay server) for competitive play. Both use the same lockstep protocol.
+
