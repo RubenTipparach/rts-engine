@@ -1605,3 +1605,257 @@ CommandHistory {
 
 All terrain edits, entity placements, property changes, and trigger modifications are commands. This provides unlimited undo/redo.
 
+---
+
+## 9. Data Formats & Asset Pipeline
+
+### 9.1 File Format Strategy
+
+All editor-authored data uses **JSON** for human readability and LLM accessibility. Binary formats are reserved for assets that need compact storage (textures, models, audio).
+
+```
+Format Matrix:
+
+Data Type          │ Editor Format    │ Runtime Format     │ Notes
+───────────────────┼──────────────────┼────────────────────┼─────────────────
+Map files          │ JSON             │ JSON (or msgpack)  │ Human-readable
+Entity definitions │ JSON             │ JSON               │ Editable by hand
+Trigger graphs     │ JSON             │ JSON               │ Structured data
+Cutscene timelines │ JSON             │ JSON               │ Structured data
+Briefing screens   │ JSON             │ JSON               │ Structured data
+String tables      │ JSON             │ JSON               │ Localization
+─────────────────────────────────────────────────────────────────────────────
+3D Models          │ glTF/GLB         │ GLB (binary glTF)  │ Industry standard
+Textures           │ PNG/TGA          │ KTX2 (compressed)  │ GPU-ready
+Audio              │ WAV/OGG          │ OGG/WebM           │ Web-compatible
+Icons/UI           │ PNG/SVG          │ PNG atlas           │ Sprite sheets
+Fonts              │ TTF/OTF          │ MSDF atlas          │ Signed-distance field
+```
+
+### 9.2 Asset References
+
+All data files reference assets by **path relative to the project root**, never by absolute path or embedded data:
+
+```json
+{
+  "model": "assets/models/human/footman.glb",
+  "icon": "assets/icons/human/footman.png",
+  "portrait": "assets/models/human/footman_portrait.glb",
+  "soundSet": "assets/sounds/human/footman.json"
+}
+```
+
+This ensures maps are portable — they reference assets, and the runtime resolves paths at load time.
+
+### 9.3 Project Structure
+
+```
+my_rts_project/
+├── assets/
+│   ├── models/
+│   │   ├── human/
+│   │   │   ├── footman.glb
+│   │   │   ├── knight.glb
+│   │   │   └── barracks.glb
+│   │   ├── orc/
+│   │   └── neutral/
+│   ├── textures/
+│   │   ├── terrain/
+│   │   │   ├── grass_01.png
+│   │   │   ├── dirt_01.png
+│   │   │   └── cliff_01.png
+│   │   ├── units/
+│   │   └── buildings/
+│   ├── icons/
+│   │   ├── abilities/
+│   │   ├── items/
+│   │   └── units/
+│   ├── sounds/
+│   │   ├── music/
+│   │   ├── sfx/
+│   │   ├── voice/
+│   │   └── ambient/
+│   └── shaders/
+│       ├── terrain.wgsl
+│       ├── model.wgsl
+│       ├── water.wgsl
+│       ├── particle.wgsl
+│       └── ui.wgsl
+├── data/
+│   ├── objects/                    # Global entity definitions
+│   │   ├── units.json
+│   │   ├── buildings.json
+│   │   ├── heroes.json
+│   │   ├── abilities.json
+│   │   ├── upgrades.json
+│   │   ├── items.json
+│   │   └── buffs.json
+│   ├── tilesets/                   # Terrain texture palettes
+│   │   ├── lordaeron_summer.json
+│   │   ├── northrend.json
+│   │   └── barrens.json
+│   └── ui/                        # UI layout definitions
+│       ├── game_hud.json
+│       ├── minimap.json
+│       └── menus.json
+├── maps/
+│   ├── campaign/
+│   │   ├── human_01.rtsmap/
+│   │   ├── human_02.rtsmap/
+│   │   └── ...
+│   └── multiplayer/
+│       ├── twisted_meadows.rtsmap/
+│       ├── lost_temple.rtsmap/
+│       └── ...
+├── campaigns/
+│   ├── human_campaign.json
+│   └── orc_campaign.json
+└── project.json                    # Project metadata, version, settings
+```
+
+### 9.4 Asset Pipeline
+
+```
+Source Asset                Build Step               Runtime Asset
+─────────────         ─────────────────────        ─────────────────
+footman.blend    →    Export to glTF/GLB      →    footman.glb
+grass_01.psd     →    Export PNG → compress   →    grass_01.ktx2
+sword_hit.wav    →    Encode OGG             →    sword_hit.ogg
+footman_icon.psd →    Export PNG → atlas pack →    unit_icons.png + atlas.json
+
+Build steps can be automated (CI/CD) or manual (artist exports from DCC tool).
+The editor works with source-format assets directly for preview.
+The publish step converts to optimized runtime formats.
+```
+
+### 9.5 Map Packaging
+
+For distribution, a `.rtsmap` directory is packaged into a single archive:
+
+```
+Packaging:
+1. Collect all JSON files in the map directory
+2. Resolve asset references → copy referenced assets into the package
+3. Compress textures to GPU-ready format (KTX2)
+4. Optionally strip editor-only data (region colors, viewport state)
+5. Produce a single .rtsmap file (ZIP archive with known structure)
+
+Runtime loading:
+1. Open .rtsmap archive
+2. Parse metadata.json for map info
+3. Load terrain.json → build terrain mesh
+4. Load entities.json → instantiate placed units/buildings
+5. Load triggers.json → register event listeners
+6. Load player_setup.json → configure player slots
+7. Pre-load referenced assets (models, textures, sounds)
+8. Signal ready → game begins
+```
+
+### 9.6 Versioning & Compatibility
+
+```
+Data file headers include:
+{
+  "formatVersion": 1,
+  "engineVersion": "0.1.0",
+  "editorVersion": "0.1.0",
+  ...
+}
+
+Migration strategy:
+├── Each format version bump includes a migrator function
+├── Migrators are chained: v1 → v2 → v3 → current
+├── Old maps auto-upgrade on load (with backup)
+└── Editor saves always use the current format version
+```
+
+---
+
+## 10. LLM Integration Points
+
+This section identifies where the editor-data-driven architecture creates clean interfaces for LLM-assisted implementation.
+
+### 10.1 What the LLM Implements (Engine Runtime)
+
+The editor produces structured data. The LLM's job is to implement the C# engine systems that **interpret** this data:
+
+```
+Editor Output (data)         →    Engine System (code, LLM implements)
+─────────────────────────         ─────────────────────────────────────
+terrain.json                 →    TerrainLoader, TerrainRenderer, TerrainCollision
+entities.json + object defs  →    EntityFactory, EntityManager (ECS)
+triggers.json                →    TriggerInterpreter, EventBus, ConditionEvaluator
+cutscenes.json               →    CutscenePlayer, TimelineExecutor
+briefing.json                →    BriefingUI, ScreenFlow
+player_setup.json            →    PlayerManager, TeamSystem, ResourceTracker
+regions.json                 →    RegionSystem, SpatialQueries
+cameras.json                 →    CameraController, CameraPathInterpolator
+```
+
+### 10.2 What the Human Does (Editor Authoring)
+
+The human uses the editor to define **content** — things that require creative judgment:
+
+- Drawing terrain: hills, valleys, cliffs, rivers, forests
+- Placing units: army compositions, patrol routes, ambush positions
+- Writing dialog: character voices, briefing text, objective descriptions
+- Designing missions: pacing, difficulty curve, optional objectives
+- Choreographing cutscenes: camera angles, character blocking, dramatic timing
+- Balancing stats: unit costs, damage values, build times
+- Creating multiplayer maps: balanced start positions, resource distribution
+
+### 10.3 The Contract Between Editor & Engine
+
+The data formats in this document serve as the **API contract** between human-authored content and LLM-implemented systems. For each system:
+
+1. **Read the data format** in this document (e.g., `TriggerEvent`, `CutsceneTrack`)
+2. **Implement the C# runtime** that loads and interprets that data
+3. **Test against sample data** — the editor will produce JSON conforming to these schemas
+4. **Iterate** — if the engine needs new data, add it to the schema and the editor
+
+This means the LLM never needs to ask "what should the camera do here?" — that's authored in the cutscene timeline. The LLM only needs to ask "how do I smoothly interpolate between these two camera positions?" — which is a pure engineering question.
+
+### 10.4 Implementation Priority
+
+Suggested order for implementing engine systems:
+
+```
+Phase 1: Foundation
+├── Terrain loading & rendering (Section 2)
+├── Entity instantiation from definitions (Section 3)
+├── Basic camera system (orbit, pan, zoom)
+├── Selection & command input (click to select, right-click to move)
+└── Basic pathfinding (A* on terrain grid)
+
+Phase 2: Gameplay
+├── Combat system (attack, damage types, armor)
+├── Resource gathering (workers, gold mines, lumber)
+├── Building construction (placement, build timer, production queue)
+├── Upgrades & research
+├── Fog of war & line of sight
+└── Basic AI (computer player behaviors)
+
+Phase 3: Content Systems
+├── Trigger interpreter (event → condition → action)
+├── Cutscene player (timeline execution)
+├── Briefing screen flow
+├── Campaign progression (mission sequence, persistent heroes)
+└── Dialog / transmission system
+
+Phase 4: Multiplayer
+├── Deterministic simulation (fixed-point math, deterministic iteration)
+├── Command serialization & networking
+├── Lockstep turn system
+├── Lobby & player management
+├── Replay recording & playback
+└── Desync detection
+
+Phase 5: Polish
+├── Audio system (positional sound, music, ambience)
+├── Particle effects
+├── Advanced rendering (shadows, water reflections, post-processing)
+├── Minimap
+├── Hero system (leveling, inventory, abilities)
+└── Shop / neutral buildings
+```
+
