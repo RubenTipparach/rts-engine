@@ -70,13 +70,17 @@ The editor produces **well-structured data files** that serve as unambiguous spe
 
 ### 1.4 Map File as the Unit of Content
 
-Everything lives inside a **map file** — a single archive containing:
+A map is a **star system** — one or more planets plus the space routes connecting them. Everything lives inside a **map file** — a single archive containing:
 
 ```
 my_map.rtsmap/
-├── terrain.json          # Heightmap, textures, water, cliffs
-├── entities.json         # Placed units, buildings, doodads with transforms
-├── regions.json          # Named rectangular/polygonal areas
+├── starsystem.json       # Planet list, orbits, space routes between planets
+├── planets/
+│   ├── planet_0.json     # Spherical terrain, textures, water, cliffs for planet 0
+│   ├── planet_1.json     # ... planet 1
+│   └── planet_N.json
+├── entities.json         # Placed units, buildings, doodads with transforms + planet ID
+├── regions.json          # Named areas (spherical patches on a planet surface)
 ├── cameras.json          # Named camera positions and paths
 ├── triggers.json         # Event → condition → action graphs
 ├── cutscenes.json        # Timeline sequences
@@ -87,137 +91,380 @@ my_map.rtsmap/
 └── metadata.json         # Map name, author, description, bounds
 ```
 
-This is analogous to WC3's `.w3x` containing `.w3e` (terrain), `.w3u` (units), `.w3t` (triggers), etc.
+This is analogous to WC3's `.w3x` containing `.w3e` (terrain), `.w3u` (units), `.w3t` (triggers), etc. — but extended with multi-planet support and interplanetary travel.
 
 ---
 
-## 2. Terrain System
+## 2. Terrain System — Planetary Surfaces
 
-The terrain is the foundation of every map. Like WC3, terrain is a grid-based heightmap with painted textures, cliff levels, water planes, and decorative doodads.
+The core twist: **maps are planets, not flat grids.** Each map contains one or more spherical planets. Units fight on curved planetary surfaces and board ships to travel between worlds. This creates a fundamentally different RTS experience — wrap-around flanking, no map corners to turtle in, and multi-front wars across a star system.
 
-### 2.1 Terrain Grid
+### 2.1 Spherical Coordinate System
 
-The map is a 2D grid of **terrain cells**. Each cell stores:
+Each planet's surface is a sphere subdivided into a grid of **terrain cells**. Instead of flat (x, y) coordinates, positions on a planet use **spherical coordinates**:
 
 ```
-TerrainCell {
-    height: float           // Elevation at this grid point (vertex height)
-    cliffLevel: int         // Discrete cliff tier (0 = ground, 1 = raised, 2 = high ground, ...)
-    textureLayerBase: int   // Index into terrain texture palette (grass, dirt, stone, ...)
-    textureLayerOverlay: int // Optional secondary texture (road, crops, snow-dusted, ...)
-    overlayBlend: float     // 0.0–1.0 blend factor for overlay texture
-    waterLevel: float       // Water surface height at this cell (-1 = no water)
-    passability: flags      // Bitmask: walkable, flyable, buildable, amphibious
-    rampDirection: enum     // None, North, South, East, West (connects cliff levels)
+Spherical Position {
+    planetId: int               // Which planet this position is on
+    latitude: float             // -90° (south pole) to +90° (north pole)
+    longitude: float            // -180° to +180°
+    altitude: float             // Height above base sphere radius (terrain elevation)
 }
 ```
 
-**Grid dimensions** are defined at map creation (e.g., 64x64, 128x128, 256x256). Like WC3, each cell typically represents a fixed world-space size (e.g., 128 game units per cell). Heights are interpolated between grid vertices for smooth terrain.
+**Why spherical, not cube-mapped or icosahedral?**
+Latitude/longitude is intuitive for the editor — humans can think about "north", "equator", "poles". The renderer converts to 3D Cartesian internally, but the data format and editor tools work in spherical coordinates.
 
-### 2.2 Cliff System
+**Conversion to Cartesian (for rendering):**
+```
+x = (radius + altitude) * cos(latitude) * cos(longitude)
+y = (radius + altitude) * sin(latitude)
+z = (radius + altitude) * cos(latitude) * sin(longitude)
+```
 
-Cliffs create discrete elevation changes — critical for RTS gameplay (high ground advantage, line-of-sight blocking, chokepoints).
+**Surface normal** at any point is simply the normalized position vector from the planet center — gravity always points toward the core.
+
+### 2.2 Planet Grid Subdivision
+
+The sphere is subdivided using a **subdivided icosahedron** (icosphere) to avoid pole distortion that plagues naive lat/long grids. Each face of the icosphere is recursively subdivided into triangular cells:
 
 ```
-Cliff Levels:
-
-    Level 2  ┌──────────┐
-             │  HIGH    │
-    Level 1  ├──────────┤──────────┐
-             │  MID     │  RAMP ↗  │
-    Level 0  ├──────────┼──────────┤
-             │  GROUND  │  GROUND  │
-             └──────────┴──────────┘
+Subdivision levels:
+├── Level 0:    20 faces (base icosahedron)
+├── Level 1:    80 faces
+├── Level 2:   320 faces
+├── Level 3:  1,280 faces
+├── Level 4:  5,120 faces    ← small planet (skirmish)
+├── Level 5: 20,480 faces    ← medium planet (standard)
+├── Level 6: 81,920 faces    ← large planet (epic)
 ```
+
+Each face is a **terrain cell** — the fundamental unit of terrain painting, pathfinding, and building placement.
+
+```
+TerrainCell {
+    cellIndex: int              // Unique cell ID on this planet
+    height: float               // Elevation offset from base sphere radius
+    cliffLevel: int             // Discrete cliff tier (0 = lowland, 1 = mesa, 2 = highland, ...)
+    textureLayerBase: int       // Index into terrain texture palette
+    textureLayerOverlay: int    // Optional secondary texture (road, scorched, ...)
+    overlayBlend: float         // 0.0–1.0 blend factor
+    waterDepth: float           // Depth of water above this cell (0 = no water)
+    passability: flags          // Bitmask: walkable, flyable, buildable, amphibious
+    biome: enum                 // Affects ambient visuals (temperate, desert, arctic, volcanic, alien)
+}
+```
+
+**Editor interaction:** The editor displays the planet as a 3D globe that the user orbits, zooms, and rotates. Terrain brushes paint on the sphere surface directly. Internally, the brush selects nearby icosphere cells by angular distance from the cursor.
+
+### 2.3 Planet Definition
+
+Each planet in a star system has global properties:
+
+```
+PlanetDefinition {
+    id: int                         // Index in star system
+    name: string                    // "Lordaeron Prime", "Kalimdor Minor"
+    radius: float                   // Base sphere radius in game units
+    subdivisionLevel: int           // Icosphere detail level (4–6)
+    tileset: string                 // Texture palette ("temperate", "desert", "ice", "volcanic")
+    gravity: float                  // Affects projectile arcs, jump height (1.0 = Earth-like)
+    atmosphere: {
+        skyColor: vec4              // Sky gradient color
+        fogDensity: float           // Atmospheric fog
+        fogColor: vec4
+        ambientLight: vec4          // Ambient light color/intensity
+        sunDirection: vec3          // Directional light angle
+        sunColor: vec4
+        hasAtmosphere: bool         // false = airless (no sky, stars visible, no flying units)
+    }
+    waterProperties: {              // Global water settings for this planet
+        waterColor: vec4
+        waterOpacity: float
+        waveAmplitude: float
+        waveSpeed: float
+        seaLevel: float             // Default water altitude (cells below this are ocean)
+    }
+    orbitPosition: vec3             // Position in star system view (for system map UI)
+    orbitRadius: float              // Distance from star (visual only)
+}
+```
+
+### 2.4 Cliff System (Spherical)
+
+Cliffs work the same conceptually as a flat map — discrete elevation tiers — but on a curved surface:
+
+```
+Cliff on a sphere:
+
+    Surface cross-section (radial slice):
+
+                    ╱ Level 2 (highland)
+                   ╱
+    cliff face →  │
+                  │
+                   ╲ Level 1 (mesa)
+                    ╲───────── ramp ──╲
+                                      ╲ Level 0 (lowland)
+                        ←── planet center
+```
+
+**Key difference from flat terrain:** Cliff faces curve with the planet surface. The "up" direction at any cliff is the local surface normal (away from planet center), not a global Y-axis.
 
 **Editor behavior:**
 - Raising/lowering terrain adjusts `cliffLevel` in discrete steps
-- Cliff geometry is auto-generated from level transitions between adjacent cells
-- Ramps are placed explicitly by the editor user to connect two cliff levels
-- Cliff tile art is selected based on surrounding cliff topology (convex corner, concave corner, straight edge)
+- Cliff geometry follows the sphere curvature between adjacent cells
+- Ramps connect two cliff levels along the surface
+- Cliff art tiles wrap around the sphere naturally
 
 **Runtime behavior:**
-- Pathfinding treats cliff edges as impassable unless a ramp connects them
-- Units on higher cliff levels gain vision/range bonuses (configurable per-game)
-- Line-of-sight raycasts check cliff level transitions
+- Pathfinding on the sphere treats cliff edges as impassable unless ramped
+- High ground advantage checks compare cliff levels of attacker vs target cell
+- Line-of-sight follows great-circle arcs across the surface, checking cliff occlusion
 
-### 2.3 Texture Painting
+### 2.5 Texture Painting
 
-The editor provides a **texture palette** — a set of terrain textures (grass, dirt, cobblestone, snow, etc.). Painting works per-cell with blend support:
+The editor provides a **texture palette** per-tileset. Painting works per-cell on the sphere:
 
 - **Base layer:** Every cell has exactly one base texture
-- **Overlay layer:** Optional second texture blended on top (for paths, scorched earth, etc.)
-- **Blend factor:** Controls how much overlay shows through (0 = pure base, 1 = pure overlay)
-- **Auto-tiling:** Transitions between different base textures use blended edge tiles
+- **Overlay layer:** Optional second texture blended on top (paths, scorched earth)
+- **Blend factor:** Controls how much overlay shows (0 = pure base, 1 = pure overlay)
+- **Auto-tiling:** Transitions between texture types use blended edges
 
-The texture palette is defined per-tileset (e.g., "Lordaeron Summer", "Northrend", "Ashenvale"). A map uses exactly one tileset.
+Each planet uses one tileset (e.g., "Temperate", "Desert", "Ice World", "Volcanic", "Alien"). Different planets in the same star system can use different tilesets.
 
-### 2.4 Water
+**Spherical UV mapping:** Textures are projected using **triplanar mapping** to avoid seams and distortion at poles. Each icosphere face gets UVs relative to its local tangent plane.
 
-Water is a **plane** at a configurable height per cell. Cells with `waterLevel >= 0` render water.
+### 2.6 Water (Oceans & Seas)
 
-**Properties (per-map, not per-cell):**
+Water on a spherical planet is a **concentric sphere** at the planet's `seaLevel` altitude. Any terrain cell whose height is below `seaLevel` is submerged.
+
+**Properties (per-planet):**
+- `seaLevel: float` — altitude of the water sphere
 - `waterColor: vec4` — tint color
 - `waterOpacity: float` — transparency
 - `waveAmplitude: float` — vertex displacement strength
 - `waveSpeed: float` — animation speed
-- `shoreLineTexture: string` — foam/shore effect
 
-**Editor:** Water is painted like terrain — a water brush raises/lowers the water level in cells. Shallow water vs. deep water is determined by depth relative to terrain height (configurable threshold).
+**Editor:** A "flood fill" tool sets the planet's sea level. Individual cells can have water depth overrides for inland lakes/rivers (cells with `waterDepth > 0` above sea level).
 
-**Gameplay impact:** Cells where `waterLevel - height > deepThreshold` are impassable to ground units but passable to amphibious/naval units.
+**Gameplay impact:** Submerged cells are impassable to ground units. Shallow coastal cells are passable to amphibious units. Deep ocean is passable to naval/ship units only.
 
-### 2.5 Doodads (Terrain Decorations)
+### 2.7 Doodads (Surface Decorations)
 
-Doodads are non-interactive decorative objects placed on the terrain: trees, rocks, bushes, ruins, campfires, fences, etc.
+Doodads are placed on the planet surface. Their orientation automatically aligns to the local surface normal (they "stand up" relative to the curved ground):
 
 ```
 Doodad {
-    typeId: string           // Reference to doodad definition (e.g., "tree_lordaeron_01")
-    position: vec3           // World position (snapped to terrain height by editor)
-    rotation: float          // Y-axis rotation in degrees
-    scale: float             // Uniform scale multiplier
-    variation: int           // Visual variant index (same type, different model)
-    isDestructible: bool     // Can be destroyed (trees for lumber, rocks blocking paths)
-    hitPoints: int           // HP if destructible (0 = invulnerable)
-    pathingTexture: string   // Reference to a pathing map that blocks movement around this doodad
+    typeId: string               // Reference to doodad definition (e.g., "tree_temperate_01")
+    planetId: int                // Which planet
+    latitude: float              // Spherical position
+    longitude: float
+    rotationYaw: float           // Rotation around local surface normal (degrees)
+    scale: float                 // Uniform scale multiplier
+    variation: int               // Visual variant index
+    isDestructible: bool         // Can be destroyed (trees for lumber, rocks blocking paths)
+    hitPoints: int               // HP if destructible (0 = invulnerable)
+    pathingRadius: float         // Blocks movement within this angular radius
 }
 ```
 
-**Destructible doodads** (like trees) interact with gameplay — harvesting lumber, clearing paths. Their state is synced in multiplayer.
+**Orientation:** The doodad's "up" vector is the planet surface normal at its position. `rotationYaw` rotates around this up vector. The editor snaps doodads to the surface automatically.
 
-### 2.6 Terrain Data Format
+### 2.8 Star System & Interplanetary Travel
+
+A map is a **star system** containing one or more planets connected by **space routes.** Units board transport ships to travel between planets.
+
+```
+StarSystem {
+    name: string                    // "Lordaeron System"
+    planets: PlanetDefinition[]     // 1–N planets (typically 2–5)
+    spaceRoutes: SpaceRoute[]       // Connections between planets
+    starProperties: {
+        name: string                // "Sol", "Dark Star"
+        color: vec4                 // Star color (affects system lighting)
+        position: vec3              // Center of system (0,0,0 usually)
+    }
+}
+
+SpaceRoute {
+    id: string                      // "route_planet0_planet1"
+    fromPlanet: int                 // Source planet index
+    toPlanet: int                   // Destination planet index
+    travelTime: float               // Seconds for a ship to traverse this route
+    bidirectional: bool             // Can travel both ways (usually true)
+    launchPoint: SphericalPos       // Position on source planet where ships launch
+    landingPoint: SphericalPos      // Position on destination planet where ships land
+    hazardLevel: enum               // None, Asteroids, Nebula, EnemyPatrol
+    capacity: int                   // Max ships in transit simultaneously (-1 = unlimited)
+}
+```
+
+### 2.9 Transport Ship System
+
+Transport ships are the bridge between planets. They are special units that carry other units through space:
+
+```
+Interplanetary Travel Flow:
+
+1. Player loads units into a Transport Ship (docked at a Spaceport building)
+2. Player orders the ship to travel to a destination planet
+3. Ship launches → enters space route (units are "in transit", removed from planet surface)
+4. Travel takes SpaceRoute.travelTime seconds (visible on system map)
+5. Ship arrives at destination planet's landing zone
+6. Units disembark onto the planet surface
+
+    Planet A                Space Route              Planet B
+    ┌──────┐    launch     ════════════    land     ┌──────┐
+    │ 🏗️   │──►  🚀  ──► ·····🚀····· ──►  🛬  ──►│ 🏗️   │
+    │Spaceport│           (in transit)              │Landing│
+    └──────┘              travelTime: 30s           └──────┘
+```
+
+**Transport Ship unit type** (defined in entity system, Section 3):
+- Has `cargoCapacity` (number of units it can carry)
+- Has `moveType: Space` (can only traverse space routes, not walk on planets)
+- Is vulnerable during launch/landing (brief window on planet surface)
+- Can be intercepted in transit if route has hazards (optional combat mechanic)
+
+**Spaceport building** (defined in entity system):
+- Required to launch ships from a planet
+- Acts as the embark/disembark point
+- Positioned at a SpaceRoute's `launchPoint` on the planet surface
+- Multiple spaceports can exist (one per route, or a central hub)
+
+### 2.10 System Map View
+
+The player can toggle between **Planet View** (zoomed into one planet, normal RTS gameplay) and **System Map View** (zoomed out to see all planets and routes):
+
+```
+System Map View:
+
+        ☀️ Sol
+        │
+   ┌────┼─────────────────┐
+   │    │                  │
+   🌍   │    ══════════    🌑
+Planet A │    route_0_1    Planet B
+(selected)   🚀 in transit
+   │    │                  │
+   │    │    ══════════    │
+   └────┼─── route_0_2 ───┘
+        │
+        🪐
+     Planet C
+
+UI elements:
+- Planet icons (show owner color, resource indicators)
+- Route lines (show traffic, hazards)
+- Ships in transit (moving dots along routes)
+- Click planet to zoom into Planet View
+- Click route to see transit details
+```
+
+### 2.11 Regions (Spherical)
+
+Regions on a planet surface are defined by **spherical patches** — a center point plus angular radius, or a spherical polygon:
+
+```
+Region {
+    name: string                 // "player1_start", "boss_arena"
+    planetId: int                // Which planet this region is on
+    shape: enum                  // SphericalCap or SphericalPolygon
+    // For SphericalCap:
+    center: SphericalPos         // Center latitude/longitude
+    angularRadius: float         // Radius in degrees on the sphere surface
+    // For SphericalPolygon:
+    vertices: SphericalPos[]     // Polygon vertices on the sphere surface
+    color: vec4                  // Editor-only display color
+    weatherEffect: string        // Optional weather in this region (rain, snow, fog)
+    ambientSound: string         // Optional ambient sound loop
+}
+```
+
+Regions are **editor-only geometry** — they have no visual representation in-game but are essential for trigger scripting ("when unit enters region X on planet Y, do Y").
+
+### 2.12 Camera System (Planetary)
+
+The camera operates differently on a sphere than a flat map:
+
+```
+Planet View Camera:
+- Orbits above the planet surface at a configurable altitude
+- "Up" is always away from planet center (local surface normal)
+- Pan = rotate the camera's ground anchor along the surface (great-circle arc)
+- Zoom = change altitude above surface (closer = more detail, farther = see more terrain)
+- Rotate = orbit around the current ground anchor point
+- No "edge of map" — the camera wraps around the sphere
+
+System Map Camera:
+- Standard orbit camera around the star
+- Zoom in on a planet = transition to Planet View
+- Zoom out from Planet View = transition to System Map
+```
+
+### 2.13 Pathfinding on a Sphere
+
+Pathfinding uses **A\* on the icosphere cell graph** — each cell has ~6 neighbors (triangular adjacency). The heuristic uses **great-circle distance** (angular distance on the sphere) instead of Euclidean distance:
+
+```
+Heuristic: h(a, b) = arccos(dot(normalize(a), normalize(b))) * radius
+
+Key differences from flat A*:
+├── No map edges — paths can wrap around the planet
+├── Distances measured along surface arcs, not straight lines
+├── Cliff level transitions block edges (same as flat)
+├── Water cells block ground units (same as flat)
+└── Building footprints block cells by angular area, not rectangular grid
+```
+
+### 2.14 Terrain Data Format (Per-Planet)
 
 ```json
 {
-  "terrain": {
-    "gridWidth": 128,
-    "gridHeight": 128,
-    "cellSize": 128.0,
-    "tileset": "lordaeron_summer",
+  "planet": {
+    "id": 0,
+    "name": "Lordaeron Prime",
+    "radius": 5000.0,
+    "subdivisionLevel": 5,
+    "tileset": "temperate",
+    "gravity": 1.0,
+    "atmosphere": {
+      "skyColor": [0.4, 0.6, 1.0, 1.0],
+      "fogDensity": 0.002,
+      "sunDirection": [0.5, 0.8, 0.3],
+      "hasAtmosphere": true
+    },
+    "waterProperties": {
+      "seaLevel": -20.0,
+      "waterColor": [0.1, 0.3, 0.6, 0.8],
+      "waveAmplitude": 2.0
+    },
     "texturePalette": [
       { "id": 0, "name": "grass", "asset": "textures/terrain/grass_01.png" },
       { "id": 1, "name": "dirt", "asset": "textures/terrain/dirt_01.png" },
       { "id": 2, "name": "stone", "asset": "textures/terrain/stone_01.png" },
       { "id": 3, "name": "road", "asset": "textures/terrain/road_01.png" }
     ],
-    "heightMap": [ /* 129x129 float array (vertices = cells+1 in each dimension) */ ],
     "cells": [
       {
-        "x": 0, "y": 0,
+        "index": 0,
+        "height": 10.5,
         "cliffLevel": 0,
         "baseTexture": 0,
         "overlayTexture": -1,
         "overlayBlend": 0.0,
-        "waterLevel": -1.0,
-        "passability": "walkable|buildable"
+        "waterDepth": 0.0,
+        "passability": "walkable|buildable",
+        "biome": "temperate"
       }
     ],
     "doodads": [
       {
-        "typeId": "tree_lordaeron_01",
-        "position": [1024.0, 0.0, 512.0],
-        "rotation": 45.0,
+        "typeId": "tree_temperate_01",
+        "latitude": 23.5,
+        "longitude": -45.0,
+        "rotationYaw": 120.0,
         "scale": 1.0,
         "variation": 0,
         "destructible": true,
@@ -227,23 +474,6 @@ Doodad {
   }
 }
 ```
-
-### 2.7 Regions
-
-Regions are named areas on the map used by triggers and gameplay logic (spawn zones, camera bounds, detection areas, item drop zones).
-
-```
-Region {
-    name: string             // Human-readable name (e.g., "player1_start", "boss_arena")
-    shape: enum              // Rectangle or Polygon
-    bounds: rect | vec2[]    // Axis-aligned rect or polygon vertices
-    color: vec4              // Editor-only display color
-    weatherEffect: string    // Optional weather in this region (rain, snow, fog)
-    ambientSound: string     // Optional ambient sound loop
-}
-```
-
-Regions are **editor-only geometry** — they have no visual representation in-game but are essential for trigger scripting ("when unit enters region X, do Y").
 
 ---
 
