@@ -1022,6 +1022,7 @@ Each mission map contains player configuration and victory/defeat conditions:
         "race": "human",
         "color": "red",
         "controller": "human",
+        "startPlanet": 0,
         "startLocation": "player1_start",
         "allies": [2],
         "startingGold": 500,
@@ -1108,6 +1109,15 @@ TriggerEvent categories:
 │   ├── BuildingUpgraded(building?)
 │   └── BuildingDies(building?)
 │
+├── Interplanetary Events
+│   ├── ShipLaunched(player?, fromPlanet?)          // A transport ship departs
+│   ├── ShipArrived(player?, toPlanet?)             // A transport ship lands
+│   ├── ShipEntersRoute(route?)                     // Ship begins traversing a space route
+│   ├── UnitsEmbarked(ship?, planet?)               // Units loaded onto a transport
+│   ├── UnitsDisembarked(ship?, planet?)            // Units unloaded from a transport
+│   ├── PlanetFirstContact(player, planet)          // A player's units arrive at a planet for the first time
+│   └── PlayerControlsPlanet(player, planet)        // Player has majority presence on a planet
+│
 └── Custom
     ├── VariableChanged(variable, value)
     └── CustomEventFired(eventName)     // Fired explicitly by another trigger
@@ -1131,13 +1141,22 @@ TriggerCondition categories:
 │   ├── UnitHasAbility(unit, ability)
 │   ├── UnitHasItem(unit, item)
 │   ├── UnitHPPercent(unit, op, percent)
-│   └── UnitIsInRegion(unit, region)
+│   ├── UnitIsInRegion(unit, region)
+│   └── UnitIsOnPlanet(unit, planet)
 │
 ├── Player Conditions
 │   ├── PlayerHasUnits(player, count)
+│   ├── PlayerHasUnitsOnPlanet(player, planet, count)
 │   ├── PlayerGold(player, op, amount)
 │   ├── PlayerSupply(player, op, amount)
 │   └── IsPlayerAlly(player1, player2)
+│
+├── Interplanetary Conditions
+│   ├── ShipIsInTransit(ship)
+│   ├── ShipCargoCount(ship, op, count)
+│   ├── RouteIsBlocked(route)               // Hazard or enemy interception
+│   ├── PlayerHasSpaceportOnPlanet(player, planet)
+│   └── PlanetHasNoEnemies(player, planet)
 │
 └── Logical
     ├── And(conditions[])
@@ -1152,11 +1171,11 @@ Actions change game state:
 ```
 TriggerAction categories:
 ├── Unit Actions
-│   ├── CreateUnit(type, player, position, facing)
+│   ├── CreateUnit(type, player, planet, position, facing)
 │   ├── KillUnit(unit)
 │   ├── RemoveUnit(unit)                    // Remove without death event
-│   ├── MoveUnit(unit, position)            // Instant teleport
-│   ├── OrderUnitToMove(unit, position)     // Issue movement order
+│   ├── MoveUnit(unit, planet, position)    // Instant teleport (can cross planets)
+│   ├── OrderUnitToMove(unit, position)     // Issue movement order (same planet)
 │   ├── OrderUnitToAttack(unit, target)
 │   ├── SetUnitHP(unit, value)
 │   ├── SetUnitOwner(unit, newPlayer)
@@ -1219,6 +1238,19 @@ TriggerAction categories:
 │   ├── RunTrigger(triggerName)
 │   └── FireCustomEvent(eventName)
 │
+├── Interplanetary Actions
+│   ├── LaunchShip(ship, route)                     // Force a ship to depart
+│   ├── LoadUnitsIntoShip(unitGroup, ship)          // Force-embark units
+│   ├── UnloadShip(ship)                            // Force-disembark all cargo
+│   ├── SetRouteBlocked(route, bool)                // Block/unblock a space route
+│   ├── SetRouteHazard(route, hazardLevel)          // None, Asteroids, Nebula, EnemyPatrol
+│   ├── SetRouteTravelTime(route, seconds)          // Change travel duration
+│   ├── CreateShipAtSpaceport(type, player, spaceport)
+│   ├── TeleportUnitToPlanet(unit, planet, position) // Instant cross-planet move
+│   ├── SetPlanetAtmosphere(planet, property, value) // Change sky, fog, lighting
+│   ├── SwitchPlayerView(player, planet)            // Force player camera to another planet
+│   └── RevealPlanet(player, planet, duration)      // Temporarily reveal entire planet
+│
 └── Cutscene Actions
     ├── StartCutscene(cutsceneId)
     ├── SkipToSequence(cutsceneId, sequenceIndex)
@@ -1232,7 +1264,7 @@ Triggers can read and write **map variables** — typed values scoped to the run
 ```
 Variable {
     name: string
-    type: enum              // Integer, Float, Boolean, String, Unit, UnitGroup, Point, Region
+    type: enum              // Integer, Float, Boolean, String, Unit, UnitGroup, Point, Region, Planet, SpaceRoute
     defaultValue: any
     isArray: bool           // Allows indexed access (variable[0], variable[1], ...)
     arraySize: int          // If array, pre-allocated size
