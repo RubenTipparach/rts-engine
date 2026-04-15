@@ -488,9 +488,9 @@ All gameplay objects — units, buildings, heroes, items, projectiles — share 
 - Defines the archetype: stats, abilities, model, sounds, icon
 - Can inherit from another definition and override fields
 
-**Instance** (placed on a map, like a specific Footman at position X,Y):
+**Instance** (placed on a map, like a specific Footman at position X,Y on planet Z):
 - References a definition by ID
-- Stores per-instance overrides: position, rotation, player owner, custom name
+- Stores per-instance overrides: planet, position, rotation, player owner, custom name
 - Can override any definition field (e.g., a "Veteran Footman" with +10 HP)
 
 This two-tier system lets the editor define archetypes once and stamp instances across maps, while still allowing per-instance customization.
@@ -499,23 +499,25 @@ This two-tier system lets the editor define archetypes once and stamp instances 
 
 ```
 Entity
-├── Unit                    # Mobile combat/worker entities
-│   ├── Worker              # Can gather resources, build structures
-│   ├── MeleeUnit           # Ground melee combatant
-│   ├── RangedUnit          # Ground ranged combatant
-│   ├── SiegeUnit           # Anti-structure specialist
-│   ├── AirUnit             # Flying unit
-│   ├── NavalUnit           # Water-bound unit
-│   └── Hero                # Unique leveling unit with inventory
-├── Building                # Stationary structures
-│   ├── ProductionBuilding  # Trains units (barracks, stable)
-│   ├── ResourceBuilding    # Resource drop-off or generation (town hall, mine)
-│   ├── DefenseBuilding     # Towers, walls
-│   ├── ResearchBuilding    # Unlocks upgrades
-│   └── SpecialBuilding     # Altars, shops, faction-specific
-├── Item                    # Pickupable objects (potions, equipment, powerups)
-├── Destructible            # Breakable terrain objects (trees, gates, barrels)
-└── Projectile              # Missiles, arrows, spell effects (spawned by combat)
+├── Unit                        # Mobile combat/worker entities
+│   ├── Worker                  # Can gather resources, build structures
+│   ├── MeleeUnit               # Ground melee combatant
+│   ├── RangedUnit              # Ground ranged combatant
+│   ├── SiegeUnit               # Anti-structure specialist
+│   ├── AirUnit                 # Flying unit (atmospheric, stays on-planet)
+│   ├── NavalUnit               # Water-bound unit
+│   ├── TransportShip           # Carries units between planets via space routes
+│   └── Hero                    # Unique leveling unit with inventory
+├── Building                    # Stationary structures (placed on planet surface)
+│   ├── ProductionBuilding      # Trains units (barracks, stable)
+│   ├── ResourceBuilding        # Resource drop-off or generation (town hall, mine)
+│   ├── DefenseBuilding         # Towers, walls
+│   ├── ResearchBuilding        # Unlocks upgrades
+│   ├── Spaceport               # Launch/land point for interplanetary transport ships
+│   └── SpecialBuilding         # Altars, shops, faction-specific
+├── Item                        # Pickupable objects (potions, equipment, powerups)
+├── Destructible                # Breakable terrain objects (trees, gates, barrels)
+└── Projectile                  # Missiles, arrows, spell effects (spawned by combat)
 ```
 
 ### 3.3 Unit Definition
@@ -541,10 +543,14 @@ UnitDefinition {
     numberOfAttacks: int            // Usually 1, some units have 2 attacks
 
     // Movement
-    moveSpeed: float                // Units per second
-    moveType: enum                  // Foot, Horse, Fly, Float, Amphibious, Hover
+    moveSpeed: float                // Units per second (surface speed for ground, transit speed for space)
+    moveType: enum                  // Foot, Horse, Fly, Float, Amphibious, Hover, Space
     turnRate: float                 // Radians per second
-    collisionRadius: float          // Pathing circle size
+    collisionRadius: float          // Pathing radius (angular radius on planet surface)
+
+    // Interplanetary (TransportShip only)
+    cargoCapacity: int              // Number of units this ship can carry (0 = not a transport)
+    spaceArmor: float               // Damage reduction while in transit (for route hazard combat)
 
     // Production
     goldCost: int
@@ -591,8 +597,8 @@ BuildingDefinition extends UnitDefinition {
     // Building-specific
     trainList: string[]             // Unit IDs this building can produce
     researchList: string[]          // Upgrade IDs this building can research
-    buildingFootprint: int[2]       // Grid cells occupied [width, height] (e.g., [3,3])
-    pathingMap: string              // Asset that defines which cells are blocked
+    buildingFootprint: float        // Angular radius on planet surface for placement blocking
+    pathingCells: int[]             // Icosphere cell indices blocked by this building
     constructionModel: string       // Model shown during build phase
     constructionTime: float         // Seconds to construct
     sellValue: float                // Gold refund ratio when destroyed/sold (0.5 = 50%)
@@ -601,12 +607,18 @@ BuildingDefinition extends UnitDefinition {
     garrisonCapacity: int           // Number of units that can enter (0 = cannot garrison)
     garrisonHealRate: float         // HP/sec healed while garrisoned
 
+    // Spaceport-specific (only for Spaceport category)
+    isSpaceport: bool               // true = can launch/receive transport ships
+    connectedRoutes: string[]       // Space route IDs this spaceport serves
+    launchPadCapacity: int          // Max ships that can dock/launch simultaneously
+    repairRate: float               // HP/sec repaired for docked ships
+
     // Adjacency bonuses (like lumber mill bonus)
     adjacencyBonus: {
         affectsType: string         // What entity type benefits
         bonusStat: string           // Which stat is boosted
         bonusValue: float           // Amount of boost
-        range: int                  // How many cells away
+        range: float                // Angular distance on surface
     }?
 }
 ```
@@ -754,7 +766,7 @@ ItemDefinition {
 
 ### 3.9 Entity Placement Data (Per-Map)
 
-When entities are placed on a map, the instance data is minimal — just enough to override the definition:
+When entities are placed on a map, the instance data is minimal — just enough to override the definition. Every entity is **planet-aware** — it exists on a specific planet and uses spherical coordinates:
 
 ```json
 {
@@ -763,8 +775,10 @@ When entities are placed on a map, the instance data is minimal — just enough 
       "instanceId": "unit_001",
       "definitionId": "human_footman",
       "owner": 0,
-      "position": [2048.0, 0.0, 1024.0],
-      "rotation": 90.0,
+      "planetId": 0,
+      "latitude": 23.5,
+      "longitude": -45.0,
+      "rotationYaw": 90.0,
       "customFields": {
         "name": "Captain Marcus",
         "hitPoints": 500
@@ -774,14 +788,39 @@ When entities are placed on a map, the instance data is minimal — just enough 
       "instanceId": "building_001",
       "definitionId": "human_barracks",
       "owner": 0,
-      "position": [1920.0, 0.0, 1920.0],
-      "rotation": 0.0
+      "planetId": 0,
+      "latitude": 24.0,
+      "longitude": -44.5,
+      "rotationYaw": 0.0
+    },
+    {
+      "instanceId": "spaceport_001",
+      "definitionId": "human_spaceport",
+      "owner": 0,
+      "planetId": 0,
+      "latitude": 25.0,
+      "longitude": -43.0,
+      "rotationYaw": 180.0,
+      "customFields": {
+        "connectedRoutes": ["route_planet0_planet1"]
+      }
+    },
+    {
+      "instanceId": "transport_001",
+      "definitionId": "human_transport_ship",
+      "owner": 0,
+      "planetId": 0,
+      "latitude": 25.0,
+      "longitude": -43.0,
+      "rotationYaw": 0.0
     },
     {
       "instanceId": "item_001",
       "definitionId": "potion_of_healing",
       "owner": -1,
-      "position": [3000.0, 0.0, 3000.0]
+      "planetId": 1,
+      "latitude": -10.0,
+      "longitude": 80.0
     }
   ]
 }
@@ -817,6 +856,11 @@ Standard Animation Set (per entity model):
 ├── portrait           # 3D portrait idle (for selection UI)
 ├── morph              # Transformation (e.g., catapult unpack)
 ├── sleep              # Sleeping / passive state
+├── launch             # Transport ship launching from spaceport
+├── landing            # Transport ship landing at destination
+├── space_idle         # Transport ship cruising through space route
+├── embark             # Unit boarding a transport ship
+├── disembark          # Unit exiting a transport ship
 ├── cinematic          # Special animation for cutscenes
 └── victory            # Win screen celebration (optional)
 ```
