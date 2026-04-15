@@ -557,3 +557,413 @@ When entities are placed on a map, the instance data is minimal — just enough 
 }
 ```
 
+---
+
+## 4. Animation System
+
+Animations are a critical part of the RTS feel — every unit needs to walk, attack, die, stand idle, and respond to abilities. Like WC3, animations are **named sequences** baked into model files, and the engine selects them based on gameplay state.
+
+### 4.1 Animation Concepts
+
+**Skeletal animation:** Models use a bone hierarchy. Each animation is a set of keyframes defining bone transforms over time. The runtime interpolates between keyframes to produce smooth motion.
+
+**Animation sequences** are named clips stored in the model file:
+
+```
+Standard Animation Set (per entity model):
+├── stand              # Idle stance
+├── stand_alternate    # Secondary idle (fidget, look around)
+├── walk               # Moving
+├── run                # Moving fast (optional, fallback to walk)
+├── attack             # Primary attack swing/shoot
+├── attack_alternate   # Secondary attack (if entity has two attacks)
+├── spell              # Generic spellcasting
+├── spell_channel      # Sustained channeled ability
+├── death              # Death (plays once, holds last frame for corpse)
+├── decay              # Body decomposition (after death)
+├── build              # Construction animation (buildings)
+├── upgrade            # Building upgrade in progress
+├── birth              # Summoned/spawned (plays once)
+├── portrait           # 3D portrait idle (for selection UI)
+├── morph              # Transformation (e.g., catapult unpack)
+├── sleep              # Sleeping / passive state
+├── cinematic          # Special animation for cutscenes
+└── victory            # Win screen celebration (optional)
+```
+
+### 4.2 Animation State Machine
+
+The engine uses a **state machine** to select the current animation based on gameplay:
+
+```
+┌──────────┐   move order   ┌──────────┐
+│  STAND   │ ──────────────►│   WALK   │
+│          │◄────────────── │          │
+└────┬─────┘   stop/arrive  └────┬─────┘
+     │                           │
+     │ attack order              │ attack order
+     ▼                           ▼
+┌──────────┐               ┌──────────┐
+│  ATTACK  │               │  ATTACK  │
+│          │──► backswing  │  (WALK)  │──► move between attacks
+└────┬─────┘    to STAND   └──────────┘
+     │
+     │ death
+     ▼
+┌──────────┐   timer    ┌──────────┐
+│  DEATH   │──────────►│  DECAY   │──► remove entity
+└──────────┘           └──────────┘
+```
+
+**Transitions:**
+- Blending between animations uses crossfade (configurable duration, typically 0.1–0.2 seconds)
+- Some transitions are instant (death interrupts everything)
+- Attack animations have **damage point** and **backswing** timing markers
+
+### 4.3 Animation Events
+
+Animations can fire **events** at specific keyframes to synchronize gameplay with visuals:
+
+```
+AnimationEvent {
+    frame: int              // Keyframe index (or normalized time 0.0–1.0)
+    type: enum              // DamagePoint, Sound, Particle, FootStep, ProjectileLaunch
+    data: string            // Event-specific payload
+}
+```
+
+Key events:
+- **DamagePoint:** The frame where a melee attack actually deals damage (not the start of the swing)
+- **ProjectileLaunch:** The frame where a ranged unit releases the projectile
+- **Sound:** Triggers a sound effect (sword clang, bow twang, spell whoosh)
+- **Particle:** Spawns a particle effect at a bone attachment point
+- **FootStep:** Triggers footstep sound (varies by terrain texture under foot)
+
+### 4.4 Attachment Points
+
+Models define named **attachment points** (bones with special names) where effects and props are mounted:
+
+```
+Standard Attachment Points:
+├── origin             # Model root (center of feet)
+├── chest              # Center of torso
+├── head               # Head/overhead (for overhead effects, name text)
+├── hand_right         # Right hand (weapon, held items)
+├── hand_left          # Left hand (shield, offhand)
+├── overhead           # Above head (buff/debuff icons, rally flag)
+├── sprite_first       # Primary particle mount (spell effects)
+├── sprite_second      # Secondary particle mount
+├── weapon             # Weapon tip (for attack trails)
+└── mount              # Mount point (for mounted units/riders)
+```
+
+### 4.5 Team Color & Texture Swaps
+
+Like WC3, certain parts of unit models use **team color** — a material region that is tinted to the owning player's color at runtime:
+
+```
+TeamColorConfig {
+    playerColors: vec4[]    // Palette of team colors (red, blue, teal, purple, ...)
+    teamGlowTexture: string // Glow mask texture (white = team colored, black = not)
+}
+```
+
+The shader multiplies the team color into pixels where the glow mask is white. This avoids needing separate model files per player.
+
+### 4.6 Editor Animation Preview
+
+The editor provides:
+- **Animation browser:** List all sequences in a model, play/pause/scrub
+- **Event marker editor:** Place/remove animation events on the timeline
+- **Attachment point visualizer:** Show bone attachment points as gizmos
+- **Blend preview:** Preview crossfade between two animation states
+- **Team color preview:** Cycle through player colors to verify team color regions
+
+### 4.7 Particle Effects
+
+Particle systems for spell effects, explosions, ambient atmosphere:
+
+```
+ParticleEmitterDefinition {
+    id: string
+    texture: string             // Sprite sheet or single texture
+    emissionRate: float         // Particles per second
+    lifetime: float[2]          // [min, max] seconds
+    speed: float[2]             // [min, max] initial velocity
+    scale: float[2]             // [start, end] size over lifetime
+    color: vec4[2]              // [start, end] color over lifetime (includes alpha fade)
+    gravity: float              // Downward acceleration
+    spread: float               // Emission cone angle in degrees
+    blendMode: enum             // Additive, Alpha, Modulate
+    emitterShape: enum          // Point, Sphere, Disc, Line
+    maxParticles: int           // Pool size cap
+    worldSpace: bool            // true = particles stay in world, false = follow emitter
+}
+```
+
+---
+
+## 5. Campaign, Missions & Triggers
+
+### 5.1 Campaign Structure
+
+A campaign is an ordered sequence of missions, each backed by a map file:
+
+```
+CampaignDefinition {
+    id: string                      // "human_campaign"
+    name: string                    // "The Scourge of Lordaeron"
+    race: string                    // Associated faction
+    missions: [
+        {
+            id: string              // "human_01"
+            name: string            // "The Defense of Strahnbrad"
+            mapFile: string         // "maps/campaign/human_01.rtsmap"
+            briefingId: string      // Reference to briefing screen data
+            nextMission: string     // ID of next mission (null = campaign end)
+            unlockCondition: string // "previous_complete" or custom trigger
+        }
+    ]
+    // Persistent state across missions
+    persistentHeroes: string[]      // Hero IDs that carry over between missions
+    globalVariables: {              // State shared across all missions
+        name: string
+        type: string                // "int", "bool", "string"
+        defaultValue: any
+    }[]
+}
+```
+
+### 5.2 Mission Setup (Per-Map)
+
+Each mission map contains player configuration and victory/defeat conditions:
+
+```json
+{
+  "playerSetup": {
+    "players": [
+      {
+        "slot": 0,
+        "name": "Player 1",
+        "race": "human",
+        "color": "red",
+        "controller": "human",
+        "startLocation": "player1_start",
+        "allies": [2],
+        "startingGold": 500,
+        "startingLumber": 150,
+        "maxSupply": 100
+      },
+      {
+        "slot": 1,
+        "name": "Undead Forces",
+        "race": "undead",
+        "color": "purple",
+        "controller": "computer",
+        "aiDifficulty": "hard",
+        "startLocation": "enemy_base",
+        "startingGold": 99999,
+        "startingLumber": 99999
+      },
+      {
+        "slot": 2,
+        "name": "Villagers",
+        "race": "human",
+        "color": "blue",
+        "controller": "passive",
+        "startLocation": "village_center"
+      }
+    ],
+    "teams": [
+      { "name": "Alliance", "players": [0, 2] },
+      { "name": "Scourge", "players": [1] }
+    ]
+  }
+}
+```
+
+### 5.3 Trigger System
+
+The trigger system is the heart of the editor's scripting capability. Like WC3's trigger editor, it uses an **Event → Condition → Action** model that non-programmers can use.
+
+```
+Trigger {
+    name: string                    // Human-readable name
+    enabled: bool                   // Can be disabled/re-enabled by other triggers
+    initiallyOn: bool               // Active when map starts
+
+    events: TriggerEvent[]          // WHEN (any of these fires, evaluate conditions)
+    conditions: TriggerCondition[]  // IF (all must be true)
+    actions: TriggerAction[]        // THEN (execute in order)
+}
+```
+
+### 5.4 Trigger Events
+
+Events are things that happen in the game world:
+
+```
+TriggerEvent categories:
+├── Time
+│   ├── MapInitialization           // Map first loads
+│   ├── ElapsedGameTime(seconds)    // X seconds into the game
+│   ├── PeriodicTimer(interval)     // Every X seconds
+│
+├── Unit Events
+│   ├── UnitEntersRegion(region)    // A unit walks into a named region
+│   ├── UnitLeavesRegion(region)
+│   ├── UnitDies(filter?)           // A unit is killed (optional: specific unit/type)
+│   ├── UnitIsAttacked(filter?)
+│   ├── UnitAcquiresItem(item?)
+│   ├── UnitFinishedTraining(unit?)
+│   ├── UnitBeginsResearch(upgrade?)
+│   ├── UnitSpellEffect(ability?)   // A unit casts a specific ability
+│   ├── HeroLevelUp(hero?)
+│   └── UnitSelected(unit)          // Player selects a specific unit
+│
+├── Player Events
+│   ├── PlayerDefeated(player)
+│   ├── PlayerLeavesGame(player)
+│   ├── PlayerTypesChat(message)    // Chat message matches a pattern
+│   ├── AllianceChanged(p1, p2)
+│   └── ResourceChanged(player, resource, threshold)
+│
+├── Building Events
+│   ├── ConstructionStarted(building?)
+│   ├── ConstructionFinished(building?)
+│   ├── BuildingUpgraded(building?)
+│   └── BuildingDies(building?)
+│
+└── Custom
+    ├── VariableChanged(variable, value)
+    └── CustomEventFired(eventName)     // Fired explicitly by another trigger
+```
+
+### 5.5 Trigger Conditions
+
+Conditions filter whether actions execute:
+
+```
+TriggerCondition categories:
+├── Comparisons
+│   ├── IntegerComparison(a, op, b)     // ==, !=, <, >, <=, >=
+│   ├── BooleanComparison(a, op, b)
+│   └── StringComparison(a, op, b)
+│
+├── Unit Conditions
+│   ├── UnitIsAlive(unit)
+│   ├── UnitTypeIs(unit, type)
+│   ├── UnitOwnerIs(unit, player)
+│   ├── UnitHasAbility(unit, ability)
+│   ├── UnitHasItem(unit, item)
+│   ├── UnitHPPercent(unit, op, percent)
+│   └── UnitIsInRegion(unit, region)
+│
+├── Player Conditions
+│   ├── PlayerHasUnits(player, count)
+│   ├── PlayerGold(player, op, amount)
+│   ├── PlayerSupply(player, op, amount)
+│   └── IsPlayerAlly(player1, player2)
+│
+└── Logical
+    ├── And(conditions[])
+    ├── Or(conditions[])
+    └── Not(condition)
+```
+
+### 5.6 Trigger Actions
+
+Actions change game state:
+
+```
+TriggerAction categories:
+├── Unit Actions
+│   ├── CreateUnit(type, player, position, facing)
+│   ├── KillUnit(unit)
+│   ├── RemoveUnit(unit)                    // Remove without death event
+│   ├── MoveUnit(unit, position)            // Instant teleport
+│   ├── OrderUnitToMove(unit, position)     // Issue movement order
+│   ├── OrderUnitToAttack(unit, target)
+│   ├── SetUnitHP(unit, value)
+│   ├── SetUnitOwner(unit, newPlayer)
+│   ├── SetUnitInvulnerable(unit, bool)
+│   ├── PauseUnit(unit, bool)              // Freeze in place
+│   ├── AddAbility(unit, ability)
+│   └── RemoveAbility(unit, ability)
+│
+├── Hero Actions
+│   ├── SetHeroLevel(hero, level)
+│   ├── AddHeroXP(hero, amount)
+│   ├── CreateItemForHero(hero, itemType)
+│   └── ReviveHero(hero, position)
+│
+├── Player Actions
+│   ├── SetGold(player, amount)
+│   ├── AddGold(player, amount)
+│   ├── SetLumber(player, amount)
+│   ├── DefeatPlayer(player)
+│   ├── VictoryPlayer(player)               // Trigger win condition
+│   ├── SetAllianceState(p1, p2, allied)
+│   └── SetTechResearched(player, upgrade, level)
+│
+├── Camera Actions
+│   ├── PanCamera(player, position, duration)
+│   ├── SetCameraPosition(player, namedCamera)
+│   ├── LockCameraToUnit(player, unit)
+│   ├── ResetCamera(player)
+│   └── SetCameraBounds(player, region)
+│
+├── UI / Dialog Actions
+│   ├── DisplayTextMessage(player, text, duration)
+│   ├── DisplayFloatingText(position, text, color)
+│   ├── PingMinimap(player, position, color)
+│   ├── ShowDialog(dialogId)                // Show a modal dialog
+│   ├── ClearScreen(player)
+│   └── SetMissionObjective(text, state)    // "Discovered", "Completed", "Failed"
+│
+├── Sound Actions
+│   ├── PlaySound(soundId)
+│   ├── PlayMusic(trackId)
+│   ├── StopMusic(fadeTime)
+│   └── SetSoundVolume(channel, volume)
+│
+├── Environment Actions
+│   ├── SetTimeOfDay(hours)                 // 0.0–24.0
+│   ├── SetWeather(region, weatherType)
+│   ├── CreateDestructable(type, position)
+│   ├── KillDestructable(destructable)
+│   └── SetTerrainType(position, textureId)
+│
+├── Flow Control
+│   ├── Wait(seconds)                       // Pause trigger execution
+│   ├── IfThenElse(condition, thenActions, elseActions)
+│   ├── ForLoop(variable, start, end, actions)
+│   ├── ForEachUnit(unitGroup, actions)
+│   ├── SetVariable(name, value)
+│   ├── EnableTrigger(triggerName)
+│   ├── DisableTrigger(triggerName)
+│   ├── RunTrigger(triggerName)
+│   └── FireCustomEvent(eventName)
+│
+└── Cutscene Actions
+    ├── StartCutscene(cutsceneId)
+    ├── SkipToSequence(cutsceneId, sequenceIndex)
+    └── EndCutscene()
+```
+
+### 5.7 Variables
+
+Triggers can read and write **map variables** — typed values scoped to the running map:
+
+```
+Variable {
+    name: string
+    type: enum              // Integer, Float, Boolean, String, Unit, UnitGroup, Point, Region
+    defaultValue: any
+    isArray: bool           // Allows indexed access (variable[0], variable[1], ...)
+    arraySize: int          // If array, pre-allocated size
+}
+```
+
+Variables bridge triggers together: one trigger sets a variable, another reads it. Campaign-global variables persist across mission transitions.
+
