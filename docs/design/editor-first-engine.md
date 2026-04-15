@@ -245,3 +245,315 @@ Region {
 
 Regions are **editor-only geometry** — they have no visual representation in-game but are essential for trigger scripting ("when unit enters region X, do Y").
 
+---
+
+## 3. Units, Buildings & Entities
+
+All gameplay objects — units, buildings, heroes, items, projectiles — share a common **entity** model. Definitions are authored in the editor's **Object Editor** (like WC3's Object Editor), and instances are placed on maps.
+
+### 3.1 Entity Definition vs. Entity Instance
+
+**Definition** (template, like WC3's "Footman" base type):
+- Lives in a global object database, shared across all maps
+- Defines the archetype: stats, abilities, model, sounds, icon
+- Can inherit from another definition and override fields
+
+**Instance** (placed on a map, like a specific Footman at position X,Y):
+- References a definition by ID
+- Stores per-instance overrides: position, rotation, player owner, custom name
+- Can override any definition field (e.g., a "Veteran Footman" with +10 HP)
+
+This two-tier system lets the editor define archetypes once and stamp instances across maps, while still allowing per-instance customization.
+
+### 3.2 Entity Categories
+
+```
+Entity
+├── Unit                    # Mobile combat/worker entities
+│   ├── Worker              # Can gather resources, build structures
+│   ├── MeleeUnit           # Ground melee combatant
+│   ├── RangedUnit          # Ground ranged combatant
+│   ├── SiegeUnit           # Anti-structure specialist
+│   ├── AirUnit             # Flying unit
+│   ├── NavalUnit           # Water-bound unit
+│   └── Hero                # Unique leveling unit with inventory
+├── Building                # Stationary structures
+│   ├── ProductionBuilding  # Trains units (barracks, stable)
+│   ├── ResourceBuilding    # Resource drop-off or generation (town hall, mine)
+│   ├── DefenseBuilding     # Towers, walls
+│   ├── ResearchBuilding    # Unlocks upgrades
+│   └── SpecialBuilding     # Altars, shops, faction-specific
+├── Item                    # Pickupable objects (potions, equipment, powerups)
+├── Destructible            # Breakable terrain objects (trees, gates, barrels)
+└── Projectile              # Missiles, arrows, spell effects (spawned by combat)
+```
+
+### 3.3 Unit Definition
+
+```
+UnitDefinition {
+    // Identity
+    id: string                      // Unique ID (e.g., "human_footman")
+    name: string                    // Display name ("Footman")
+    parentId: string?               // Inherits from this definition
+    category: UnitCategory          // Melee, Ranged, Worker, Hero, Air, etc.
+    race: string                    // "human", "orc", "undead", "nightelf", "neutral"
+
+    // Combat Stats
+    hitPoints: int                  // Maximum HP
+    mana: int                       // Maximum mana (0 = no mana)
+    armor: int                      // Damage reduction
+    armorType: enum                 // Light, Medium, Heavy, Fortified, Hero, Unarmored
+    damage: int[]                   // [min, max] per attack
+    attackType: enum                // Normal, Pierce, Siege, Magic, Chaos, Hero
+    attackSpeed: float              // Seconds between attacks
+    attackRange: float              // 0 = melee, >0 = ranged
+    numberOfAttacks: int            // Usually 1, some units have 2 attacks
+
+    // Movement
+    moveSpeed: float                // Units per second
+    moveType: enum                  // Foot, Horse, Fly, Float, Amphibious, Hover
+    turnRate: float                 // Radians per second
+    collisionRadius: float          // Pathing circle size
+
+    // Production
+    goldCost: int
+    lumberCost: int
+    supplyCost: int                 // Population consumed
+    buildTime: float                // Seconds to train/build
+    hotkey: string                  // Keyboard shortcut in production menu
+
+    // Abilities
+    abilities: string[]             // List of ability definition IDs
+    defaultOrders: string[]         // Auto-cast abilities
+
+    // Visuals (references to assets, not the assets themselves)
+    model: string                   // Path to 3D model asset
+    icon: string                    // Path to portrait icon
+    portrait: string                // Path to animated portrait model
+    selectionScale: float           // Size of selection circle
+    shadowTexture: string           // Blob shadow asset
+    tintColor: vec4?                // Optional team-color tint
+
+    // Audio
+    soundSet: string                // References a sound set (attack, death, ready, pissed, etc.)
+
+    // Flags
+    isHero: bool
+    canAttack: bool
+    canMove: bool
+    canBuild: bool
+    isInvulnerable: bool
+    isDetector: bool                // Can see invisible units
+    isBurrowed: bool                // Starts burrowed
+    reviveTime: float               // Hero revive timer (0 = cannot revive)
+}
+```
+
+### 3.4 Building Definition
+
+Buildings share most fields with units but add:
+
+```
+BuildingDefinition extends UnitDefinition {
+    moveType: None                  // Buildings don't move
+
+    // Building-specific
+    trainList: string[]             // Unit IDs this building can produce
+    researchList: string[]          // Upgrade IDs this building can research
+    buildingFootprint: int[2]       // Grid cells occupied [width, height] (e.g., [3,3])
+    pathingMap: string              // Asset that defines which cells are blocked
+    constructionModel: string       // Model shown during build phase
+    constructionTime: float         // Seconds to construct
+    sellValue: float                // Gold refund ratio when destroyed/sold (0.5 = 50%)
+
+    // Garrison
+    garrisonCapacity: int           // Number of units that can enter (0 = cannot garrison)
+    garrisonHealRate: float         // HP/sec healed while garrisoned
+
+    // Adjacency bonuses (like lumber mill bonus)
+    adjacencyBonus: {
+        affectsType: string         // What entity type benefits
+        bonusStat: string           // Which stat is boosted
+        bonusValue: float           // Amount of boost
+        range: int                  // How many cells away
+    }?
+}
+```
+
+### 3.5 Hero System
+
+Heroes are special units that gain experience, level up, and carry items:
+
+```
+HeroDefinition extends UnitDefinition {
+    isHero: true
+
+    // Leveling
+    startingLevel: int              // Usually 1
+    maxLevel: int                   // Usually 10
+    experienceTable: int[]          // XP thresholds per level
+    statGainPerLevel: {
+        hitPoints: int              // HP gained per level
+        mana: int                   // Mana gained per level
+        damage: int                 // Damage gained per level
+        armor: float                // Armor gained per level
+        strength: int               // Primary attribute gain
+        agility: int
+        intelligence: int
+    }
+
+    // Abilities (heroes learn abilities at specific levels)
+    heroAbilities: [
+        { abilityId: string, learnLevel: int, maxRank: int }
+    ]
+
+    // Inventory
+    inventorySlots: int             // Usually 6
+    canPickupItems: bool            // true
+    canUseItems: bool               // true
+
+    // Attribute system (WC3-style)
+    primaryAttribute: enum          // Strength, Agility, Intelligence
+    baseStrength: int
+    baseAgility: int
+    baseIntelligence: int
+}
+```
+
+### 3.6 Abilities
+
+Abilities are defined separately and referenced by entities:
+
+```
+AbilityDefinition {
+    id: string                      // "holy_light", "thunder_clap"
+    name: string
+    icon: string
+    hotkey: string
+    levels: int                     // Max ability rank
+
+    // Per-level stats
+    levelData: [
+        {
+            manaCost: int
+            cooldown: float
+            castRange: float
+            areaOfEffect: float
+            duration: float
+            damage: int
+            healAmount: int
+            // ... ability-specific fields
+        }
+    ]
+
+    // Targeting
+    targetType: enum                // None, Unit, Point, UnitOrPoint, Passive, AutoCast
+    allowedTargets: flags           // Self, Ally, Enemy, Ground, Air, Building, Organic, Mechanical
+    castAnimation: string           // Animation to play on caster
+
+    // Effects
+    effectType: string              // "damage", "heal", "buff", "summon", "teleport", etc.
+    projectile: string?             // Projectile entity ID for ranged abilities
+    buffId: string?                 // Buff/debuff applied to target
+    summonId: string?               // Entity summoned by this ability
+}
+```
+
+### 3.7 Upgrades & Research
+
+```
+UpgradeDefinition {
+    id: string                      // "human_armor_upgrade"
+    name: string
+    icon: string
+    levels: int                     // Number of ranks (e.g., 3 for Iron/Steel/Mithril)
+
+    // Per-level costs
+    levelData: [
+        {
+            goldCost: int
+            lumberCost: int
+            researchTime: float
+        }
+    ]
+
+    // Effects applied globally to all owned units matching the filter
+    effects: [
+        {
+            affectsCategory: string     // "MeleeUnit", "RangedUnit", "all"
+            affectsRace: string         // "human", "all"
+            stat: string                // "armor", "damage", "moveSpeed", etc.
+            bonus: float                // Amount added per level
+        }
+    ]
+
+    // Requirements
+    requiresBuilding: string[]      // Buildings that must exist to research
+    requiresUpgrade: string[]       // Other upgrades that must be completed first
+}
+```
+
+### 3.8 Items
+
+```
+ItemDefinition {
+    id: string
+    name: string
+    icon: string
+    model: string                   // World model when dropped on ground
+    goldCost: int
+    isConsumable: bool              // Destroyed on use (potions) vs permanent (equipment)
+    isPowerup: bool                 // Auto-used on pickup (permanent stat boost)
+    isDroppedOnDeath: bool
+
+    // Effects
+    passiveBonus: {                 // Stats granted while held
+        stat: string
+        value: float
+    }[]
+    activeAbility: string?          // Ability ID usable from inventory
+    charges: int                    // Number of uses (-1 = unlimited)
+    cooldown: float                 // Seconds between uses
+
+    // Shop
+    stockMaximum: int               // Max in shop inventory
+    stockReplenishInterval: float   // Seconds to restock
+}
+```
+
+### 3.9 Entity Placement Data (Per-Map)
+
+When entities are placed on a map, the instance data is minimal — just enough to override the definition:
+
+```json
+{
+  "entities": [
+    {
+      "instanceId": "unit_001",
+      "definitionId": "human_footman",
+      "owner": 0,
+      "position": [2048.0, 0.0, 1024.0],
+      "rotation": 90.0,
+      "customFields": {
+        "name": "Captain Marcus",
+        "hitPoints": 500
+      }
+    },
+    {
+      "instanceId": "building_001",
+      "definitionId": "human_barracks",
+      "owner": 0,
+      "position": [1920.0, 0.0, 1920.0],
+      "rotation": 0.0
+    },
+    {
+      "instanceId": "item_001",
+      "definitionId": "potion_of_healing",
+      "owner": -1,
+      "position": [3000.0, 0.0, 3000.0]
+    }
+  ]
+}
+```
+
