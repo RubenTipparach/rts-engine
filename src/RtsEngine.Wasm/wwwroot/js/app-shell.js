@@ -12,45 +12,41 @@
             const canvas = document.getElementById(canvasId);
             if (!canvas) return;
 
-            // Resize handling
+            // Resize
             const resize = () => {
                 const dpr = window.devicePixelRatio || 1;
                 const rect = canvas.getBoundingClientRect();
                 canvas.width = Math.floor(rect.width * dpr);
                 canvas.height = Math.floor(rect.height * dpr);
-                // Notify GPU proxy of canvas resize (reconfigures WebGPU surface)
                 if (window.GPUProxy) GPUProxy.resizeCanvas();
                 dotnetRef.invokeMethodAsync('OnCanvasResize', canvas.width, canvas.height);
             };
             new ResizeObserver(resize).observe(canvas);
             resize();
 
-            // Input — forward raw events to C# engine
+            // Mouse
             let dragging = false, lastX = 0, lastY = 0;
-
             canvas.addEventListener('mousedown', e => {
-                dragging = true; lastX = e.clientX; lastY = e.clientY; e.preventDefault();
+                dragging = true; lastX = e.clientX; lastY = e.clientY;
+                dotnetRef.invokeMethodAsync('OnPointerDown');
+                e.preventDefault();
             });
             canvas.addEventListener('mousemove', e => {
                 if (!dragging) return;
                 dotnetRef.invokeMethodAsync('OnPointerDrag', e.clientX - lastX, e.clientY - lastY);
                 lastX = e.clientX; lastY = e.clientY;
             });
-            canvas.addEventListener('mouseup', () => dragging = false);
-            canvas.addEventListener('mouseleave', () => dragging = false);
+            canvas.addEventListener('mouseup', () => { if (dragging) { dragging = false; dotnetRef.invokeMethodAsync('OnPointerUp'); } });
+            canvas.addEventListener('mouseleave', () => { if (dragging) { dragging = false; dotnetRef.invokeMethodAsync('OnPointerUp'); } });
 
-            canvas.addEventListener('wheel', e => {
-                e.preventDefault();
-                dotnetRef.invokeMethodAsync('OnScrollWheel', e.deltaY);
-            }, { passive: false });
-
+            // Touch
             let touchActive = false, lastTX = 0, lastTY = 0;
             canvas.addEventListener('touchstart', e => {
                 e.preventDefault();
                 if (e.touches.length === 1) {
                     touchActive = true;
                     lastTX = e.touches[0].clientX; lastTY = e.touches[0].clientY;
-                    dotnetRef.invokeMethodAsync('OnTapStart');
+                    dotnetRef.invokeMethodAsync('OnPointerDown');
                 }
             }, { passive: false });
             canvas.addEventListener('touchmove', e => {
@@ -60,8 +56,10 @@
                     e.touches[0].clientX - lastTX, e.touches[0].clientY - lastTY);
                 lastTX = e.touches[0].clientX; lastTY = e.touches[0].clientY;
             }, { passive: false });
-            canvas.addEventListener('touchend', e => { e.preventDefault(); touchActive = false; }, { passive: false });
-            canvas.addEventListener('dblclick', e => { e.preventDefault(); dotnetRef.invokeMethodAsync('OnReset'); });
+            canvas.addEventListener('touchend', e => {
+                e.preventDefault();
+                if (touchActive) { touchActive = false; dotnetRef.invokeMethodAsync('OnPointerUp'); }
+            }, { passive: false });
         },
 
         startLoop() {
