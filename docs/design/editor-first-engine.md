@@ -1381,3 +1381,227 @@ Option C: Authoritative Server (alternative to lockstep)
 
 **Recommendation:** Start with Option A (P2P with host) for development, migrate to Option B (relay server) for competitive play. Both use the same lockstep protocol.
 
+---
+
+## 8. Editor UI & Workflow
+
+The editor is a **web application** (matching our WASM engine target) that provides visual authoring tools for all map content. It renders the map in real-time using the same engine renderer, with overlay gizmos for selection, placement, and region visualization.
+
+### 8.1 Editor Layout
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  Menu Bar: File│Edit│View│Map│Layer│Test│Help                       │
+├──────────┬──────────────────────────────────────────────┬───────────┤
+│          │                                              │           │
+│  Tool    │            3D Viewport                       │  Property │
+│  Palette │         (engine renderer +                   │  Inspector│
+│          │          editor overlays)                    │           │
+│ ──────── │                                              │  ──────── │
+│ Terrain  │     Camera: orbit, pan, zoom                │  Selected │
+│  ▪ Raise │     Grid overlay toggle                      │  object's │
+│  ▪ Lower │     Region wireframes                        │  fields   │
+│  ▪ Paint │     Unit selection boxes                     │           │
+│  ▪ Cliff │     Pathing overlay                          │  Context- │
+│  ▪ Water │     Fog-of-war preview                       │  sensitive │
+│          │                                              │  based on │
+│ Entities │                                              │  what's   │
+│  ▪ Units │                                              │  selected │
+│  ▪ Build │                                              │           │
+│  ▪ Items │                                              │           │
+│  ▪ Doodad│                                              │           │
+│          │                                              │           │
+│ Triggers │                                              │           │
+│ Cameras  │                                              │           │
+│ Regions  │                                              │           │
+├──────────┴──────────────────────────────────────────────┴───────────┤
+│  Bottom Panel (tabbed):                                             │
+│  [Trigger Editor] [Cutscene Timeline] [Object Editor] [Console]    │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 8.2 Editor Modes
+
+The editor operates in **modes** selected from the tool palette:
+
+```
+Terrain Mode:
+├── Raise/Lower brush (adjustable size + strength)
+├── Flatten brush (sets height to a target level)
+├── Smooth brush (averages heights with neighbors)
+├── Cliff raise/lower (discrete level changes)
+├── Ramp placement (connect two cliff levels)
+├── Texture paint brush (select from palette, paint base/overlay)
+├── Water level brush (raise/lower water plane)
+└── Undo/redo per stroke
+
+Entity Mode:
+├── Place entity (select from object browser, click to stamp)
+├── Select entity (click, box-select, shift-click to multi-select)
+├── Move entity (drag or type coordinates)
+├── Rotate entity (drag handle or type angle)
+├── Scale entity (drag handle or type value)
+├── Delete selected (DEL key)
+├── Duplicate selected (Ctrl+D)
+├── Set owner/player (dropdown)
+└── Edit properties (opens in Property Inspector)
+
+Region Mode:
+├── Draw rectangular region (click + drag)
+├── Draw polygonal region (click vertices, close loop)
+├── Select/move/resize regions
+├── Name region
+└── Set region properties (weather, ambient sound, color)
+
+Camera Mode:
+├── Save named camera position (current viewport → saved camera)
+├── Preview camera (snap viewport to saved camera)
+├── Edit camera properties (position, target, FOV, roll)
+└── Create camera paths (sequence of positions with interpolation)
+```
+
+### 8.3 Object Editor
+
+The Object Editor is a **data browser + editor** for entity definitions (like WC3's Object Editor). It operates on the global object database, not per-map instances.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Object Editor                                              │
+├──────────────┬──────────────────────────────────────────────┤
+│              │                                              │
+│  Category    │  Selected: Footman (human_footman)           │
+│  ▸ Units     │  ─────────────────────────────────           │
+│    ▸ Human   │  Parent: Base Human Unit                     │
+│      Footman │                                              │
+│      Rifleman│  Combat                                      │
+│      Knight  │    Hit Points: [420]                          │
+│    ▸ Orc     │    Armor:      [2]                           │
+│    ▸ Undead  │    Armor Type: [Heavy ▼]                     │
+│  ▸ Buildings │    Damage:     [12] – [13]                   │
+│  ▸ Heroes   │    Attack Type: [Normal ▼]                   │
+│  ▸ Items    │    Attack Speed: [1.35]                      │
+│  ▸ Abilities│    Attack Range: [0] (melee)                 │
+│  ▸ Upgrades │                                              │
+│  ▸ Buffs    │  Movement                                    │
+│              │    Speed: [270]                               │
+│  [+ New]     │    Type:  [Foot ▼]                           │
+│  [× Delete]  │    Collision: [32]                           │
+│              │                                              │
+│  Filter: [  ]│  Production                                  │
+│              │    Gold: [135]  Lumber: [0]  Supply: [2]     │
+│              │    Build Time: [20]                           │
+│              │    Hotkey: [F]                                │
+│              │                                              │
+│              │  Abilities: [Defend ×] [+ Add]               │
+│              │  Model: models/human/footman.glb [Browse]    │
+│              │  Icon: icons/human/footman.png [Browse]      │
+└──────────────┴──────────────────────────────────────────────┘
+```
+
+**Features:**
+- **Inheritance:** Objects can inherit from a parent and override specific fields. Modified fields shown in bold. "Reset to parent" per field.
+- **Custom objects:** Create new types by cloning a base type (like WC3's custom units)
+- **Search & filter:** Find objects by name, ID, category, or field value
+- **Batch edit:** Select multiple objects, edit a shared field, apply to all
+- **Diff view:** See what's modified from the base definition
+
+### 8.4 Trigger Editor
+
+The trigger editor provides a visual **GUI for scripting** without writing code:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Trigger Editor                                                 │
+├──────────────┬──────────────────────────────────────────────────┤
+│              │                                                  │
+│  Trigger List│  Trigger: "Ambush at Bridge"                     │
+│              │  ☑ Initially On                                  │
+│  ▸ Init      │                                                  │
+│  ▸ Victory   │  ── Events ──────────────────────────────────    │
+│  ● Ambush ◄──│  ▪ Unit enters region "bridge_crossing"          │
+│  ▸ Boss Fight│                                                  │
+│  ▸ Cinematic │  ── Conditions ──────────────────────────────    │
+│              │  ▪ Triggering unit owner == Player 1 (Red)       │
+│  [+ New]     │  ▪ Variable "ambush_triggered" == false          │
+│  [Folder]    │                                                  │
+│              │  ── Actions ─────────────────────────────────    │
+│              │  ▪ Set variable "ambush_triggered" = true        │
+│              │  ▪ Create 4 "orc_grunt" at region "ambush_spot"  │
+│              │     for Player 2 (Blue)                          │
+│              │  ▪ Pan camera for Player 1 to "ambush_spot"      │
+│              │     over 1.0 seconds                             │
+│              │  ▪ Display text "You've been ambushed!" to       │
+│              │     Player 1 for 3.0 seconds                     │
+│              │  ▪ Order created units to attack-move to         │
+│              │     "bridge_crossing"                             │
+│              │                                                  │
+│              │  [+ Add Event] [+ Add Condition] [+ Add Action] │
+└──────────────┴──────────────────────────────────────────────────┘
+```
+
+**GUI-driven:** Each event, condition, and action is selected from a categorized dropdown menu. Parameters are filled in via typed input fields, entity pickers, region pickers, and variable selectors. No code writing required — the trigger is pure structured data.
+
+### 8.5 Cutscene Timeline Editor
+
+Visual timeline editor for authoring in-engine cinematics:
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  Cutscene: "Arthas Arrives"              Duration: 12.0s        │
+│  [▶ Play] [⏸ Pause] [⏹ Stop]  Speed: [1x ▼]  [🔊 Preview]     │
+├──────────────────────────────────────────────────────────────────┤
+│  Tracks           │ 0s    2s    4s    6s    8s    10s   12s     │
+│  ─────────────────┼─────────────────────────────────────────     │
+│  📷 Camera        │ [Pan to gate──][Zoom──][Follow Arthas──]    │
+│  🗡️ Arthas        │ [Ride in──────────][Dismount][Walk───]      │
+│  🏰 Gate Guard    │ [Stand──][Salute──][Walk to Arthas──────]   │
+│  💬 Dialog        │ ·····["My lord!"]·····["The dead rise..."]  │
+│  🔊 Sound         │ [Horse hooves─────][Gate creak]·[Fanfare]  │
+│  ✨ Effects       │ ···········[Dust particles──]···············│
+│  ─────────────────┼─────────────────────────────────────────     │
+│  [+ Add Track]    │         ▲ Playhead (draggable)              │
+├──────────────────────────────────────────────────────────────────┤
+│  Selected: Camera keyframe at 4.0s                              │
+│  Position: [100, 50, 200]  Target: [120, 0, 180]  FOV: [45]   │
+│  Easing: [Ease In-Out ▼]                                        │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### 8.6 Test Play
+
+The editor includes a **Test Map** button that:
+1. Serializes the current map state to a temporary file
+2. Launches the game runtime in a new window/tab
+3. Loads the map and starts gameplay
+4. The editor remains open for quick iteration
+5. On exit, returns to the editor with the map unchanged
+
+**Test options:**
+- Start at a specific trigger point (skip early game)
+- Enable cheats (instant build, full map vision, infinite resources)
+- Start from a specific cutscene
+- Set initial game speed
+
+### 8.7 Undo/Redo System
+
+Every editor action is an **undoable command**:
+
+```
+Command {
+    execute()       // Apply the change
+    undo()          // Reverse the change
+    description: string  // "Move Footman to (100, 200)"
+}
+
+CommandHistory {
+    undoStack: Command[]
+    redoStack: Command[]
+    
+    Execute(cmd) → push to undoStack, clear redoStack
+    Undo()       → pop undoStack, execute undo(), push to redoStack
+    Redo()       → pop redoStack, execute(), push to undoStack
+}
+```
+
+All terrain edits, entity placements, property changes, and trigger modifications are commands. This provides unlimited undo/redo.
+
