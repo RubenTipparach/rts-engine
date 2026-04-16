@@ -99,65 +99,184 @@ This is analogous to WC3's `.w3x` containing `.w3e` (terrain), `.w3u` (units), `
 
 The core twist: **maps are planets, not flat grids.** Each map contains one or more spherical planets. Units fight on curved planetary surfaces and board ships to travel between worlds. This creates a fundamentally different RTS experience — wrap-around flanking, no map corners to turtle in, and multi-front wars across a star system.
 
-### 2.1 Spherical Coordinate System
+### 2.1 Grid & Coordinate System (Cube-Sphere)
 
-Each planet's surface is a sphere subdivided into a grid of **terrain cells**. Instead of flat (x, y) coordinates, positions on a planet use **spherical coordinates**:
+Each planet's logical grid is a **cube-sphere (quadsphere)**: a cube whose 6 faces are each a classic RTS square heightmap, projected outward onto a sphere. This preserves the Warcraft 3 authoring model — discrete grid cells with per-cell heights, textures, and cliff tiers — while giving the wrap-around gameplay of a planetary surface.
 
 ```
-Spherical Position {
-    planetId: int               // Which planet this position is on
-    latitude: float             // -90° (south pole) to +90° (north pole)
-    longitude: float            // -180° to +180°
-    altitude: float             // Height above base sphere radius (terrain elevation)
+Cube-Sphere construction:
+
+  Cube face (+X shown):           Projected onto sphere:
+  ┌─────────────────┐
+  │ ░░░░░░░░░░░░░░░ │                 ╭─────╮
+  │ ░░░░░░░░░░░░░░░ │   normalize     │░░░░░│
+  │ ░░ N×N grid ░░░ │ ─────────────►  │░░░░░│  (curved face)
+  │ ░░░░░░░░░░░░░░░ │                 │░░░░░│
+  │ ░░░░░░░░░░░░░░░ │                 ╰─────╯
+  └─────────────────┘   6 faces × N² cells = 6·N² total cells per planet
+```
+
+**Cell address** — the editor's native coordinate, stored for every entity and terrain operation:
+
+```
+CellAddress {
+    face: enum   // +X, -X, +Y, -Y, +Z, -Z (6 cube faces)
+    row:  int    // 0 .. gridResolution - 1
+    col:  int    // 0 .. gridResolution - 1
 }
 ```
 
-**Why spherical, not cube-mapped or icosahedral?**
-Latitude/longitude is intuitive for the editor — humans can think about "north", "equator", "poles". The renderer converts to 3D Cartesian internally, but the data format and editor tools work in spherical coordinates.
-
-**Conversion to Cartesian (for rendering):**
+**Projection** (logical cell → 3D world position):
 ```
-x = (radius + altitude) * cos(latitude) * cos(longitude)
-y = (radius + altitude) * sin(latitude)
-z = (radius + altitude) * cos(latitude) * sin(longitude)
-```
-
-**Surface normal** at any point is simply the normalized position vector from the planet center — gravity always points toward the core.
-
-### 2.2 Planet Grid Subdivision
-
-The sphere is subdivided using a **subdivided icosahedron** (icosphere) to avoid pole distortion that plagues naive lat/long grids. Each face of the icosphere is recursively subdivided into triangular cells:
-
-```
-Subdivision levels:
-├── Level 0:    20 faces (base icosahedron)
-├── Level 1:    80 faces
-├── Level 2:   320 faces
-├── Level 3:  1,280 faces
-├── Level 4:  5,120 faces    ← small planet (skirmish)
-├── Level 5: 20,480 faces    ← medium planet (standard)
-├── Level 6: 81,920 faces    ← large planet (epic)
+Given face F, grid size N, cell (row, col):
+  u = 2 * (col + 0.5) / N - 1          // cube-space UV ∈ (-1, 1)
+  v = 2 * (row + 0.5) / N - 1
+  p_cube   = faceBasis(F) · (u, v)      // point on cube surface
+  p_sphere = normalize(p_cube) * radius  // project onto sphere
+  p_final  = normalize(p_cube) * (radius + height)  // apply cell elevation
 ```
 
-Each face is a **terrain cell** — the fundamental unit of terrain painting, pathfinding, and building placement.
+**Why cube-sphere (not icosphere, not raw lat/long)?**
+- **Raw lat/long grid**: severe pole distortion — cells near poles become infinitesimally thin.
+- **Icosphere (tri/hex)**: uniform coverage but irregular `(row, col)` indexing; fights the 2D heightmap authoring model.
+- **Cube-sphere**: classic 2D heightmap per face, texture atlases cleanly, pathfinding is 4-neighbor with explicit face-edge wrap. Cost: **8 corner singularities** where 3 faces meet (addressed in 2.3).
+
+**Surface normal** at any point is the normalized position vector from the planet center — gravity always points toward the core.
+
+**Spherical coordinates** (latitude/longitude) are *derived* from cell centers for display (briefings, system-map readouts, world-space markers). Internal storage is always `(face, row, col)` — lat/long is a UI convenience, not a storage format.
+
+### 2.2 Planet Grid Sizing
+
+Each planet has one `gridResolution` N (cells per face edge), giving `6·N²` total logical cells:
+
+```
+Preset       N       Total Cells    Use Case
+────────────────────────────────────────────────────
+Skirmish    32          6,144       Small moon, single arena
+Standard    64         24,576       Typical mission planet
+Large      128         98,304       Epic campaign world
+Massive    256        393,216       Hero planet (persistent)
+```
+
+Resolution is fixed per planet at creation time. Larger planets cost more memory and pathfinding time; the editor shows a live estimate when choosing the preset.
+
+### 2.3 Corner Singularities (Non-Buildable Zones)
+
+A cube-sphere has **8 corner singularities** — one at each vertex of the source cube — where 3 faces meet at a single point. Each singularity causes:
+
+- ~20% area distortion in the 3 surrounding cells
+- No clean 4-neighbor grid adjacency (3 cells meet instead of 4)
+- Ambiguous tangent space for surface-aligned decals/props
+
+**Rule:** the 3 cells immediately adjacent to each of the 8 corners are flagged **non-buildable** at runtime. They remain walkable and traversable — buildings simply cannot be placed on them.
+
+```
+      +Y face
+     ┌──────────┐         ← 3 cells meet at each of 8 corners
+     │   ◆      │            (◆ = singularity, non-buildable cells around it)
+     │          │
+     ├──────────┤──────────┐
+     │          │          │
+     │  +X face │  +Z face │
+     │          │          │
+     └──────────┴──────────┘
+```
+
+**8 corners, 2 categories:**
+- **2 true poles** — top of +Y and bottom of −Y faces (astronomical north/south). Natural candidates for visual landmarks: ice caps, storm vents, shrines, orbital elevators.
+- **6 equatorial corners** — where ±X, ±Y, ±Z faces meet in other triples. Usually neutral terrain, optionally tagged with distinctive geometry (monolith, peak, crater).
+
+The editor exposes a `cornerMarker` slot per corner for placing signature props. Corners are tagged (`corner_north_pole`, `corner_px_nz_py`, etc.) and queryable by triggers ("unit within N° of `corner_north_pole`").
+
+### 2.4 Per-Face Quadtree LOD
+
+Rendered mesh geometry is **decoupled from the logical grid**. Each cube face is a **quadtree** subdivided dynamically per frame based on camera distance — patches close to the camera use fine geometry, patches on the far side of the planet collapse to coarse silhouettes:
+
+```
+Per-face quadtree subdivision:
+
+  Root = entire face
+  ├── Split when: projected screen-space edge length > threshold (e.g. 48 px)
+  ├── Merge when: all 4 children below threshold
+  └── Leaf = patch of k×k logical cells at LOD level L
+
+       ┌───────────┐
+       │     │     │       Near camera:
+       │     ├──┬──│       ├── leaves are small (1-cell patches)
+       │─────┼──┴──│       └── thousands of patches in FOV
+       │  │  │     │
+       │──┴──│     │       Far side of planet:
+       │     │     │       └── leaf = entire face (silhouette only)
+       └───────────┘
+```
+
+**Patch mesh generation:**
+- Leaf patch = regular k×k quad mesh in cube-space, normalized onto the sphere
+- Per-vertex height sampled from the logical heightmap (bilinear between cell centers)
+- Noise layers (2.5) applied per-vertex on top of base heightmap
+- Skirts added along patch edges to hide T-junction cracks between LODs
+
+**LOD level presets:**
+```
+LOD 0 (closest):  1 patch  = 1 cell      (full detail, full noise)
+LOD 1:            1 patch  = 4 cells     (2×2)
+LOD 2:            1 patch  = 16 cells    (4×4)
+LOD 3:            1 patch  = 64 cells    (8×8)
+LOD N (farthest): 1 patch  = entire face (far-planet silhouette)
+```
+
+**Patch cache:**
+- Keyed by `(face, patchRow, patchCol, lodLevel)`
+- Dirty-flagged whenever a covered logical cell changes (terrain edit, cliff raise, texture paint)
+- Background worker regenerates dirty patches async — near-camera patches prioritized
+
+**Source of truth:** logical cells are authoritative. Patches are derived. The game simulation, editor tools, and network sync all operate on cells; the quadtree is a pure rendering optimization.
+
+### 2.5 Terrain Noise (Edge-Aware)
+
+Noise is applied during *patch-mesh generation*, never stored in logical cells — cells are gameplay truth, noise is visual polish. Two layers:
+
+**Layer 1 — Flat surface noise:** Low-amplitude (≤ ~5% of cell edge length), low-frequency Perlin/simplex displacement along the local surface normal. Breaks up visually flat terrain without affecting pathfinding or building placement.
+
+**Layer 2 — Cliff edge noise:** Triggered where a patch vertex samples near a boundary between logical cells with different `cliffLevel`. Along the transition, vertices receive extra displacement biased along the cliff face plus small horizontal jitter — giving cliffs a natural broken-rock silhouette instead of a clean grid step.
+
+```
+Per-vertex noise blend:
+
+  edgeFactor = 0
+  for each of 4 neighbor cells of the sampled cell:
+      if cliffLevel(neighbor) != cliffLevel(self):
+          edgeFactor = max(edgeFactor, 1)
+
+  finalHeight = baseHeight
+              + flatNoise(pos)  * flatAmplitude
+              + edgeNoise(pos)  * cliffAmplitude * edgeFactor
+```
+
+**Determinism:** Noise is seeded per planet (`PlanetDefinition.noiseSeed`) so all clients and the editor produce bit-identical geometry — critical for multiplayer sync and for the editor preview matching in-game visuals.
+
+### 2.6 TerrainCell
+
+Each logical cell carries gameplay data:
 
 ```
 TerrainCell {
-    cellIndex: int              // Unique cell ID on this planet
+    address: CellAddress        // (face, row, col) — implicit in storage layout
     height: float               // Elevation offset from base sphere radius
     cliffLevel: int             // Discrete cliff tier (0 = lowland, 1 = mesa, 2 = highland, ...)
     textureLayerBase: int       // Index into terrain texture palette
-    textureLayerOverlay: int    // Optional secondary texture (road, scorched, ...)
+    textureLayerOverlay: int    // Optional secondary texture (road, scorched)
     overlayBlend: float         // 0.0–1.0 blend factor
     waterDepth: float           // Depth of water above this cell (0 = no water)
     passability: flags          // Bitmask: walkable, flyable, buildable, amphibious
     biome: enum                 // Affects ambient visuals (temperate, desert, arctic, volcanic, alien)
+    isCornerAdjacent: bool      // True if adjacent to a singularity (non-buildable)
 }
 ```
 
-**Editor interaction:** The editor displays the planet as a 3D globe that the user orbits, zooms, and rotates. Terrain brushes paint on the sphere surface directly. Internally, the brush selects nearby icosphere cells by angular distance from the cursor.
+**Editor interaction:** The editor displays the planet as a 3D globe the user orbits, zooms, and rotates. Terrain brushes paint on the sphere surface; the brush picks cells by angular distance from the cursor, converting to `(face, row, col)` internally. Grid lines overlay the terrain in edit mode for precise per-cell authoring.
 
-### 2.3 Planet Definition
+### 2.7 Planet Definition
 
 Each planet in a star system has global properties:
 
@@ -166,7 +285,8 @@ PlanetDefinition {
     id: int                         // Index in star system
     name: string                    // "Lordaeron Prime", "Kalimdor Minor"
     radius: float                   // Base sphere radius in game units
-    subdivisionLevel: int           // Icosphere detail level (4–6)
+    gridResolution: int             // N cells per face edge (32, 64, 128, 256)
+    noiseSeed: uint64               // Deterministic seed for visual terrain noise
     tileset: string                 // Texture palette ("temperate", "desert", "ice", "volcanic")
     gravity: float                  // Affects projectile arcs, jump height (1.0 = Earth-like)
     atmosphere: {
@@ -185,12 +305,15 @@ PlanetDefinition {
         waveSpeed: float
         seaLevel: float             // Default water altitude (cells below this are ocean)
     }
+    cornerMarkers: {                // Optional landmark geometry at each of 8 corners
+        [cornerTag]: { asset: string, scale: float, rotationYaw: float }
+    }
     orbitPosition: vec3             // Position in star system view (for system map UI)
     orbitRadius: float              // Distance from star (visual only)
 }
 ```
 
-### 2.4 Cliff System (Spherical)
+### 2.8 Cliff System (Discrete Heights on a Sphere)
 
 Cliffs work the same conceptually as a flat map — discrete elevation tiers — but on a curved surface:
 
@@ -222,9 +345,9 @@ Cliff on a sphere:
 - High ground advantage checks compare cliff levels of attacker vs target cell
 - Line-of-sight follows great-circle arcs across the surface, checking cliff occlusion
 
-### 2.5 Texture Painting
+### 2.9 Texture Painting
 
-The editor provides a **texture palette** per-tileset. Painting works per-cell on the sphere:
+The editor provides a **texture palette** per-tileset. Painting works per-cell on the grid:
 
 - **Base layer:** Every cell has exactly one base texture
 - **Overlay layer:** Optional second texture blended on top (paths, scorched earth)
@@ -233,9 +356,9 @@ The editor provides a **texture palette** per-tileset. Painting works per-cell o
 
 Each planet uses one tileset (e.g., "Temperate", "Desert", "Ice World", "Volcanic", "Alien"). Different planets in the same star system can use different tilesets.
 
-**Spherical UV mapping:** Textures are projected using **triplanar mapping** to avoid seams and distortion at poles. Each icosphere face gets UVs relative to its local tangent plane.
+**UV mapping:** Each cube face has native 2D UVs `(u, v) ∈ [0, 1]²` on its grid — textures tile cleanly per face, matching classic RTS tile-atlas workflows. Face edges use a narrow blend band (1–2 cells) to hide seams where adjacent faces meet. The 3 cells around each corner singularity use a pre-baked corner texture mask since UVs collapse at the point.
 
-### 2.6 Water (Oceans & Seas)
+### 2.10 Water (Oceans & Seas)
 
 Water on a spherical planet is a **concentric sphere** at the planet's `seaLevel` altitude. Any terrain cell whose height is below `seaLevel` is submerged.
 
@@ -250,7 +373,7 @@ Water on a spherical planet is a **concentric sphere** at the planet's `seaLevel
 
 **Gameplay impact:** Submerged cells are impassable to ground units. Shallow coastal cells are passable to amphibious units. Deep ocean is passable to naval/ship units only.
 
-### 2.7 Doodads (Surface Decorations)
+### 2.11 Doodads (Surface Decorations)
 
 Doodads are placed on the planet surface. Their orientation automatically aligns to the local surface normal (they "stand up" relative to the curved ground):
 
@@ -258,8 +381,9 @@ Doodads are placed on the planet surface. Their orientation automatically aligns
 Doodad {
     typeId: string               // Reference to doodad definition (e.g., "tree_temperate_01")
     planetId: int                // Which planet
-    latitude: float              // Spherical position
-    longitude: float
+    cell: CellAddress            // Nearest grid cell (for broad-phase queries, pathing)
+    offsetU: float               // Sub-cell offset within face UV (-0.5 .. +0.5)
+    offsetV: float               // Sub-cell offset within face UV (-0.5 .. +0.5)
     rotationYaw: float           // Rotation around local surface normal (degrees)
     scale: float                 // Uniform scale multiplier
     variation: int               // Visual variant index
@@ -269,9 +393,9 @@ Doodad {
 }
 ```
 
-**Orientation:** The doodad's "up" vector is the planet surface normal at its position. `rotationYaw` rotates around this up vector. The editor snaps doodads to the surface automatically.
+**Orientation:** The doodad's "up" vector is the planet surface normal at its position. `rotationYaw` rotates around this up vector. The editor snaps doodads to the surface automatically; sub-cell offsets let doodads escape the grid for natural clustering without breaking the `CellAddress` index.
 
-### 2.8 Star System & Interplanetary Travel
+### 2.12 Star System & Interplanetary Travel
 
 A map is a **star system** containing one or more planets connected by **space routes.** Units board transport ships to travel between planets.
 
@@ -293,14 +417,14 @@ SpaceRoute {
     toPlanet: int                   // Destination planet index
     travelTime: float               // Seconds for a ship to traverse this route
     bidirectional: bool             // Can travel both ways (usually true)
-    launchPoint: SphericalPos       // Position on source planet where ships launch
-    landingPoint: SphericalPos      // Position on destination planet where ships land
+    launchCell: CellAddress         // Grid cell on source planet where ships launch (typically a Spaceport)
+    landingCell: CellAddress        // Grid cell on destination planet where ships land
     hazardLevel: enum               // None, Asteroids, Nebula, EnemyPatrol
     capacity: int                   // Max ships in transit simultaneously (-1 = unlimited)
 }
 ```
 
-### 2.9 Transport Ship System
+### 2.13 Transport Ship System
 
 Transport ships are the bridge between planets. They are special units that carry other units through space:
 
@@ -333,7 +457,7 @@ Interplanetary Travel Flow:
 - Positioned at a SpaceRoute's `launchPoint` on the planet surface
 - Multiple spaceports can exist (one per route, or a central hub)
 
-### 2.10 System Map View
+### 2.14 System Map View
 
 The player can toggle between **Planet View** (zoomed into one planet, normal RTS gameplay) and **System Map View** (zoomed out to see all planets and routes):
 
@@ -362,7 +486,7 @@ UI elements:
 - Click route to see transit details
 ```
 
-### 2.11 Regions (Spherical)
+### 2.15 Regions (Spherical)
 
 Regions on a planet surface are defined by **spherical patches** — a center point plus angular radius, or a spherical polygon:
 
@@ -384,7 +508,7 @@ Region {
 
 Regions are **editor-only geometry** — they have no visual representation in-game but are essential for trigger scripting ("when unit enters region X on planet Y, do Y").
 
-### 2.12 Camera System (Planetary)
+### 2.16 Camera System (Planetary)
 
 The camera operates differently on a sphere than a flat map:
 
@@ -403,22 +527,44 @@ System Map Camera:
 - Zoom out from Planet View = transition to System Map
 ```
 
-### 2.13 Pathfinding on a Sphere
+### 2.17 Pathfinding on a Cube-Sphere
 
-Pathfinding uses **A\* on the icosphere cell graph** — each cell has ~6 neighbors (triangular adjacency). The heuristic uses **great-circle distance** (angular distance on the sphere) instead of Euclidean distance:
+Pathfinding uses **A\*** on the quadsphere cell graph. Each cell has 4 neighbors within its face, plus explicit wrap rules at face boundaries:
 
 ```
-Heuristic: h(a, b) = arccos(dot(normalize(a), normalize(b))) * radius
+Cell adjacency:
 
-Key differences from flat A*:
-├── No map edges — paths can wrap around the planet
-├── Distances measured along surface arcs, not straight lines
-├── Cliff level transitions block edges (same as flat)
-├── Water cells block ground units (same as flat)
-└── Building footprints block cells by angular area, not rectangular grid
+├── Interior cell (not on a face edge):
+│     4 neighbors on same face: (row±1, col), (row, col±1)
+│
+├── Edge cell (one edge is a face boundary):
+│     3 neighbors on same face + 1 neighbor on adjacent face
+│     (precomputed face-pair table maps (face, edge) → (face', row', col'))
+│
+└── Corner-adjacent cell (meets a singularity):
+      2 neighbors on same face + 2 neighbors on the 2 other faces sharing
+      the corner (3 cells meet instead of 4). These cells are flagged
+      `isCornerAdjacent = true` and are non-buildable.
 ```
 
-### 2.14 Terrain Data Format (Per-Planet)
+**Heuristic** — great-circle distance (angular distance along the sphere surface):
+
+```
+h(a, b) = arccos( dot( normalize(a_cart), normalize(b_cart) ) ) * radius
+```
+
+**Key differences from flat A\*:**
+- No map edges — paths wrap the planet via face-edge neighbor lookups
+- Distances measured along surface arcs, not Euclidean
+- Cliff-level transitions block edges unless a ramp cell bridges them (same as flat RTS)
+- Water cells block ground units (same as flat)
+- Building footprints occupy rectangular `(face, rowRange, colRange)` regions; footprints may span a face edge (adjacency table handles the bridge), but must not span a singularity corner
+
+**Multi-planet queries:** Interplanetary movement is not pathfinding — it's transport-ship routing on the `SpaceRoute` graph (see 2.12, 2.13). A unit only pathfinds while on one planet's surface; space travel is handled by the transport-ship state machine.
+
+### 2.18 Terrain Data Format (Per-Planet)
+
+Per-cell data is stored as parallel arrays per face (row-major, length N×N) rather than per-cell objects — far more compact for N=64+ and faster to load/bin-pack. Doodads and corner markers are stored as object lists.
 
 ```json
 {
@@ -426,7 +572,8 @@ Key differences from flat A*:
     "id": 0,
     "name": "Lordaeron Prime",
     "radius": 5000.0,
-    "subdivisionLevel": 5,
+    "gridResolution": 64,
+    "noiseSeed": 1234567890,
     "tileset": "temperate",
     "gravity": 1.0,
     "atmosphere": {
@@ -442,28 +589,38 @@ Key differences from flat A*:
     },
     "texturePalette": [
       { "id": 0, "name": "grass", "asset": "textures/terrain/grass_01.png" },
-      { "id": 1, "name": "dirt", "asset": "textures/terrain/dirt_01.png" },
+      { "id": 1, "name": "dirt",  "asset": "textures/terrain/dirt_01.png"  },
       { "id": 2, "name": "stone", "asset": "textures/terrain/stone_01.png" },
-      { "id": 3, "name": "road", "asset": "textures/terrain/road_01.png" }
+      { "id": 3, "name": "road",  "asset": "textures/terrain/road_01.png"  }
     ],
-    "cells": [
-      {
-        "index": 0,
-        "height": 10.5,
-        "cliffLevel": 0,
-        "baseTexture": 0,
-        "overlayTexture": -1,
-        "overlayBlend": 0.0,
-        "waterDepth": 0.0,
-        "passability": "walkable|buildable",
-        "biome": "temperate"
-      }
-    ],
+    "cornerMarkers": {
+      "north_pole":    { "asset": "doodads/ice_cap_01.glb",  "scale": 2.0, "rotationYaw":   0.0 },
+      "south_pole":    { "asset": "doodads/volcano_01.glb",  "scale": 2.0, "rotationYaw":   0.0 },
+      "px_pz_py":      { "asset": "doodads/monolith_01.glb", "scale": 1.5, "rotationYaw":  45.0 }
+    },
+    "faces": {
+      "+X": {
+        "height":   [/* 64×64 floats, row-major */],
+        "cliff":    [/* 64×64 ints              */],
+        "baseTex":  [/* 64×64 ints              */],
+        "overlayTex":    [/* 64×64 ints, -1 for none */],
+        "overlayBlend":  [/* 64×64 floats            */],
+        "waterDepth":    [/* 64×64 floats            */],
+        "passability":   [/* 64×64 bitflags          */],
+        "biome":         [/* 64×64 ints              */]
+      },
+      "-X": { "...": "same structure" },
+      "+Y": { "...": "same structure" },
+      "-Y": { "...": "same structure" },
+      "+Z": { "...": "same structure" },
+      "-Z": { "...": "same structure" }
+    },
     "doodads": [
       {
         "typeId": "tree_temperate_01",
-        "latitude": 23.5,
-        "longitude": -45.0,
+        "cell": { "face": "+X", "row": 12, "col": 37 },
+        "offsetU": 0.2,
+        "offsetV": -0.1,
         "rotationYaw": 120.0,
         "scale": 1.0,
         "variation": 0,
@@ -2070,7 +2227,7 @@ Runtime loading:
 1. Open .rtsmap archive
 2. Parse metadata.json for map info
 3. Load starsystem.json → build system map (planets, routes, star)
-4. For each planet: load planets/planet_N.json → build icosphere terrain mesh
+4. For each planet: load planets/planet_N.json → build cube-sphere terrain (6 face grids + LOD quadtree)
 5. Load entities.json → instantiate placed units/buildings per planet
 6. Load triggers.json → register event listeners
 7. Load player_setup.json → configure player slots + starting planets
@@ -2111,7 +2268,7 @@ The editor produces structured data. The LLM's job is to implement the C# engine
 Editor Output (data)         →    Engine System (code, LLM implements)
 ─────────────────────────         ─────────────────────────────────────
 starsystem.json              →    StarSystemLoader, SystemMapRenderer, RouteManager
-planets/planet_N.json        →    IcosphereGenerator, PlanetRenderer, SphericalCollision
+planets/planet_N.json        →    CubeSphereGridLoader, PlanetRenderer, QuadtreeLodSystem, TerrainNoise, SphericalCollision
 entities.json + object defs  →    EntityFactory, EntityManager (ECS)
 triggers.json                →    TriggerInterpreter, EventBus, ConditionEvaluator
 cutscenes.json               →    CutscenePlayer, TimelineExecutor
@@ -2151,14 +2308,17 @@ Suggested order for implementing engine systems:
 
 ```
 Phase 1: Planetary Foundation
-├── Icosphere generation (subdivided icosahedron mesh from radius + level)
-├── Planet terrain loading & rendering (per-cell textures, height displacement)
-├── Spherical coordinate system (lat/long ↔ Cartesian conversion)
+├── Cube-sphere grid (6 face heightmaps, (face, row, col) ↔ Cartesian projection)
+├── Per-face quadtree LOD system (screen-space error driven patch split/merge)
+├── Edge-aware terrain noise (flat + cliff layers, deterministic per-planet seed)
+├── Corner-singularity flagging (8 corners, non-buildable adjacent cells)
+├── Planet terrain loading & rendering (per-cell textures, height displacement, cliff geometry)
+├── Spherical coordinate display (lat/long readout derived from (face, row, col))
 ├── Planetary camera (orbit globe, pan along surface, zoom altitude)
 ├── Entity instantiation from definitions on planet surfaces
 ├── Auto-orient entities to surface normal
 ├── Selection & command input (click on sphere to select, right-click to move)
-└── Spherical A* pathfinding (great-circle heuristic on icosphere graph)
+└── Quadsphere A* pathfinding (4-neighbor within face + face-edge wrap, great-circle heuristic)
 
 Phase 2: Star System & Travel
 ├── Star system loader (multiple planets, routes, star)
