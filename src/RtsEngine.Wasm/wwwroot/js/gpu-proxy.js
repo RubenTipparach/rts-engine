@@ -1,24 +1,41 @@
 // WebGPU proxy — the Emscripten-equivalent translation layer for WebGPU.
 // Maps integer handles to WebGPU objects, forwards calls 1:1.
-// Infrastructure, not application code. Engine dev never touches this.
 
 (() => {
     let device = null;
     let context = null;
     let canvasFormat = null;
     let canvas = null;
+    let depthTexture = null;
+    let depthTextureSize = [0, 0];
 
-    // Handle tables (index 0 = null sentinel)
     const shaderModules = [null];
     const pipelines = [null];
     const buffers = [null];
     const bindGroups = [null];
-    const bindGroupLayouts = [null];
+    const textures = [null];
+    const textureViews = [null];
+    const samplers = [null];
 
     function register(table, obj) {
         const id = table.length;
         table.push(obj);
         return id;
+    }
+
+    function ensureDepthTexture() {
+        if (!canvas || !device) return null;
+        if (depthTexture && canvas.width === depthTextureSize[0] && canvas.height === depthTextureSize[1]) {
+            return depthTexture;
+        }
+        if (depthTexture) depthTexture.destroy();
+        depthTexture = device.createTexture({
+            size: [canvas.width, canvas.height],
+            format: 'depth24plus',
+            usage: GPUTextureUsage.RENDER_ATTACHMENT,
+        });
+        depthTextureSize = [canvas.width, canvas.height];
+        return depthTexture;
     }
 
     window.GPUProxy = {
@@ -41,9 +58,7 @@
             return true;
         },
 
-        getCanvasFormat() {
-            return canvasFormat;
-        },
+        getCanvasFormat() { return canvasFormat; },
 
         resizeCanvas() {
             if (!canvas || !context || !device) return;
@@ -54,13 +69,12 @@
             context.configure({ device, format: canvasFormat, alphaMode: 'premultiplied' });
         },
 
-        // ── Shader Modules ───────────────────────────────────────
+        // ── Shader / Buffer / Pipeline ──────────────────────────
+
         createShaderModule(wgslCode) {
-            const mod = device.createShaderModule({ code: wgslCode });
-            return register(shaderModules, mod);
+            return register(shaderModules, device.createShaderModule({ code: wgslCode }));
         },
 
-        // ── Buffers ──────────────────────────────────────────────
         createVertexBuffer(floatData) {
             const f32 = new Float32Array(floatData);
             const buf = device.createBuffer({
@@ -75,7 +89,6 @@
 
         createIndexBuffer(ushortData) {
             const u16 = new Uint16Array(ushortData);
-            // Pad to 4-byte alignment
             const padded = u16.byteLength % 4 === 0 ? u16.byteLength : u16.byteLength + 2;
             const buf = device.createBuffer({
                 size: padded,
@@ -88,31 +101,26 @@
         },
 
         createUniformBuffer(sizeBytes) {
-            const buf = device.createBuffer({
+            return register(buffers, device.createBuffer({
                 size: sizeBytes,
                 usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-            });
-            return register(buffers, buf);
+            }));
         },
 
         writeBuffer(bufferId, floatData) {
-            const f32 = new Float32Array(floatData);
-            device.queue.writeBuffer(buffers[bufferId], 0, f32);
+            device.queue.writeBuffer(buffers[bufferId], 0, new Float32Array(floatData));
         },
 
-        // ── Pipeline ─────────────────────────────────────────────
         createRenderPipeline(shaderModuleId, vertexBufferLayouts) {
             const pipeline = device.createRenderPipeline({
                 layout: 'auto',
                 vertex: {
                     module: shaderModules[shaderModuleId],
                     entryPoint: 'vs_main',
-                    buffers: vertexBufferLayouts.map(layout => ({
-                        arrayStride: layout.arrayStride,
-                        attributes: layout.attributes.map(attr => ({
-                            format: attr.format,
-                            offset: attr.offset,
-                            shaderLocation: attr.shaderLocation,
+                    buffers: vertexBufferLayouts.map(l => ({
+                        arrayStride: l.arrayStride,
+                        attributes: l.attributes.map(a => ({
+                            format: a.format, offset: a.offset, shaderLocation: a.shaderLocation,
                         })),
                     })),
                 },
@@ -121,52 +129,46 @@
                     entryPoint: 'fs_main',
                     targets: [{ format: canvasFormat }],
                 },
-                primitive: {
-                    topology: 'triangle-list',
-                    cullMode: 'back',
-                },
-                depthStencil: {
-                    format: 'depth24plus',
-                    depthWriteEnabled: true,
-                    depthCompare: 'less',
-                },
+                primitive: { topology: 'triangle-list', cullMode: 'back' },
+                depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' },
             });
             return register(pipelines, pipeline);
         },
 
-        // ── Bind Groups ──────────────────────────────────────────
         createBindGroup(pipelineId, groupIndex, entries) {
             const pipeline = pipelines[pipelineId];
             const bg = device.createBindGroup({
                 layout: pipeline.getBindGroupLayout(groupIndex),
-                entries: entries.map(e => ({
-                    binding: e.binding,
-                    resource: { buffer: buffers[e.bufferId] },
-                })),
+                entries: entries.map(e => {
+                    if (e.bufferId !== undefined && e.bufferId !== null) {
+                        return { binding: e.binding, resource: { buffer: buffers[e.bufferId] } };
+                    }
+                    if (e.textureViewId !== undefined && e.textureViewId !== null) {
+                        return { binding: e.binding, resource: textureViews[e.textureViewId] };
+                    }
+                    if (e.samplerId !== undefined && e.samplerId !== null) {
+                        return { binding: e.binding, resource: samplers[e.samplerId] };
+                    }
+                    throw new Error('bind group entry missing bufferId/textureViewId/samplerId');
+                }),
             });
             return register(bindGroups, bg);
         },
 
-        // ── Render ───────────────────────────────────────────────
         render(pipelineId, vertexBufferId, indexBufferId, bindGroupId, indexCount) {
             if (!device || !context) return;
-
-            const depthTexture = device.createTexture({
-                size: [canvas.width, canvas.height],
-                format: 'depth24plus',
-                usage: GPUTextureUsage.RENDER_ATTACHMENT,
-            });
+            const depthTex = ensureDepthTexture();
 
             const encoder = device.createCommandEncoder();
             const pass = encoder.beginRenderPass({
                 colorAttachments: [{
                     view: context.getCurrentTexture().createView(),
-                    clearValue: { r: 0.05, g: 0.05, b: 0.12, a: 1.0 },
+                    clearValue: { r: 0.02, g: 0.02, b: 0.06, a: 1.0 },
                     loadOp: 'clear',
                     storeOp: 'store',
                 }],
                 depthStencilAttachment: {
-                    view: depthTexture.createView(),
+                    view: depthTex.createView(),
                     depthClearValue: 1.0,
                     depthLoadOp: 'clear',
                     depthStoreOp: 'store',
@@ -181,12 +183,45 @@
             pass.end();
 
             device.queue.submit([encoder.finish()]);
-            depthTexture.destroy();
         },
 
-        // ── Cleanup ──────────────────────────────────────────────
         destroyBuffer(id) {
             if (buffers[id]) { buffers[id].destroy(); buffers[id] = null; }
+        },
+
+        // ── Textures / Samplers ─────────────────────────────────
+
+        async createTextureFromUrl(url) {
+            const resp = await fetch(url);
+            const blob = await resp.blob();
+            const bitmap = await createImageBitmap(blob);
+            const tex = device.createTexture({
+                size: [bitmap.width, bitmap.height, 1],
+                format: 'rgba8unorm',
+                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+            });
+            device.queue.copyExternalImageToTexture(
+                { source: bitmap },
+                { texture: tex },
+                [bitmap.width, bitmap.height, 1]
+            );
+            const view = tex.createView();
+            textures.push(tex);
+            return register(textureViews, view);
+        },
+
+        createSampler(filter, wrap) {
+            const filt = filter === 'nearest' ? 'nearest' : 'linear';
+            const addr = wrap === 'clamp' ? 'clamp-to-edge' : 'repeat';
+            const sampler = device.createSampler({
+                magFilter: filt,
+                minFilter: filt,
+                mipmapFilter: filt,
+                addressModeU: addr,
+                addressModeV: addr,
+                addressModeW: addr,
+            });
+            return register(samplers, sampler);
         },
     };
 })();

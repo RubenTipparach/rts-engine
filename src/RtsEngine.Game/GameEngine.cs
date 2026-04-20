@@ -23,6 +23,7 @@ public class GameEngine
 
     private bool _running;
     private bool _meshDirty;
+    private DateTime _startTime = DateTime.UtcNow;
 
     public event Action? OnFrameRendered;
 
@@ -79,6 +80,13 @@ public class GameEngine
         {
             _meshDirty = false;
             await _planet.RebuildMesh();
+        }
+
+        if (_planet != null)
+        {
+            var cam = CameraPosition();
+            _planet.SetCameraPosition(cam.X, cam.Y, cam.Z);
+            _planet.SetTime((float)(DateTime.UtcNow - _startTime).TotalSeconds);
         }
 
         _renderer.Draw(BuildMvp(_app.AspectRatio));

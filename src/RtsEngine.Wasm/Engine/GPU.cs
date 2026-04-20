@@ -41,4 +41,10 @@ public sealed class WebGPU : IGPU
 
     public void DestroyBuffer(int bufferId)
         => _js.InvokeVoidAsync("GPUProxy.destroyBuffer", bufferId);
+
+    public async Task<int> CreateTextureFromUrl(string url)
+        => await _js.InvokeAsync<int>("GPUProxy.createTextureFromUrl", url);
+
+    public async Task<int> CreateSampler(string filter = "linear", string wrap = "repeat")
+        => await _js.InvokeAsync<int>("GPUProxy.createSampler", filter, wrap);
 }

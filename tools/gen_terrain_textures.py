@@ -219,6 +219,16 @@ def gen_snow():
     save_rgb("snow.png", rgb)
 
 
+def gen_atlas():
+    """Composite the 5 terrain tiles into a 1280x256 horizontal atlas."""
+    atlas = Image.new("RGB", (SIZE * 5, SIZE))
+    for i, name in enumerate(["water", "sand", "grass", "rock", "snow"]):
+        tile = Image.open(OUT_DIR / f"{name}.png")
+        atlas.paste(tile, (i * SIZE, 0))
+    atlas.save(OUT_DIR / "terrain_atlas.png")
+    print(f"  wrote terrain_atlas.png")
+
+
 if __name__ == "__main__":
     print(f"Generating terrain textures → {OUT_DIR}")
     gen_water()
@@ -226,4 +236,5 @@ if __name__ == "__main__":
     gen_grass()
     gen_rock()
     gen_snow()
+    gen_atlas()
     print("done.")

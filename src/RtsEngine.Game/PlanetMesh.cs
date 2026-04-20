@@ -138,25 +138,33 @@ public sealed class PlanetMesh
     }
 
     // ── Mesh generation ─────────────────────────────────────────────
+    //
+    // Vertex layout: pos(3f) + normal(3f) + level(1f) = 7 floats, stride 28 bytes.
+    // - pos: world-space position (planet at origin, no model transform)
+    // - normal: outward surface normal (for Lambert lighting, triplanar weighting)
+    // - level: terrain tier 0..4 (selects atlas tile in fragment shader)
+
+    public const int VertexFloats = 7;
+    public const int VertexStrideBytes = 28;
 
     public (float[] vertices, ushort[] indices) BuildMesh()
     {
-        var verts = new List<float>(CellCount * 8 * 6);
+        var verts = new List<float>(CellCount * 8 * VertexFloats);
         var idx = new List<ushort>(CellCount * 24 * 3);
 
         for (int cell = 0; cell < CellCount; cell++)
         {
             byte level = _levels[cell];
             float h = Radius + level * StepHeight;
-            Vector3 color = LevelColors[level];
+            Vector3 cellNormal = _centers[cell]; // outward direction for top face
 
             Vector3 center = _centers[cell] * h;
-            ushort ci = (ushort)(verts.Count / 6);
-            EmitVert(verts, center, color);
+            ushort ci = (ushort)(verts.Count / VertexFloats);
+            EmitVert(verts, center, cellNormal, level);
 
             int n = _polyVerts[cell].Length;
             for (int i = 0; i < n; i++)
-                EmitVert(verts, _polyVerts[cell][i] * h, color);
+                EmitVert(verts, _polyVerts[cell][i] * h, cellNormal, level);
 
             for (int i = 0; i < n; i++)
             {
@@ -182,13 +190,19 @@ public sealed class PlanetMesh
                 Vector3 botA = _polyVerts[cell][pA] * nh;
                 Vector3 botB = _polyVerts[cell][pB] * nh;
 
-                Vector3 cliffColor = color * 0.6f;
+                // Cliff normal: horizontal, pointing outward from cell toward neighbor
+                Vector3 cliffMid = Vector3.Normalize((topA + topB) * 0.5f);
+                Vector3 cliffNormal = Vector3.Normalize(cliffMid - cellNormal * Vector3.Dot(cliffMid, cellNormal));
+                if (cliffNormal.LengthSquared() < 1e-6f) cliffNormal = cellNormal;
 
-                ushort b = (ushort)(verts.Count / 6);
-                EmitVert(verts, topA, cliffColor);
-                EmitVert(verts, topB, cliffColor);
-                EmitVert(verts, botB, cliffColor);
-                EmitVert(verts, botA, cliffColor);
+                // Cliff uses rock texture (level 3) — gives cliff-face look
+                byte cliffLevel = 3;
+
+                ushort b = (ushort)(verts.Count / VertexFloats);
+                EmitVert(verts, topA, cliffNormal, cliffLevel);
+                EmitVert(verts, topB, cliffNormal, cliffLevel);
+                EmitVert(verts, botB, cliffNormal, cliffLevel);
+                EmitVert(verts, botA, cliffNormal, cliffLevel);
 
                 // Both windings for visibility from any angle
                 idx.Add(b); idx.Add((ushort)(b + 2)); idx.Add((ushort)(b + 1));
@@ -201,10 +215,11 @@ public sealed class PlanetMesh
         return (verts.ToArray(), idx.ToArray());
     }
 
-    private static void EmitVert(List<float> verts, Vector3 pos, Vector3 color)
+    private static void EmitVert(List<float> verts, Vector3 pos, Vector3 normal, byte level)
     {
         verts.Add(pos.X); verts.Add(pos.Y); verts.Add(pos.Z);
-        verts.Add(color.X); verts.Add(color.Y); verts.Add(color.Z);
+        verts.Add(normal.X); verts.Add(normal.Y); verts.Add(normal.Z);
+        verts.Add(level);
     }
 
     // ── Icosphere generation ────────────────────────────────────────
