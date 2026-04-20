@@ -9,6 +9,7 @@ public interface IGPU
     Task<int> CreateShaderModule(string shaderCode);
     Task<int> CreateVertexBuffer(float[] data);
     Task<int> CreateIndexBuffer(ushort[] data);
+    Task<int> CreateIndexBuffer32(uint[] data);
     Task<int> CreateUniformBuffer(int sizeBytes);
     void WriteBuffer(int bufferId, float[] data);
     Task<int> CreateRenderPipeline(int shaderModuleId, object[] vertexBufferLayouts);

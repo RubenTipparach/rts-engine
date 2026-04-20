@@ -16,6 +16,7 @@
     const textures = [null];
     const textureViews = [null];
     const samplers = [null];
+    const indexFormats = new Map(); // bufferId → 'uint16' | 'uint32'
 
     function register(table, obj) {
         const id = table.length;
@@ -122,7 +123,23 @@
             });
             new Uint16Array(buf.getMappedRange(0, u16.byteLength)).set(u16);
             buf.unmap();
-            return register(buffers, buf);
+            const id = register(buffers, buf);
+            indexFormats.set(id, 'uint16');
+            return id;
+        },
+
+        createIndexBuffer32(uintData) {
+            const u32 = new Uint32Array(uintData);
+            const buf = device.createBuffer({
+                size: u32.byteLength,
+                usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+                mappedAtCreation: true,
+            });
+            new Uint32Array(buf.getMappedRange()).set(u32);
+            buf.unmap();
+            const id = register(buffers, buf);
+            indexFormats.set(id, 'uint32');
+            return id;
         },
 
         createUniformBuffer(sizeBytes) {
@@ -202,7 +219,7 @@
 
             pass.setPipeline(pipelines[pipelineId]);
             pass.setVertexBuffer(0, buffers[vertexBufferId]);
-            pass.setIndexBuffer(buffers[indexBufferId], 'uint16');
+            pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
             pass.setBindGroup(0, bindGroups[bindGroupId]);
             pass.drawIndexed(indexCount);
             pass.end();
@@ -228,7 +245,7 @@
             });
             pass.setPipeline(pipelines[pipelineId]);
             pass.setVertexBuffer(0, buffers[vertexBufferId]);
-            pass.setIndexBuffer(buffers[indexBufferId], 'uint16');
+            pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
             pass.setBindGroup(0, bindGroups[bindGroupId]);
             pass.drawIndexed(indexCount);
             pass.end();

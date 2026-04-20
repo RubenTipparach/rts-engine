@@ -24,6 +24,9 @@ public sealed class WebGPU : IGPU
     public async Task<int> CreateIndexBuffer(ushort[] data)
         => await _js.InvokeAsync<int>("GPUProxy.createIndexBuffer", data);
 
+    public async Task<int> CreateIndexBuffer32(uint[] data)
+        => await _js.InvokeAsync<int>("GPUProxy.createIndexBuffer32", data);
+
     public async Task<int> CreateUniformBuffer(int sizeBytes)
         => await _js.InvokeAsync<int>("GPUProxy.createUniformBuffer", sizeBytes);
 

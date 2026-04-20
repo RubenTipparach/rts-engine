@@ -28,7 +28,7 @@ public static class Program
             var gl = window.CreateOpenGL();
 
             gpu = new OpenGLGPU(gl);
-            var mesh = new PlanetMesh(subdivisions: 3, radius: 1.0f, stepHeight: 0.04f);
+            var mesh = new PlanetMesh(subdivisions: 4, radius: 1.0f, stepHeight: 0.04f);
             mesh.GenerateFromNoise(seed: 42);
             renderer = new PlanetRenderer(gpu, mesh);
             await renderer.Setup(OpenGLGPU.TerrainShaderGLSL);
@@ -56,6 +56,7 @@ internal sealed class OpenGLGPU : IGPU, IDisposable
     // Handle tables (mirroring the JS proxy pattern)
     private readonly List<uint> _shaders = new() { 0 };
     private readonly List<uint> _buffers = new() { 0 };
+    private readonly List<bool> _indexIs32 = new() { false };
     private readonly List<uint> _programs = new() { 0 };
     private readonly List<int> _uniforms = new() { 0 };
     private readonly List<uint> _vaos = new() { 0 };
@@ -164,6 +165,19 @@ void main() {
             _gl.BufferData(BufferTargetARB.ElementArrayBuffer, (nuint)(data.Length * sizeof(ushort)), p, BufferUsageARB.StaticDraw);
         var id = _buffers.Count;
         _buffers.Add(buf);
+        _indexIs32.Add(false);
+        return Task.FromResult(id);
+    }
+
+    public unsafe Task<int> CreateIndexBuffer32(uint[] data)
+    {
+        var buf = _gl.GenBuffer();
+        _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, buf);
+        fixed (uint* p = data)
+            _gl.BufferData(BufferTargetARB.ElementArrayBuffer, (nuint)(data.Length * sizeof(uint)), p, BufferUsageARB.StaticDraw);
+        var id = _buffers.Count;
+        _buffers.Add(buf);
+        _indexIs32.Add(true);
         return Task.FromResult(id);
     }
 
@@ -248,7 +262,9 @@ void main() {
             if (locCam >= 0) _gl.Uniform3(locCam, _pendingMvp[20], _pendingMvp[21], _pendingMvp[22]);
         }
 
-        _gl.DrawElements(PrimitiveType.Triangles, (uint)indexCount, DrawElementsType.UnsignedShort, null);
+        var elemType = (indexBufferId < _indexIs32.Count && _indexIs32[indexBufferId])
+            ? DrawElementsType.UnsignedInt : DrawElementsType.UnsignedShort;
+        _gl.DrawElements(PrimitiveType.Triangles, (uint)indexCount, elemType, null);
     }
 
     public void DestroyBuffer(int bufferId)

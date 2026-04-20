@@ -30,7 +30,7 @@ public sealed class PlanetMesh
     private readonly Vector3[][] _polyVerts; // ordered dual polygon boundary on unit sphere
     private readonly byte[] _levels;
 
-    public PlanetMesh(int subdivisions = 3, float radius = 1.0f, float stepHeight = 0.04f)
+    public PlanetMesh(int subdivisions = 4, float radius = 1.0f, float stepHeight = 0.04f)
     {
         Radius = radius;
         StepHeight = stepHeight;
@@ -147,19 +147,20 @@ public sealed class PlanetMesh
     public const int VertexFloats = 7;
     public const int VertexStrideBytes = 28;
 
-    public (float[] vertices, ushort[] indices) BuildMesh()
+    public (float[] vertices, uint[] indices) BuildMesh()
     {
-        var verts = new List<float>(CellCount * 8 * VertexFloats);
-        var idx = new List<ushort>(CellCount * 24 * 3);
+        // Pre-allocate: max ~31 verts/cell × 7 floats, ~90 indices/cell
+        var verts = new List<float>(CellCount * 31 * VertexFloats);
+        var idx = new List<uint>(CellCount * 90);
 
         for (int cell = 0; cell < CellCount; cell++)
         {
             byte level = _levels[cell];
             float h = Radius + level * StepHeight;
-            Vector3 cellNormal = _centers[cell]; // outward direction for top face
+            Vector3 cellNormal = _centers[cell];
 
             Vector3 center = _centers[cell] * h;
-            ushort ci = (ushort)(verts.Count / VertexFloats);
+            uint ci = (uint)(verts.Count / VertexFloats);
             EmitVert(verts, center, cellNormal, level);
 
             int n = _polyVerts[cell].Length;
@@ -170,11 +171,10 @@ public sealed class PlanetMesh
             {
                 int j = (i + 1) % n;
                 idx.Add(ci);
-                idx.Add((ushort)(ci + 1 + i));
-                idx.Add((ushort)(ci + 1 + j));
+                idx.Add(ci + 1 + (uint)i);
+                idx.Add(ci + 1 + (uint)j);
             }
 
-            // Cliff sides toward lower neighbors
             var nbrs = _neighbors[cell];
             for (int k = 0; k < nbrs.Length; k++)
             {
@@ -190,25 +190,22 @@ public sealed class PlanetMesh
                 Vector3 botA = _polyVerts[cell][pA] * nh;
                 Vector3 botB = _polyVerts[cell][pB] * nh;
 
-                // Cliff normal: horizontal, pointing outward from cell toward neighbor
                 Vector3 cliffMid = Vector3.Normalize((topA + topB) * 0.5f);
                 Vector3 cliffNormal = Vector3.Normalize(cliffMid - cellNormal * Vector3.Dot(cliffMid, cellNormal));
                 if (cliffNormal.LengthSquared() < 1e-6f) cliffNormal = cellNormal;
 
-                // Cliff uses rock texture (level 3) — gives cliff-face look
                 byte cliffLevel = 3;
 
-                ushort b = (ushort)(verts.Count / VertexFloats);
+                uint b = (uint)(verts.Count / VertexFloats);
                 EmitVert(verts, topA, cliffNormal, cliffLevel);
                 EmitVert(verts, topB, cliffNormal, cliffLevel);
                 EmitVert(verts, botB, cliffNormal, cliffLevel);
                 EmitVert(verts, botA, cliffNormal, cliffLevel);
 
-                // Both windings for visibility from any angle
-                idx.Add(b); idx.Add((ushort)(b + 2)); idx.Add((ushort)(b + 1));
-                idx.Add(b); idx.Add((ushort)(b + 3)); idx.Add((ushort)(b + 2));
-                idx.Add(b); idx.Add((ushort)(b + 1)); idx.Add((ushort)(b + 2));
-                idx.Add(b); idx.Add((ushort)(b + 2)); idx.Add((ushort)(b + 3));
+                idx.Add(b); idx.Add(b + 2); idx.Add(b + 1);
+                idx.Add(b); idx.Add(b + 3); idx.Add(b + 2);
+                idx.Add(b); idx.Add(b + 1); idx.Add(b + 2);
+                idx.Add(b); idx.Add(b + 2); idx.Add(b + 3);
             }
         }
 

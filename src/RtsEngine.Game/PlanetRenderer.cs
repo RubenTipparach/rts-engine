@@ -60,7 +60,7 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
 
         var (tv, ti) = Mesh.BuildMesh();
         _tVbo = await _gpu.CreateVertexBuffer(tv);
-        _tIbo = await _gpu.CreateIndexBuffer(ti);
+        _tIbo = await _gpu.CreateIndexBuffer32(ti);
         _tIndexCount = ti.Length;
 
         _tPipeline = await _gpu.CreateRenderPipeline(tShader, new object[]
