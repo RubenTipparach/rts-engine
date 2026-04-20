@@ -283,7 +283,9 @@
                 const tex = device.createTexture({
                     size: [bitmap.width, bitmap.height, 1],
                     format: 'rgba8unorm',
-                    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+                    // RENDER_ATTACHMENT is required by Dawn's copyExternalImageToTexture
+                    // validator (it's how the implementation actually writes the pixels).
+                    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
                 });
                 device.queue.copyExternalImageToTexture(
                     { source: bitmap },
