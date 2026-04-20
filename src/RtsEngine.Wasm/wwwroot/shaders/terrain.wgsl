@@ -60,10 +60,25 @@ fn fbm2(p: vec2f) -> f32 {
 
 // ── Atlas sampling ─────────────────────────────────────────────────
 
+// ── Level fallback colors (used when texture returns black) ───────
+
+fn levelColor(level: f32) -> vec3f {
+    let lvl = i32(level + 0.5);
+    if lvl <= 0 { return vec3f(0.15, 0.35, 0.75); }  // water
+    if lvl == 1 { return vec3f(0.90, 0.80, 0.55); }  // sand
+    if lvl == 2 { return vec3f(0.30, 0.65, 0.25); }  // grass
+    if lvl == 3 { return vec3f(0.55, 0.55, 0.55); }  // rock
+    return vec3f(0.95, 0.97, 1.00);                    // snow
+}
+
 fn sampleTile(uv: vec2f, level: f32) -> vec3f {
     let tileW = 1.0 / 5.0;
     let au = level * tileW + fract(uv.x) * tileW;
-    return textureSample(terrainAtlas, terrainSampler, vec2f(au, fract(uv.y))).rgb;
+    let tex = textureSample(terrainAtlas, terrainSampler, vec2f(au, fract(uv.y))).rgb;
+    // If texture returned near-black (failed to load), use fallback color
+    let fb = levelColor(level);
+    let texBrightness = dot(tex, vec3f(1.0));
+    return select(tex, fb, texBrightness < 0.01);
 }
 
 fn triplanarTile(wp: vec3f, N: vec3f, level: f32) -> vec3f {

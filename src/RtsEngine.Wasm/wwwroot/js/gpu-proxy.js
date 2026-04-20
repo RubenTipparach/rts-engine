@@ -273,10 +273,13 @@
 
         async createTextureFromUrl(url) {
             try {
+                console.log(`[GPU] Loading texture: ${url}`);
                 const resp = await fetch(url);
-                if (!resp.ok) throw new Error(`fetch ${url}: ${resp.status}`);
+                if (!resp.ok) throw new Error(`fetch ${url}: HTTP ${resp.status}`);
                 const blob = await resp.blob();
+                console.log(`[GPU] Fetched ${url}: ${blob.size} bytes, type=${blob.type}`);
                 const bitmap = await createImageBitmap(blob);
+                console.log(`[GPU] Bitmap: ${bitmap.width}×${bitmap.height}`);
                 const tex = device.createTexture({
                     size: [bitmap.width, bitmap.height, 1],
                     format: 'rgba8unorm',
@@ -287,12 +290,28 @@
                     { texture: tex },
                     [bitmap.width, bitmap.height, 1]
                 );
+                bitmap.close();
                 const view = tex.createView();
                 textures.push(tex);
-                return register(textureViews, view);
+                const id = register(textureViews, view);
+                console.log(`[GPU] Texture loaded OK, id=${id}`);
+                return id;
             } catch (e) {
-                console.error(`createTextureFromUrl(${url}) failed:`, e);
-                throw e;
+                console.error(`[GPU] createTextureFromUrl(${url}) FAILED:`, e);
+                // Return a 1x1 white fallback texture so rendering doesn't break
+                const fallback = device.createTexture({
+                    size: [1, 1, 1],
+                    format: 'rgba8unorm',
+                    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+                });
+                device.queue.writeTexture(
+                    { texture: fallback },
+                    new Uint8Array([255, 255, 255, 255]),
+                    { bytesPerRow: 4 },
+                    [1, 1, 1]
+                );
+                textures.push(fallback);
+                return register(textureViews, fallback.createView());
             }
         },
 
