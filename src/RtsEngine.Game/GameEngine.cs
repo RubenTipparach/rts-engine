@@ -60,9 +60,9 @@ public class GameEngine
 
         int cell = hit.Value;
         if (button == 0)
-            _planet.Mesh.CycleLevel(cell, 1);
+            _planet.Mesh.ChangeLevel(cell, +1); // raise, clamped
         else if (button == 2)
-            _planet.Mesh.CycleLevel(cell, -1);
+            _planet.Mesh.ChangeLevel(cell, -1); // lower, clamped
         _meshDirty = true;
     }
 

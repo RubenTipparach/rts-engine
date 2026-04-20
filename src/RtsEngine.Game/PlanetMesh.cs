@@ -9,8 +9,8 @@ namespace RtsEngine.Game;
 /// </summary>
 public sealed class PlanetMesh
 {
-    public const int LevelCount = 4;
-    public const byte MaxLevel = 3;
+    public const int LevelCount = 5;
+    public const byte MaxLevel = 4;
 
     public static readonly Vector3[] LevelColors =
     {
@@ -18,6 +18,7 @@ public sealed class PlanetMesh
         new(0.90f, 0.80f, 0.55f), // 1 sand
         new(0.30f, 0.65f, 0.25f), // 2 grass
         new(0.55f, 0.55f, 0.55f), // 3 rock
+        new(0.95f, 0.97f, 1.00f), // 4 snow
     };
 
     public float Radius { get; }
@@ -92,10 +93,13 @@ public sealed class PlanetMesh
         _levels[cell] = level;
     }
 
-    public void CycleLevel(int cell, int delta)
+    /// <summary>
+    /// Change a cell's level by delta, clamped to [0, MaxLevel].
+    /// Raising a max-level cell or lowering a level-0 cell is a no-op.
+    /// </summary>
+    public void ChangeLevel(int cell, int delta)
     {
-        int cur = _levels[cell];
-        int next = ((cur + delta) % LevelCount + LevelCount) % LevelCount;
+        int next = Math.Clamp(_levels[cell] + delta, 0, MaxLevel);
         _levels[cell] = (byte)next;
     }
 
@@ -126,9 +130,10 @@ public sealed class PlanetMesh
                 p.X * frequency, p.Y * frequency, p.Z * frequency,
                 4, 0.5f, seed);
             float t = (n + 1f) * 0.5f;
-            _levels[i] = t < 0.35f ? (byte)0 :
-                         t < 0.50f ? (byte)1 :
-                         t < 0.72f ? (byte)2 : (byte)3;
+            _levels[i] = t < 0.30f ? (byte)0 :
+                         t < 0.45f ? (byte)1 :
+                         t < 0.65f ? (byte)2 :
+                         t < 0.82f ? (byte)3 : (byte)4;
         }
     }
 
