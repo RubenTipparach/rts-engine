@@ -22,4 +22,7 @@ public interface IRenderBackend : IDisposable
 
     /// <summary>Fired on scroll wheel. Args: (deltaY). Positive = scroll up / zoom in.</summary>
     event Action<float>? Scroll;
+
+    /// <summary>Fired on pointer move (always, not just while dragging). Args: (canvasX, canvasY) in device pixels.</summary>
+    event Action<float, float>? PointerMove;
 }

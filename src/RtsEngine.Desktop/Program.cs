@@ -334,6 +334,7 @@ internal sealed class DesktopAppBackend : IRenderBackend
     public event Action? PointerUp;
     public event Action<float, float, int>? PointerClick;
     public event Action<float>? Scroll;
+    public event Action<float, float>? PointerMove;
 
     private bool _dragging;
     private Vector2 _lastMouse;

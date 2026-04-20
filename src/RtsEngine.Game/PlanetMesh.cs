@@ -105,6 +105,8 @@ public sealed class PlanetMesh
 
     // ── Picking ─────────────────────────────────────────────────────
 
+    public Vector3 GetCellCenter(int cell) => _centers[cell];
+
     public int? DirectionToCell(Vector3 dir)
     {
         if (dir.LengthSquared() < 1e-12f) return null;
@@ -149,30 +151,26 @@ public sealed class PlanetMesh
 
     public (float[] vertices, uint[] indices) BuildMesh()
     {
-        // Pre-allocate: max ~31 verts/cell × 7 floats, ~90 indices/cell
-        var verts = new List<float>(CellCount * 31 * VertexFloats);
-        var idx = new List<uint>(CellCount * 90);
+        var verts = new List<float>(CellCount * 40 * VertexFloats);
+        var idx = new List<uint>(CellCount * 120);
 
         for (int cell = 0; cell < CellCount; cell++)
         {
             byte level = _levels[cell];
             float h = Radius + level * StepHeight;
             Vector3 cellNormal = _centers[cell];
-
-            Vector3 center = _centers[cell] * h;
-            uint ci = (uint)(verts.Count / VertexFloats);
-            EmitVert(verts, center, cellNormal, level);
-
             int n = _polyVerts[cell].Length;
-            for (int i = 0; i < n; i++)
-                EmitVert(verts, _polyVerts[cell][i] * h, cellNormal, level);
 
-            for (int i = 0; i < n; i++)
+            // Water cells: emit sand seabed below, then water surface on top
+            if (level == 0)
             {
-                int j = (i + 1) % n;
-                idx.Add(ci);
-                idx.Add(ci + 1 + (uint)i);
-                idx.Add(ci + 1 + (uint)j);
+                float sandH = Radius - StepHeight;
+                EmitCellFan(verts, idx, cell, sandH, cellNormal, 1); // sand floor
+                EmitCellFan(verts, idx, cell, h, cellNormal, 0);     // water surface
+            }
+            else
+            {
+                EmitCellFan(verts, idx, cell, h, cellNormal, level);
             }
 
             var nbrs = _neighbors[cell];
@@ -210,6 +208,22 @@ public sealed class PlanetMesh
         }
 
         return (verts.ToArray(), idx.ToArray());
+    }
+
+    private void EmitCellFan(List<float> verts, List<uint> idx, int cell, float h, Vector3 normal, byte level)
+    {
+        int n = _polyVerts[cell].Length;
+        uint ci = (uint)(verts.Count / VertexFloats);
+        EmitVert(verts, _centers[cell] * h, normal, level);
+        for (int i = 0; i < n; i++)
+            EmitVert(verts, _polyVerts[cell][i] * h, normal, level);
+        for (int i = 0; i < n; i++)
+        {
+            int j = (i + 1) % n;
+            idx.Add(ci);
+            idx.Add(ci + 1 + (uint)i);
+            idx.Add(ci + 1 + (uint)j);
+        }
     }
 
     private static void EmitVert(List<float> verts, Vector3 pos, Vector3 normal, byte level)

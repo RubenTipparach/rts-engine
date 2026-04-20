@@ -5,9 +5,9 @@ namespace RtsEngine.Game;
 
 public sealed class PlanetRenderer : IRenderer, IDisposable
 {
-    // Terrain uniform: mat4 mvp (64) + vec4 sunDir (16) + vec4 camPos (16) + f32 time + 12 pad = 112
-    public const int TerrainUniformSize = 112;
-    private const int TerrainUniFloats = 28;
+    // Terrain uniform: mvp(64) + sunDir(16) + camPos(16) + time+pad(16) + highlightDir(16) = 128
+    public const int TerrainUniformSize = 128;
+    private const int TerrainUniFloats = 32;
 
     // Atmosphere uniform: mat4 mvp (64) + vec4 sunDir (16) + vec4 camPos (16) + vec4 params (16) = 112
     public const int AtmoUniformSize = 112;
@@ -45,6 +45,12 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
     {
         _tUni[20] = x; _tUni[21] = y; _tUni[22] = z;
         _aUni[20] = x; _aUni[21] = y; _aUni[22] = z;
+    }
+
+    public void SetHighlight(float dx, float dy, float dz)
+    {
+        _tUni[28] = dx; _tUni[29] = dy; _tUni[30] = dz;
+        _tUni[31] = (dx * dx + dy * dy + dz * dz) > 0.001f ? 1.0f : 0.0f;
     }
 
     // ── Setup ───────────────────────────────────────────────────────
@@ -92,8 +98,8 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         _aUbo = await _gpu.CreateUniformBuffer(AtmoUniformSize);
 
         // Atmosphere params: planetRadius, atmosphereRadius, sunIntensity
-        float pR = Mesh.Radius + PlanetMesh.MaxLevel * Mesh.StepHeight;
-        float aR = pR * 1.25f;
+        float pR = Mesh.Radius * 0.92f; // inner radius below ground so glow starts at surface
+        float aR = Mesh.Radius * 1.25f;
         _aUni[24] = pR;   // params.x
         _aUni[25] = aR;   // params.y
         _aUni[26] = 15.0f; // params.z (sunIntensity)

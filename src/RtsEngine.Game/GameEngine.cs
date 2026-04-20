@@ -25,6 +25,10 @@ public class GameEngine
     private bool _meshDirty;
     private DateTime _startTime = DateTime.UtcNow;
 
+    private int _hoveredCell = -1;
+    private float _lastMvpAspect;
+    private float[]? _lastMvp;
+
     public event Action? OnFrameRendered;
 
     public GameEngine(IRenderBackend app, IRenderer renderer)
@@ -51,6 +55,7 @@ public class GameEngine
         };
 
         _app.PointerClick += OnClick;
+        _app.PointerMove += OnMove;
     }
 
     private void OnClick(float cx, float cy, int button)
@@ -59,12 +64,17 @@ public class GameEngine
         var hit = RayPick(cx, cy);
         if (hit == null) return;
 
-        int cell = hit.Value;
         if (button == 0)
-            _planet.Mesh.ChangeLevel(cell, +1); // raise, clamped
+            _planet.Mesh.ChangeLevel(hit.Value, +1);
         else if (button == 2)
-            _planet.Mesh.ChangeLevel(cell, -1); // lower, clamped
+            _planet.Mesh.ChangeLevel(hit.Value, -1);
         _meshDirty = true;
+    }
+
+    private void OnMove(float cx, float cy)
+    {
+        if (_planet == null) return;
+        _hoveredCell = RayPick(cx, cy) ?? -1;
     }
 
     public void Run()
@@ -87,9 +97,20 @@ public class GameEngine
             var cam = CameraPosition();
             _planet.SetCameraPosition(cam.X, cam.Y, cam.Z);
             _planet.SetTime((float)(DateTime.UtcNow - _startTime).TotalSeconds);
+
+            if (_hoveredCell >= 0)
+            {
+                var dir = _planet.Mesh.GetCellCenter(_hoveredCell);
+                _planet.SetHighlight(dir.X, dir.Y, dir.Z);
+            }
+            else
+            {
+                _planet.SetHighlight(0, 0, 0);
+            }
         }
 
-        _renderer.Draw(BuildMvp(_app.AspectRatio));
+        _lastMvp = BuildMvp(_app.AspectRatio);
+        _renderer.Draw(_lastMvp);
         OnFrameRendered?.Invoke();
     }
 
@@ -116,7 +137,7 @@ public class GameEngine
         return MatrixHelper.ToRawFloats(mvp);
     }
 
-    // ── Ray picking (geometric — no matrix inversion needed) ────────
+    // ── Ray picking — uses actual MVP matrix for exact match ────────
 
     private int? RayPick(float canvasX, float canvasY)
     {
@@ -127,22 +148,33 @@ public class GameEngine
         float ndcX = 2f * canvasX / w - 1f;
         float ndcY = 1f - 2f * canvasY / h;
 
-        var camPos = CameraPosition();
-        Vector3 fwd = Vector3.Normalize(-camPos);
-        Vector3 right = Vector3.Normalize(Vector3.Cross(fwd, Vector3.UnitY));
-        Vector3 up = Vector3.Cross(right, fwd);
+        // Build the same MVP used for rendering, convert to System.Numerics for inversion
+        var m = BuildMvp(w / h);
+        var mvp = new Matrix4x4(
+            m[0], m[1], m[2], m[3],
+            m[4], m[5], m[6], m[7],
+            m[8], m[9], m[10], m[11],
+            m[12], m[13], m[14], m[15]);
 
-        float fovRad = 45f * MathF.PI / 180f;
-        float halfH = MathF.Tan(fovRad * 0.5f);
-        float halfW = halfH * (w / h);
+        if (!Matrix4x4.Invert(mvp, out var inv))
+            return null;
 
-        Vector3 rayDir = Vector3.Normalize(fwd + right * (ndcX * halfW) + up * (ndcY * halfH));
+        var nearPt = Unproj(inv, ndcX, ndcY, 0f);
+        var farPt  = Unproj(inv, ndcX, ndcY, 1f);
+        var rayDir = Vector3.Normalize(farPt - nearPt);
 
         float r = _planet.Mesh.Radius + PlanetMesh.MaxLevel * _planet.Mesh.StepHeight + 0.01f;
-        float? t = RaySphere(camPos, rayDir, r);
+        float? t = RaySphere(nearPt, rayDir, r);
         if (t == null) return null;
 
-        return _planet.Mesh.DirectionToCell(camPos + rayDir * t.Value);
+        return _planet.Mesh.DirectionToCell(nearPt + rayDir * t.Value);
+    }
+
+    private static Vector3 Unproj(Matrix4x4 inv, float nx, float ny, float nz)
+    {
+        var c = Vector4.Transform(new Vector4(nx, ny, nz, 1f), inv);
+        if (MathF.Abs(c.W) < 1e-10f) return default;
+        return new Vector3(c.X / c.W, c.Y / c.W, c.Z / c.W);
     }
 
     private static float? RaySphere(Vector3 origin, Vector3 dir, float radius)

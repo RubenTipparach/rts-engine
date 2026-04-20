@@ -43,10 +43,16 @@
                 if (e.button === 0) dotnetRef.invokeMethodAsync('OnPointerDown');
             });
             canvas.addEventListener('mousemove', e => {
+                // Always send move for hover highlight
+                const rect2 = canvas.getBoundingClientRect();
+                const dpr2 = window.devicePixelRatio || 1;
+                dotnetRef.invokeMethodAsync('OnPointerMove',
+                    (e.clientX - rect2.left) * dpr2,
+                    (e.clientY - rect2.top) * dpr2);
+
                 if (!dragging) return;
                 const dx = e.clientX - lastX, dy = e.clientY - lastY;
                 totalDragDist += Math.abs(dx) + Math.abs(dy);
-                // Only orbit on left-button drag
                 if (downButton === 0) dotnetRef.invokeMethodAsync('OnPointerDrag', dx, dy);
                 lastX = e.clientX; lastY = e.clientY;
             });
