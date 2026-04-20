@@ -185,6 +185,61 @@
             device.queue.submit([encoder.finish()]);
         },
 
+        renderAdditional(pipelineId, vertexBufferId, indexBufferId, bindGroupId, indexCount) {
+            if (!device || !context) return;
+            const depthTex = ensureDepthTexture();
+            const encoder = device.createCommandEncoder();
+            const pass = encoder.beginRenderPass({
+                colorAttachments: [{
+                    view: context.getCurrentTexture().createView(),
+                    loadOp: 'load',
+                    storeOp: 'store',
+                }],
+                depthStencilAttachment: {
+                    view: depthTex.createView(),
+                    depthLoadOp: 'load',
+                    depthStoreOp: 'store',
+                },
+            });
+            pass.setPipeline(pipelines[pipelineId]);
+            pass.setVertexBuffer(0, buffers[vertexBufferId]);
+            pass.setIndexBuffer(buffers[indexBufferId], 'uint16');
+            pass.setBindGroup(0, bindGroups[bindGroupId]);
+            pass.drawIndexed(indexCount);
+            pass.end();
+            device.queue.submit([encoder.finish()]);
+        },
+
+        createRenderPipelineAlphaBlend(shaderModuleId, vertexBufferLayouts) {
+            const pipeline = device.createRenderPipeline({
+                layout: 'auto',
+                vertex: {
+                    module: shaderModules[shaderModuleId],
+                    entryPoint: 'vs_main',
+                    buffers: vertexBufferLayouts.map(l => ({
+                        arrayStride: l.arrayStride,
+                        attributes: l.attributes.map(a => ({
+                            format: a.format, offset: a.offset, shaderLocation: a.shaderLocation,
+                        })),
+                    })),
+                },
+                fragment: {
+                    module: shaderModules[shaderModuleId],
+                    entryPoint: 'fs_main',
+                    targets: [{
+                        format: canvasFormat,
+                        blend: {
+                            color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                        },
+                    }],
+                },
+                primitive: { topology: 'triangle-list', cullMode: 'none' },
+                depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'always' },
+            });
+            return register(pipelines, pipeline);
+        },
+
         destroyBuffer(id) {
             if (buffers[id]) { buffers[id].destroy(); buffers[id] = null; }
         },

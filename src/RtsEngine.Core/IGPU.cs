@@ -14,16 +14,15 @@ public interface IGPU
     Task<int> CreateRenderPipeline(int shaderModuleId, object[] vertexBufferLayouts);
     Task<int> CreateBindGroup(int pipelineId, int groupIndex, object[] entries);
     void Render(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount);
+
+    /// <summary>Same as Render but preserves previous content (loadOp: load). For multi-pass.</summary>
+    void RenderAdditional(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount);
+
     void DestroyBuffer(int bufferId);
 
-    /// <summary>
-    /// Load a PNG/JPEG from a URL (relative to site root) and upload to GPU
-    /// as a sampled 2D texture. Returns a texture handle.
-    /// </summary>
     Task<int> CreateTextureFromUrl(string url);
-
-    /// <summary>
-    /// Create a texture sampler. filter: "linear" or "nearest". wrap: "repeat" or "clamp".
-    /// </summary>
     Task<int> CreateSampler(string filter = "linear", string wrap = "repeat");
+
+    /// <summary>Same as CreateRenderPipeline but with alpha blend + depth write off. For transparent overlays.</summary>
+    Task<int> CreateRenderPipelineAlphaBlend(int shaderModuleId, object[] vertexBufferLayouts);
 }

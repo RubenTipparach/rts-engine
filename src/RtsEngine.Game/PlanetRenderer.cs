@@ -1,36 +1,33 @@
+using System.Numerics;
 using RtsEngine.Core;
 
 namespace RtsEngine.Game;
 
-/// <summary>
-/// Renders a Goldberg-sphere planet with triplanar-textured terrain + Lambert lighting.
-/// Uniform layout: mat4 mvp (64 bytes) + vec4 sunDir (16 bytes) = 80 bytes.
-/// </summary>
 public sealed class PlanetRenderer : IRenderer, IDisposable
 {
-    // Uniform layout (112 bytes):
-    //   [ 0..15] mat4 mvp         (64 bytes)
-    //   [16..19] vec4 sunDir      (16 bytes, xyz + pad)
-    //   [20..23] vec4 cameraPos   (16 bytes, xyz + pad)
-    //   [24..27] float time + pad (16 bytes)
-    public const int UniformSize = 112;
-    private const int UniformFloats = 28;
+    // Terrain uniform: mat4 mvp (64) + vec4 sunDir (16) + vec4 camPos (16) + f32 time + 12 pad = 112
+    public const int TerrainUniformSize = 112;
+    private const int TerrainUniFloats = 28;
+
+    // Atmosphere uniform: mat4 mvp (64) + vec4 sunDir (16) + vec4 camPos (16) + vec4 params (16) = 112
+    public const int AtmoUniformSize = 112;
+    private const int AtmoUniFloats = 28;
 
     private static readonly float[] DefaultSunDir = { 0.5f, 0.7f, 0.5f, 0f };
 
     private readonly IGPU _gpu;
 
-    private int _shaderModule;
-    private int _pipeline;
-    private int _vertexBuffer;
-    private int _indexBuffer;
-    private int _uniformBuffer;
-    private int _bindGroup;
-    private int _samplerId;
-    private int _atlasTextureId;
-    private int _indexCount;
+    // Terrain
+    private int _tPipeline, _tVbo, _tIbo, _tUbo, _tBindGroup;
+    private int _samplerId, _atlasTexId;
+    private int _tIndexCount;
+    private readonly float[] _tUni = new float[TerrainUniFloats];
 
-    private readonly float[] _uniformData = new float[UniformFloats];
+    // Atmosphere
+    private int _aPipeline, _aVbo, _aIbo, _aUbo, _aBindGroup;
+    private int _aIndexCount;
+    private readonly float[] _aUni = new float[AtmoUniFloats];
+    private bool _atmoReady;
 
     public PlanetMesh Mesh { get; }
 
@@ -38,81 +35,188 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
     {
         _gpu = gpu;
         Mesh = mesh;
-        Array.Copy(DefaultSunDir, 0, _uniformData, 16, 4);
+        Array.Copy(DefaultSunDir, 0, _tUni, 16, 4);
+        Array.Copy(DefaultSunDir, 0, _aUni, 16, 4);
     }
 
-    public void SetTime(float seconds) => _uniformData[24] = seconds;
+    public void SetTime(float seconds) => _tUni[24] = seconds;
 
     public void SetCameraPosition(float x, float y, float z)
     {
-        _uniformData[20] = x;
-        _uniformData[21] = y;
-        _uniformData[22] = z;
+        _tUni[20] = x; _tUni[21] = y; _tUni[22] = z;
+        _aUni[20] = x; _aUni[21] = y; _aUni[22] = z;
     }
 
-    public async Task Setup(string shaderCode, string atlasUrl = "textures/terrain_atlas.png")
-    {
-        _shaderModule = await _gpu.CreateShaderModule(shaderCode);
-        _uniformBuffer = await _gpu.CreateUniformBuffer(UniformSize);
+    // ── Setup ───────────────────────────────────────────────────────
 
-        _atlasTextureId = await _gpu.CreateTextureFromUrl(atlasUrl);
+    public async Task Setup(string terrainShader, string atlasUrl = "textures/terrain_atlas.png")
+    {
+        // Terrain pipeline
+        var tShader = await _gpu.CreateShaderModule(terrainShader);
+        _tUbo = await _gpu.CreateUniformBuffer(TerrainUniformSize);
+        _atlasTexId = await _gpu.CreateTextureFromUrl(atlasUrl);
         _samplerId = await _gpu.CreateSampler("linear", "repeat");
 
-        var (verts, indices) = Mesh.BuildMesh();
-        _vertexBuffer = await _gpu.CreateVertexBuffer(verts);
-        _indexBuffer = await _gpu.CreateIndexBuffer(indices);
-        _indexCount = indices.Length;
+        var (tv, ti) = Mesh.BuildMesh();
+        _tVbo = await _gpu.CreateVertexBuffer(tv);
+        _tIbo = await _gpu.CreateIndexBuffer(ti);
+        _tIndexCount = ti.Length;
 
-        var vertexLayouts = new object[]
+        _tPipeline = await _gpu.CreateRenderPipeline(tShader, new object[]
         {
-            new
-            {
+            new {
                 arrayStride = PlanetMesh.VertexStrideBytes,
                 attributes = new object[]
                 {
-                    new { format = "float32x3", offset = 0,  shaderLocation = 0 }, // pos
-                    new { format = "float32x3", offset = 12, shaderLocation = 1 }, // normal
-                    new { format = "float32",   offset = 24, shaderLocation = 2 }, // level
+                    new { format = "float32x3", offset = 0,  shaderLocation = 0 },
+                    new { format = "float32x3", offset = 12, shaderLocation = 1 },
+                    new { format = "float32",   offset = 24, shaderLocation = 2 },
                 }
             }
-        };
-        _pipeline = await _gpu.CreateRenderPipeline(_shaderModule, vertexLayouts);
+        });
 
-        var entries = new object[]
+        _tBindGroup = await _gpu.CreateBindGroup(_tPipeline, 0, new object[]
         {
-            new { binding = 0, bufferId = _uniformBuffer },
+            new { binding = 0, bufferId = _tUbo },
             new { binding = 1, samplerId = _samplerId },
-            new { binding = 2, textureViewId = _atlasTextureId },
-        };
-        _bindGroup = await _gpu.CreateBindGroup(_pipeline, 0, entries);
+            new { binding = 2, textureViewId = _atlasTexId },
+        });
     }
 
-    /// <summary>
-    /// Rebuild vertex + index buffers from the current PlanetMesh state.
-    /// Bind group and texture are preserved.
-    /// </summary>
-    public async Task RebuildMesh()
+    public async Task SetupAtmosphere(string atmosphereShader)
     {
-        _gpu.DestroyBuffer(_vertexBuffer);
-        _gpu.DestroyBuffer(_indexBuffer);
+        var aShader = await _gpu.CreateShaderModule(atmosphereShader);
+        _aUbo = await _gpu.CreateUniformBuffer(AtmoUniformSize);
 
-        var (verts, indices) = Mesh.BuildMesh();
-        _vertexBuffer = await _gpu.CreateVertexBuffer(verts);
-        _indexBuffer = await _gpu.CreateIndexBuffer(indices);
-        _indexCount = indices.Length;
+        // Atmosphere params: planetRadius, atmosphereRadius, sunIntensity
+        float pR = Mesh.Radius + PlanetMesh.MaxLevel * Mesh.StepHeight;
+        float aR = pR * 1.25f;
+        _aUni[24] = pR;   // params.x
+        _aUni[25] = aR;   // params.y
+        _aUni[26] = 15.0f; // params.z (sunIntensity)
+
+        var (av, ai) = BuildAtmoSphere(aR, 3);
+        _aVbo = await _gpu.CreateVertexBuffer(av);
+        _aIbo = await _gpu.CreateIndexBuffer(ai);
+        _aIndexCount = ai.Length;
+
+        _aPipeline = await _gpu.CreateRenderPipelineAlphaBlend(aShader, new object[]
+        {
+            new {
+                arrayStride = 12,
+                attributes = new object[]
+                {
+                    new { format = "float32x3", offset = 0, shaderLocation = 0 },
+                }
+            }
+        });
+
+        _aBindGroup = await _gpu.CreateBindGroup(_aPipeline, 0, new object[]
+        {
+            new { binding = 0, bufferId = _aUbo },
+        });
+
+        _atmoReady = true;
     }
+
+    // ── Draw ────────────────────────────────────────────────────────
 
     public void Draw(float[] mvpRawFloats)
     {
-        Array.Copy(mvpRawFloats, 0, _uniformData, 0, 16);
-        _gpu.WriteBuffer(_uniformBuffer, _uniformData);
-        _gpu.Render(_pipeline, _vertexBuffer, _indexBuffer, _bindGroup, _indexCount);
+        // Terrain pass (clears)
+        Array.Copy(mvpRawFloats, 0, _tUni, 0, 16);
+        _gpu.WriteBuffer(_tUbo, _tUni);
+        _gpu.Render(_tPipeline, _tVbo, _tIbo, _tBindGroup, _tIndexCount);
+
+        // Atmosphere pass (alpha-blended on top)
+        if (_atmoReady)
+        {
+            Array.Copy(mvpRawFloats, 0, _aUni, 0, 16);
+            _gpu.WriteBuffer(_aUbo, _aUni);
+            _gpu.RenderAdditional(_aPipeline, _aVbo, _aIbo, _aBindGroup, _aIndexCount);
+        }
+    }
+
+    public async Task RebuildMesh()
+    {
+        _gpu.DestroyBuffer(_tVbo);
+        _gpu.DestroyBuffer(_tIbo);
+
+        var (v, i) = Mesh.BuildMesh();
+        _tVbo = await _gpu.CreateVertexBuffer(v);
+        _tIbo = await _gpu.CreateIndexBuffer(i);
+        _tIndexCount = i.Length;
     }
 
     public void Dispose()
     {
-        _gpu.DestroyBuffer(_vertexBuffer);
-        _gpu.DestroyBuffer(_indexBuffer);
-        _gpu.DestroyBuffer(_uniformBuffer);
+        _gpu.DestroyBuffer(_tVbo);
+        _gpu.DestroyBuffer(_tIbo);
+        _gpu.DestroyBuffer(_tUbo);
+    }
+
+    // ── Atmosphere icosphere mesh ───────────────────────────────────
+
+    private static (float[] verts, ushort[] indices) BuildAtmoSphere(float radius, int subdivisions)
+    {
+        float phi = (1f + MathF.Sqrt(5f)) / 2f;
+        var v = new List<Vector3>
+        {
+            Nrm(-1,  phi, 0), Nrm( 1,  phi, 0), Nrm(-1, -phi, 0), Nrm( 1, -phi, 0),
+            Nrm(0, -1,  phi), Nrm(0,  1,  phi), Nrm(0, -1, -phi), Nrm(0,  1, -phi),
+            Nrm( phi, 0, -1), Nrm( phi, 0,  1), Nrm(-phi, 0, -1), Nrm(-phi, 0,  1),
+        };
+        var tris = new List<(int, int, int)>
+        {
+            (0,11,5),(0,5,1),(0,1,7),(0,7,10),(0,10,11),(1,5,9),(5,11,4),(11,10,2),(10,7,6),(7,1,8),
+            (3,9,4),(3,4,2),(3,2,6),(3,6,8),(3,8,9),(4,9,5),(2,4,11),(6,2,10),(8,6,7),(9,8,1),
+        };
+
+        var midCache = new Dictionary<long, int>();
+        for (int s = 0; s < subdivisions; s++)
+        {
+            var next = new List<(int, int, int)>();
+            midCache.Clear();
+            foreach (var (a, b, c) in tris)
+            {
+                int ab = GetMidpoint(v, midCache, a, b);
+                int bc = GetMidpoint(v, midCache, b, c);
+                int ca = GetMidpoint(v, midCache, c, a);
+                next.Add((a, ab, ca)); next.Add((b, bc, ab));
+                next.Add((c, ca, bc)); next.Add((ab, bc, ca));
+            }
+            tris = next;
+        }
+
+        var verts = new float[v.Count * 3];
+        for (int i = 0; i < v.Count; i++)
+        {
+            var p = v[i] * radius;
+            verts[i * 3]     = p.X;
+            verts[i * 3 + 1] = p.Y;
+            verts[i * 3 + 2] = p.Z;
+        }
+
+        var idx = new ushort[tris.Count * 3];
+        for (int i = 0; i < tris.Count; i++)
+        {
+            idx[i * 3]     = (ushort)tris[i].Item1;
+            idx[i * 3 + 1] = (ushort)tris[i].Item2;
+            idx[i * 3 + 2] = (ushort)tris[i].Item3;
+        }
+
+        return (verts, idx);
+    }
+
+    private static Vector3 Nrm(float x, float y, float z) => Vector3.Normalize(new(x, y, z));
+
+    private static int GetMidpoint(List<Vector3> v, Dictionary<long, int> cache, int a, int b)
+    {
+        long key = ((long)Math.Min(a, b) << 32) | (long)Math.Max(a, b);
+        if (cache.TryGetValue(key, out int mid)) return mid;
+        mid = v.Count;
+        v.Add(Vector3.Normalize((v[a] + v[b]) * 0.5f));
+        cache[key] = mid;
+        return mid;
     }
 }

@@ -260,10 +260,10 @@ void main() {
         }
     }
 
-    // TODO: implement proper GL texture loading (requires image decoder).
-    // For now, desktop renders without terrain textures.
+    public void RenderAdditional(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount) { }
     public Task<int> CreateTextureFromUrl(string url) => Task.FromResult(0);
     public Task<int> CreateSampler(string filter = "linear", string wrap = "repeat") => Task.FromResult(0);
+    public Task<int> CreateRenderPipelineAlphaBlend(int shaderModuleId, object[] vertexBufferLayouts) => Task.FromResult(0);
 
     public void Dispose()
     {

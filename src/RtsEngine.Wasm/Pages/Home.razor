@@ -37,6 +37,9 @@
         _planet = new PlanetRenderer(gpu, mesh);
         await _planet.Setup(shaderCode);
 
+        var atmoShader = await Http.GetStringAsync("shaders/atmosphere.wgsl");
+        await _planet.SetupAtmosphere(atmoShader);
+
         _engine = new GameEngine(_app, _planet);
         _engine.OnFrameRendered += () => InvokeAsync(StateHasChanged);
         _engine.Run();
