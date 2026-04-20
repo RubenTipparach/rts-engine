@@ -29,30 +29,32 @@
             let downX = 0, downY = 0, downButton = 0, totalDragDist = 0;
             const CLICK_THRESHOLD = 5; // pixels — below this, treat mouseup as click
 
-            canvas.addEventListener('contextmenu', e => e.preventDefault());
+            // Block context menu on canvas and its container
+            canvas.addEventListener('contextmenu', e => { e.preventDefault(); e.stopPropagation(); });
+            canvas.parentElement?.addEventListener?.('contextmenu', e => { e.preventDefault(); e.stopPropagation(); });
 
             canvas.addEventListener('mousedown', e => {
+                e.preventDefault();
                 dragging = true;
                 lastX = e.clientX; lastY = e.clientY;
                 downX = e.clientX; downY = e.clientY;
                 downButton = e.button;
                 totalDragDist = 0;
-                dotnetRef.invokeMethodAsync('OnPointerDown');
-                e.preventDefault();
+                if (e.button === 0) dotnetRef.invokeMethodAsync('OnPointerDown');
             });
             canvas.addEventListener('mousemove', e => {
                 if (!dragging) return;
                 const dx = e.clientX - lastX, dy = e.clientY - lastY;
                 totalDragDist += Math.abs(dx) + Math.abs(dy);
-                dotnetRef.invokeMethodAsync('OnPointerDrag', dx, dy);
+                // Only orbit on left-button drag
+                if (downButton === 0) dotnetRef.invokeMethodAsync('OnPointerDrag', dx, dy);
                 lastX = e.clientX; lastY = e.clientY;
             });
             canvas.addEventListener('mouseup', e => {
                 if (!dragging) return;
                 dragging = false;
-                dotnetRef.invokeMethodAsync('OnPointerUp');
+                if (downButton === 0) dotnetRef.invokeMethodAsync('OnPointerUp');
                 if (totalDragDist < CLICK_THRESHOLD) {
-                    // Convert to canvas-pixel coords (accounting for DPR + offset)
                     const rect = canvas.getBoundingClientRect();
                     const dpr = window.devicePixelRatio || 1;
                     const cx = (e.clientX - rect.left) * dpr;

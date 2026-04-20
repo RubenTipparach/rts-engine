@@ -4,11 +4,6 @@ namespace RtsEngine.Game;
 
 public enum CubeFace { PosX = 0, NegX = 1, PosY = 2, NegY = 3, PosZ = 4, NegZ = 5 }
 
-/// <summary>
-/// Cube-sphere heightmap for a planet. 6 faces × N² cells. Each cell has a
-/// discrete cliff level (0=water, 1=sand, 2=grass, 3=rock). Mesh is rebuilt
-/// from the heightmap; cells at different levels produce visible cliff sides.
-/// </summary>
 public sealed class PlanetMesh
 {
     public const int LevelCount = 4;
@@ -26,26 +21,23 @@ public sealed class PlanetMesh
     public float Radius { get; }
     public float StepHeight { get; }
 
-    private readonly byte[] _levels; // flat: face*N*N + row*N + col
+    private readonly byte[] _levels;
 
-    public PlanetMesh(int gridResolution = 12, float radius = 1.0f, float stepHeight = 0.04f, byte initialLevel = 1)
+    public PlanetMesh(int gridResolution = 16, float radius = 1.0f, float stepHeight = 0.04f)
     {
         GridResolution = gridResolution;
         Radius = radius;
         StepHeight = stepHeight;
-
         _levels = new byte[6 * gridResolution * gridResolution];
-        if (initialLevel > 0)
-            Array.Fill(_levels, initialLevel);
     }
 
     public byte GetLevel(CubeFace face, int row, int col)
-        => _levels[Index(face, row, col)];
+        => _levels[Idx(face, row, col)];
 
     public void SetLevel(CubeFace face, int row, int col, byte level)
     {
         if (level > MaxLevel) level = MaxLevel;
-        _levels[Index(face, row, col)] = level;
+        _levels[Idx(face, row, col)] = level;
     }
 
     public void CycleLevel(CubeFace face, int row, int col, int delta)
@@ -55,155 +47,258 @@ public sealed class PlanetMesh
         SetLevel(face, row, col, (byte)next);
     }
 
-    private int Index(CubeFace face, int row, int col)
+    private int Idx(CubeFace face, int row, int col)
         => ((int)face * GridResolution + row) * GridResolution + col;
 
-    /// <summary>
-    /// Build renderable mesh from the heightmap.
-    /// Layout: pos3f + color3f per vertex, stride 24 bytes.
-    /// Cliff sides are emitted where a cell is higher than an in-face neighbor.
-    /// </summary>
+    // ── Noise terrain generation ────────────────────────────────────
+
+    public void GenerateFromNoise(int seed = 42, float frequency = 2.5f)
+    {
+        int N = GridResolution;
+        for (int f = 0; f < 6; f++)
+        for (int row = 0; row < N; row++)
+        for (int col = 0; col < N; col++)
+        {
+            float u = (col + 0.5f) / N * 2f - 1f;
+            float v = (row + 0.5f) / N * 2f - 1f;
+            Vector3 pos = Vector3.Normalize(FaceToCube(f, u, v));
+
+            float n = Noise3D.Octaves(
+                pos.X * frequency, pos.Y * frequency, pos.Z * frequency,
+                4, 0.5f, seed);
+
+            float t = (n + 1f) * 0.5f; // [0,1]
+            byte level;
+            if (t < 0.35f) level = 0;      // water
+            else if (t < 0.50f) level = 1;  // sand
+            else if (t < 0.72f) level = 2;  // grass
+            else level = 3;                  // rock
+
+            _levels[(f * N + row) * N + col] = level;
+        }
+    }
+
+    // ── Mesh generation ─────────────────────────────────────────────
+
     public (float[] vertices, ushort[] indices) BuildMesh()
     {
         int N = GridResolution;
-        var verts = new List<float>(6 * N * N * 24);
-        var indices = new List<ushort>(6 * N * N * 18);
+        var verts = new List<float>(6 * N * N * 30);
+        var idx = new List<ushort>(6 * N * N * 24);
 
         for (int f = 0; f < 6; f++)
+        for (int row = 0; row < N; row++)
+        for (int col = 0; col < N; col++)
         {
-            for (int row = 0; row < N; row++)
-            for (int col = 0; col < N; col++)
-            {
-                byte level = _levels[(f * N + row) * N + col];
-                float h = Radius + level * StepHeight;
-                Vector3 color = LevelColors[level];
+            byte level = _levels[(f * N + row) * N + col];
+            float h = Radius + level * StepHeight;
+            Vector3 color = LevelColors[level];
 
-                float u0 = (float)col / N * 2f - 1f;
-                float u1 = (float)(col + 1) / N * 2f - 1f;
-                float v0 = (float)row / N * 2f - 1f;
-                float v1 = (float)(row + 1) / N * 2f - 1f;
+            float u0 = (float)col / N * 2f - 1f;
+            float u1 = (float)(col + 1) / N * 2f - 1f;
+            float v0 = (float)row / N * 2f - 1f;
+            float v1 = (float)(row + 1) / N * 2f - 1f;
 
-                Vector3 p00 = ProjectToSphere(f, u0, v0, h); // (col, row)
-                Vector3 p10 = ProjectToSphere(f, u1, v0, h); // (col+1, row)
-                Vector3 p11 = ProjectToSphere(f, u1, v1, h); // (col+1, row+1)
-                Vector3 p01 = ProjectToSphere(f, u0, v1, h); // (col, row+1)
+            Vector3 p00 = Sph(f, u0, v0, h);
+            Vector3 p10 = Sph(f, u1, v0, h);
+            Vector3 p11 = Sph(f, u1, v1, h);
+            Vector3 p01 = Sph(f, u0, v1, h);
 
-                // Top quad — winding chosen so outward normal faces away from planet center.
-                // Face basis keeps u→right, v→up in the face's local frame, so CCW on the
-                // outside is (p00, p10, p11, p01) for all 6 faces.
-                ushort b = (ushort)(verts.Count / 6);
-                EmitVertex(verts, p00, color);
-                EmitVertex(verts, p10, color);
-                EmitVertex(verts, p11, color);
-                EmitVertex(verts, p01, color);
-                indices.Add(b); indices.Add((ushort)(b + 1)); indices.Add((ushort)(b + 2));
-                indices.Add(b); indices.Add((ushort)(b + 2)); indices.Add((ushort)(b + 3));
+            EmitQuad(verts, idx, p00, p10, p11, p01, color);
 
-                // Cliff sides: emit a quad dropping to the neighbor's height when neighbor is lower.
-                // Edge order: 0=south (row-1), 1=east (col+1), 2=north (row+1), 3=west (col-1)
-                // At face edges, treat missing neighbor as level 0 so cliffs drop to water at borders.
-                EmitCliffIfHigher(verts, indices, level, color, f, row - 1, col, p00, p10, h);
-                EmitCliffIfHigher(verts, indices, level, color, f, row, col + 1, p10, p11, h);
-                EmitCliffIfHigher(verts, indices, level, color, f, row + 1, col, p11, p01, h);
-                EmitCliffIfHigher(verts, indices, level, color, f, row, col - 1, p01, p00, h);
-            }
+            // Cliff sides — check all 4 edges. Use cross-face lookup at boundaries.
+            EmitCliff(verts, idx, level, color, f, row, col, -1, 0, p00, p10, h); // south
+            EmitCliff(verts, idx, level, color, f, row, col, 0, +1, p10, p11, h); // east
+            EmitCliff(verts, idx, level, color, f, row, col, +1, 0, p11, p01, h); // north
+            EmitCliff(verts, idx, level, color, f, row, col, 0, -1, p01, p00, h); // west
         }
 
-        return (verts.ToArray(), indices.ToArray());
+        return (verts.ToArray(), idx.ToArray());
     }
 
-    private void EmitCliffIfHigher(
-        List<float> verts, List<ushort> indices,
+    private void EmitCliff(
+        List<float> verts, List<ushort> idx,
         byte selfLevel, Vector3 selfColor,
-        int face, int nRow, int nCol,
+        int face, int row, int col, int dRow, int dCol,
         Vector3 topA, Vector3 topB, float topH)
     {
-        int N = GridResolution;
-        byte nLevel;
-        if (nRow < 0 || nRow >= N || nCol < 0 || nCol >= N)
-            nLevel = 0; // face edge — drop cliff to water
-        else
-            nLevel = _levels[(face * N + nRow) * N + nCol];
-
+        byte nLevel = GetNeighborLevel(face, row + dRow, col + dCol);
         if (nLevel >= selfLevel) return;
 
         float bottomH = Radius + nLevel * StepHeight;
-        Vector3 bottomA = Vector3.Normalize(topA) * bottomH;
-        Vector3 bottomB = Vector3.Normalize(topB) * bottomH;
-
+        Vector3 botA = Vector3.Normalize(topA) * bottomH;
+        Vector3 botB = Vector3.Normalize(topB) * bottomH;
         Vector3 cliffColor = selfColor * 0.6f;
 
-        // Quad (topA → topB → bottomB → bottomA). Winding outward.
+        // Winding: outward from the cell toward the lower neighbor.
+        // topA→topB is the edge shared with the top face. The cliff quad
+        // should face outward (toward the neighbor). We emit both windings
+        // to avoid invisible back-faces regardless of edge orientation.
         ushort b = (ushort)(verts.Count / 6);
-        EmitVertex(verts, topA, cliffColor);
-        EmitVertex(verts, topB, cliffColor);
-        EmitVertex(verts, bottomB, cliffColor);
-        EmitVertex(verts, bottomA, cliffColor);
-        indices.Add(b); indices.Add((ushort)(b + 1)); indices.Add((ushort)(b + 2));
-        indices.Add(b); indices.Add((ushort)(b + 2)); indices.Add((ushort)(b + 3));
+        EmitVert(verts, topA, cliffColor);
+        EmitVert(verts, topB, cliffColor);
+        EmitVert(verts, botB, cliffColor);
+        EmitVert(verts, botA, cliffColor);
+
+        // Front face
+        idx.Add(b); idx.Add((ushort)(b + 2)); idx.Add((ushort)(b + 1));
+        idx.Add(b); idx.Add((ushort)(b + 3)); idx.Add((ushort)(b + 2));
+        // Back face
+        idx.Add(b); idx.Add((ushort)(b + 1)); idx.Add((ushort)(b + 2));
+        idx.Add(b); idx.Add((ushort)(b + 2)); idx.Add((ushort)(b + 3));
     }
 
-    private static void EmitVertex(List<float> verts, Vector3 pos, Vector3 color)
+    /// <summary>
+    /// Get neighbor cell level, handling cross-face adjacency.
+    /// Projects the neighbor's cube-space position through the sphere
+    /// to find which face/cell it actually belongs to.
+    /// </summary>
+    private byte GetNeighborLevel(int face, int row, int col)
+    {
+        int N = GridResolution;
+        if (row >= 0 && row < N && col >= 0 && col < N)
+            return _levels[(face * N + row) * N + col];
+
+        // Cross-face: compute the position the neighbor would occupy on the cube,
+        // project to sphere, then look up which face/cell that maps to.
+        float u = (Math.Clamp(col, 0, N - 1) + 0.5f) / N * 2f - 1f;
+        float v = (Math.Clamp(row, 0, N - 1) + 0.5f) / N * 2f - 1f;
+
+        // Push the UV beyond the face edge in the appropriate direction
+        float step = 2f / N;
+        if (col < 0) u = -1f - step * 0.5f;
+        else if (col >= N) u = 1f + step * 0.5f;
+        if (row < 0) v = -1f - step * 0.5f;
+        else if (row >= N) v = 1f + step * 0.5f;
+
+        Vector3 cubePos = FaceToCube(face, u, v);
+        var cell = DirectionToCell(cubePos);
+        if (cell == null) return 0;
+        var (nf, nr, nc) = cell.Value;
+        return _levels[((int)nf * N + nr) * N + nc];
+    }
+
+    private static void EmitQuad(
+        List<float> verts, List<ushort> idx,
+        Vector3 a, Vector3 b, Vector3 c, Vector3 d, Vector3 color)
+    {
+        ushort bi = (ushort)(verts.Count / 6);
+        EmitVert(verts, a, color);
+        EmitVert(verts, b, color);
+        EmitVert(verts, c, color);
+        EmitVert(verts, d, color);
+        idx.Add(bi); idx.Add((ushort)(bi + 1)); idx.Add((ushort)(bi + 2));
+        idx.Add(bi); idx.Add((ushort)(bi + 2)); idx.Add((ushort)(bi + 3));
+    }
+
+    private static void EmitVert(List<float> verts, Vector3 pos, Vector3 color)
     {
         verts.Add(pos.X); verts.Add(pos.Y); verts.Add(pos.Z);
         verts.Add(color.X); verts.Add(color.Y); verts.Add(color.Z);
     }
 
-    /// <summary>
-    /// Project cube-face UV coord (u, v ∈ [-1, 1]) onto the sphere at radius h.
-    /// Face basis convention:
-    ///   +X:  (1,  v, -u)   -X:  (-1,  v,  u)
-    ///   +Y:  (u,  1, -v)   -Y:  ( u, -1,  v)
-    ///   +Z:  (u,  v,  1)   -Z:  (-u,  v, -1)
-    /// Chosen so (u,v) maps to (local-right, local-up) on each face with outward-CCW winding.
-    /// </summary>
-    public static Vector3 ProjectToSphere(int face, float u, float v, float h)
-    {
-        Vector3 cube = face switch
-        {
-            0 => new Vector3( 1,  v, -u),
-            1 => new Vector3(-1,  v,  u),
-            2 => new Vector3( u,  1, -v),
-            3 => new Vector3( u, -1,  v),
-            4 => new Vector3( u,  v,  1),
-            5 => new Vector3(-u,  v, -1),
-            _ => throw new ArgumentOutOfRangeException(nameof(face)),
-        };
-        return Vector3.Normalize(cube) * h;
-    }
+    // ── Cube-sphere projection ──────────────────────────────────────
 
-    /// <summary>
-    /// Inverse of ProjectToSphere: given a unit-length point on the sphere in planet-local
-    /// space, return the (face, u, v) it maps to.
-    /// </summary>
+    private static Vector3 Sph(int face, float u, float v, float h)
+        => Vector3.Normalize(FaceToCube(face, u, v)) * h;
+
+    public static Vector3 ProjectToSphere(int face, float u, float v, float h)
+        => Sph(face, u, v, h);
+
+    private static Vector3 FaceToCube(int face, float u, float v) => face switch
+    {
+        0 => new Vector3( 1,  v, -u),
+        1 => new Vector3(-1,  v,  u),
+        2 => new Vector3( u,  1, -v),
+        3 => new Vector3( u, -1,  v),
+        4 => new Vector3( u,  v,  1),
+        5 => new Vector3(-u,  v, -1),
+        _ => throw new ArgumentOutOfRangeException(nameof(face)),
+    };
+
+    // ── Inverse projection ──────────────────────────────────────────
+
     public static (int face, float u, float v) DirectionToFaceUV(Vector3 dir)
     {
         float ax = MathF.Abs(dir.X), ay = MathF.Abs(dir.Y), az = MathF.Abs(dir.Z);
         if (ax >= ay && ax >= az)
         {
-            if (dir.X > 0) return (0,  -dir.Z / ax,  dir.Y / ax); // +X: u=-z, v=y
-            else           return (1,   dir.Z / ax,  dir.Y / ax); // -X: u=+z, v=y
+            if (dir.X > 0) return (0, -dir.Z / ax,  dir.Y / ax);
+            else           return (1,  dir.Z / ax,  dir.Y / ax);
         }
         if (ay >= ax && ay >= az)
         {
-            if (dir.Y > 0) return (2,   dir.X / ay, -dir.Z / ay); // +Y: u=x,  v=-z
-            else           return (3,   dir.X / ay,  dir.Z / ay); // -Y: u=x,  v=+z
+            if (dir.Y > 0) return (2,  dir.X / ay, -dir.Z / ay);
+            else           return (3,  dir.X / ay,  dir.Z / ay);
         }
-        if (dir.Z > 0)     return (4,   dir.X / az,  dir.Y / az); // +Z: u=x,  v=y
-        else               return (5,  -dir.X / az,  dir.Y / az); // -Z: u=-x, v=y
+        if (dir.Z > 0)     return (4,  dir.X / az,  dir.Y / az);
+        else               return (5, -dir.X / az,  dir.Y / az);
     }
 
-    /// <summary>
-    /// Convert a planet-local direction (unit vector) to a grid cell.
-    /// Returns null if the direction is degenerate.
-    /// </summary>
     public (CubeFace face, int row, int col)? DirectionToCell(Vector3 dir)
     {
         if (dir.LengthSquared() < 1e-12f) return null;
         dir = Vector3.Normalize(dir);
         var (face, u, v) = DirectionToFaceUV(dir);
-        int col = Math.Clamp((int)MathF.Floor((u + 1f) * 0.5f * GridResolution), 0, GridResolution - 1);
-        int row = Math.Clamp((int)MathF.Floor((v + 1f) * 0.5f * GridResolution), 0, GridResolution - 1);
-        return ((CubeFace)face, row, col);
+        int c = Math.Clamp((int)MathF.Floor((u + 1f) * 0.5f * GridResolution), 0, GridResolution - 1);
+        int r = Math.Clamp((int)MathF.Floor((v + 1f) * 0.5f * GridResolution), 0, GridResolution - 1);
+        return ((CubeFace)face, r, c);
+    }
+}
+
+// ── 3D Gradient Noise ───────────────────────────────────────────────
+
+public static class Noise3D
+{
+    public static float Sample(float x, float y, float z, int seed = 0)
+    {
+        int ix = (int)MathF.Floor(x), iy = (int)MathF.Floor(y), iz = (int)MathF.Floor(z);
+        float fx = x - ix, fy = y - iy, fz = z - iz;
+        float u = Fade(fx), v = Fade(fy), w = Fade(fz);
+
+        return Lerp(
+            Lerp(
+                Lerp(Grad(Hash(ix, iy, iz, seed), fx, fy, fz),
+                     Grad(Hash(ix + 1, iy, iz, seed), fx - 1, fy, fz), u),
+                Lerp(Grad(Hash(ix, iy + 1, iz, seed), fx, fy - 1, fz),
+                     Grad(Hash(ix + 1, iy + 1, iz, seed), fx - 1, fy - 1, fz), u), v),
+            Lerp(
+                Lerp(Grad(Hash(ix, iy, iz + 1, seed), fx, fy, fz - 1),
+                     Grad(Hash(ix + 1, iy, iz + 1, seed), fx - 1, fy, fz - 1), u),
+                Lerp(Grad(Hash(ix, iy + 1, iz + 1, seed), fx, fy - 1, fz - 1),
+                     Grad(Hash(ix + 1, iy + 1, iz + 1, seed), fx - 1, fy - 1, fz - 1), u), v),
+            w);
+    }
+
+    public static float Octaves(float x, float y, float z, int count, float persistence, int seed)
+    {
+        float total = 0f, amp = 1f, max = 0f;
+        for (int i = 0; i < count; i++)
+        {
+            total += Sample(x, y, z, seed + i * 31) * amp;
+            max += amp;
+            amp *= persistence;
+            x *= 2f; y *= 2f; z *= 2f;
+        }
+        return total / max;
+    }
+
+    private static float Fade(float t) => t * t * t * (t * (t * 6f - 15f) + 10f);
+    private static float Lerp(float a, float b, float t) => a + t * (b - a);
+
+    private static int Hash(int x, int y, int z, int seed)
+    {
+        int h = seed ^ (x * 374761393) ^ (y * 668265263) ^ (z * 1274126177);
+        h = (h ^ (h >> 13)) * 1103515245;
+        h ^= h >> 16;
+        return h;
+    }
+
+    private static float Grad(int hash, float x, float y, float z)
+    {
+        int h = hash & 15;
+        float u = h < 8 ? x : y;
+        float v = h < 4 ? y : (h == 12 || h == 14 ? x : z);
+        return ((h & 1) != 0 ? -u : u) + ((h & 2) != 0 ? -v : v);
     }
 }

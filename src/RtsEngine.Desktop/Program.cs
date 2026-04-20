@@ -28,8 +28,8 @@ public static class Program
             var gl = window.CreateOpenGL();
 
             gpu = new OpenGLGPU(gl);
-            var mesh = new PlanetMesh(gridResolution: 12, radius: 1.0f, stepHeight: 0.04f, initialLevel: 1);
-            SeedDemoHeightmap(mesh);
+            var mesh = new PlanetMesh(gridResolution: 16, radius: 1.0f, stepHeight: 0.04f);
+            mesh.GenerateFromNoise(seed: 42);
             renderer = new PlanetRenderer(gpu, mesh);
             await renderer.Setup(OpenGLGPU.TerrainShaderGLSL);
 
@@ -43,22 +43,6 @@ public static class Program
         window.Run();
     }
 
-    private static void SeedDemoHeightmap(PlanetMesh mesh)
-    {
-        int N = mesh.GridResolution;
-        for (int f = 0; f < 6; f++)
-        {
-            var face = (CubeFace)f;
-            for (int r = N / 3; r < N - N / 3; r++)
-                for (int c = N / 3; c < N - N / 3; c++)
-                    mesh.SetLevel(face, r, c, 2);
-            mesh.SetLevel(face, N / 2, N / 2, 3);
-            mesh.SetLevel(face, 0, 0, 0);
-            mesh.SetLevel(face, 0, N - 1, 0);
-            mesh.SetLevel(face, N - 1, 0, 0);
-            mesh.SetLevel(face, N - 1, N - 1, 0);
-        }
-    }
 }
 
 /// <summary>

@@ -31,8 +31,8 @@
         await _app.InitializeAsync("gpuCanvas");
 
         var shaderCode = await Http.GetStringAsync("shaders/terrain.wgsl");
-        var mesh = new PlanetMesh(gridResolution: 12, radius: 1.0f, stepHeight: 0.04f, initialLevel: 1);
-        SeedDemoHeightmap(mesh);
+        var mesh = new PlanetMesh(gridResolution: 16, radius: 1.0f, stepHeight: 0.04f);
+        mesh.GenerateFromNoise(seed: 42);
 
         _planet = new PlanetRenderer(gpu, mesh);
         await _planet.Setup(shaderCode);
@@ -40,27 +40,6 @@
         _engine = new GameEngine(_app, _planet);
         _engine.OnFrameRendered += () => InvokeAsync(StateHasChanged);
         _engine.Run();
-    }
-
-    /// Seed a few raised/lowered cells so the default view shows all 4 materials.
-    private static void SeedDemoHeightmap(PlanetMesh mesh)
-    {
-        int N = mesh.GridResolution;
-        for (int f = 0; f < 6; f++)
-        {
-            var face = (CubeFace)f;
-            // Center patch: grass
-            for (int r = N / 3; r < N - N / 3; r++)
-                for (int c = N / 3; c < N - N / 3; c++)
-                    mesh.SetLevel(face, r, c, 2);
-            // Inner spike: rock
-            mesh.SetLevel(face, N / 2, N / 2, 3);
-            // Corner dip: water
-            mesh.SetLevel(face, 0, 0, 0);
-            mesh.SetLevel(face, 0, N - 1, 0);
-            mesh.SetLevel(face, N - 1, 0, 0);
-            mesh.SetLevel(face, N - 1, N - 1, 0);
-        }
     }
 
     public void Dispose()
