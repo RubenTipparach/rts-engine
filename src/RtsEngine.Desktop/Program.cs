@@ -28,7 +28,7 @@ public static class Program
             var gl = window.CreateOpenGL();
 
             gpu = new OpenGLGPU(gl);
-            var mesh = new PlanetMesh(gridResolution: 16, radius: 1.0f, stepHeight: 0.04f);
+            var mesh = new PlanetMesh(subdivisions: 3, radius: 1.0f, stepHeight: 0.04f);
             mesh.GenerateFromNoise(seed: 42);
             renderer = new PlanetRenderer(gpu, mesh);
             await renderer.Setup(OpenGLGPU.TerrainShaderGLSL);

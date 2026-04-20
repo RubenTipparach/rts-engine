@@ -10,7 +10,7 @@
     <canvas id="gpuCanvas"></canvas>
     <div id="hud">
         <div class="hud-title">Planet Editor (WebGPU)</div>
-        <div class="hud-stat">Grid: 12 × 12 per face &nbsp; Levels: 0 water · 1 sand · 2 grass · 3 rock</div>
+        <div class="hud-stat">Goldberg sphere (642 cells) &nbsp; 0 water · 1 sand · 2 grass · 3 rock</div>
         <div class="hud-hint">Drag to orbit &bull; Scroll to zoom &bull; Left-click raise &bull; Right-click lower</div>
     </div>
 </div>
@@ -31,7 +31,7 @@
         await _app.InitializeAsync("gpuCanvas");
 
         var shaderCode = await Http.GetStringAsync("shaders/terrain.wgsl");
-        var mesh = new PlanetMesh(gridResolution: 16, radius: 1.0f, stepHeight: 0.04f);
+        var mesh = new PlanetMesh(subdivisions: 3, radius: 1.0f, stepHeight: 0.04f);
         mesh.GenerateFromNoise(seed: 42);
 
         _planet = new PlanetRenderer(gpu, mesh);

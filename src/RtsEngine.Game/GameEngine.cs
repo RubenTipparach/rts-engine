@@ -58,11 +58,11 @@ public class GameEngine
         var hit = RayPick(cx, cy);
         if (hit == null) return;
 
-        var (face, row, col) = hit.Value;
+        int cell = hit.Value;
         if (button == 0)
-            _planet.Mesh.CycleLevel(face, row, col, 1);
+            _planet.Mesh.CycleLevel(cell, 1);
         else if (button == 2)
-            _planet.Mesh.CycleLevel(face, row, col, -1);
+            _planet.Mesh.CycleLevel(cell, -1);
         _meshDirty = true;
     }
 
@@ -110,7 +110,7 @@ public class GameEngine
 
     // ── Ray picking (geometric — no matrix inversion needed) ────────
 
-    private (CubeFace face, int row, int col)? RayPick(float canvasX, float canvasY)
+    private int? RayPick(float canvasX, float canvasY)
     {
         if (_planet == null) return null;
         float w = _app.CanvasWidth, h = _app.CanvasHeight;
