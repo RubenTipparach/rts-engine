@@ -9,48 +9,63 @@
 <div id="game-container">
     <canvas id="gpuCanvas"></canvas>
     <div id="hud">
-        <div class="hud-title">Silk.NET WASM Engine (WebGPU)</div>
-        <div class="hud-stat">Speed: @SpeedDisplay</div>
-        <div class="hud-stat">VelX: @VelXDisplay &nbsp; VelY: @VelYDisplay</div>
-        <div class="hud-hint">Drag to spin &bull; Release to throw</div>
+        <div class="hud-title">Planet Editor (WebGPU)</div>
+        <div class="hud-stat">Grid: 12 × 12 per face &nbsp; Levels: 0 water · 1 sand · 2 grass · 3 rock</div>
+        <div class="hud-hint">Drag to orbit &bull; Scroll to zoom &bull; Left-click raise &bull; Right-click lower</div>
     </div>
 </div>
 
 @code {
     private GameEngine? _engine;
     private WebGLRenderBackend? _app;
-    private CubeRenderer? _cube;
-
-    private string SpeedDisplay => _engine?.SpeedMagnitude.ToString("F2") ?? "---";
-    private string VelXDisplay => _engine?.VelocityX.ToString("F2") ?? "---";
-    private string VelYDisplay => _engine?.VelocityY.ToString("F2") ?? "---";
+    private PlanetRenderer? _planet;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (!firstRender) return;
 
-        // Platform GPU backend
         var gpu = new WebGPU(JS);
         if (!await gpu.Init("gpuCanvas")) return;
 
-        // App shell
         _app = new WebGLRenderBackend(JS);
         await _app.InitializeAsync("gpuCanvas");
 
-        // Game renderer — uses IGPU, lives in Game, no platform awareness
-        var shaderCode = await Http.GetStringAsync("shaders/cube.wgsl");
-        _cube = new CubeRenderer(gpu);
-        await _cube.Setup(shaderCode);
+        var shaderCode = await Http.GetStringAsync("shaders/terrain.wgsl");
+        var mesh = new PlanetMesh(gridResolution: 12, radius: 1.0f, stepHeight: 0.04f, initialLevel: 1);
+        SeedDemoHeightmap(mesh);
 
-        // Engine
-        _engine = new GameEngine(_app, _cube);
+        _planet = new PlanetRenderer(gpu, mesh);
+        await _planet.Setup(shaderCode);
+
+        _engine = new GameEngine(_app, _planet);
         _engine.OnFrameRendered += () => InvokeAsync(StateHasChanged);
         _engine.Run();
     }
 
+    /// Seed a few raised/lowered cells so the default view shows all 4 materials.
+    private static void SeedDemoHeightmap(PlanetMesh mesh)
+    {
+        int N = mesh.GridResolution;
+        for (int f = 0; f < 6; f++)
+        {
+            var face = (CubeFace)f;
+            // Center patch: grass
+            for (int r = N / 3; r < N - N / 3; r++)
+                for (int c = N / 3; c < N - N / 3; c++)
+                    mesh.SetLevel(face, r, c, 2);
+            // Inner spike: rock
+            mesh.SetLevel(face, N / 2, N / 2, 3);
+            // Corner dip: water
+            mesh.SetLevel(face, 0, 0, 0);
+            mesh.SetLevel(face, 0, N - 1, 0);
+            mesh.SetLevel(face, N - 1, 0, 0);
+            mesh.SetLevel(face, N - 1, N - 1, 0);
+        }
+    }
+
     public void Dispose()
     {
-        _cube?.Dispose();
+        _planet?.Dispose();
         _app?.Dispose();
     }
 }

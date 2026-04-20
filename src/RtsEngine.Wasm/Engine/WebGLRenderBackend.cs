@@ -19,6 +19,8 @@ public sealed class WebGLRenderBackend : IRenderBackend
     public event Action? PointerDown;
     public event Action<float, float>? PointerDrag;
     public event Action? PointerUp;
+    public event Action<float, float, int>? PointerClick;
+    public event Action<float>? Scroll;
 
     private Func<Task>? _onTick;
 
@@ -51,6 +53,8 @@ public sealed class WebGLRenderBackend : IRenderBackend
     [JSInvokable] public void OnPointerDown() => PointerDown?.Invoke();
     [JSInvokable] public void OnPointerDrag(float dx, float dy) => PointerDrag?.Invoke(dx, dy);
     [JSInvokable] public void OnPointerUp() => PointerUp?.Invoke();
+    [JSInvokable] public void OnPointerClick(float x, float y, int button) => PointerClick?.Invoke(x, y, button);
+    [JSInvokable] public void OnScroll(float deltaY) => Scroll?.Invoke(deltaY);
 
     public void Dispose()
     {

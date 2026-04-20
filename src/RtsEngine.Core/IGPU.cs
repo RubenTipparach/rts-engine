@@ -1,7 +1,7 @@
 namespace RtsEngine.Core;
 
 /// <summary>
-/// GPU abstraction — what CubeRenderer codes against.
+/// GPU abstraction — what renderers code against.
 /// WASM implements this via JS interop → WebGPU.
 /// Desktop implements this via Silk.NET → OpenGL.
 /// Game code never knows which.

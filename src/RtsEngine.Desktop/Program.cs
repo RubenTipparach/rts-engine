@@ -19,7 +19,7 @@ public static class Program
 
         var window = Window.Create(opts);
         OpenGLGPU? gpu = null;
-        CubeRenderer? renderer = null;
+        PlanetRenderer? renderer = null;
         DesktopAppBackend? backend = null;
         GameEngine? engine = null;
 
@@ -28,8 +28,10 @@ public static class Program
             var gl = window.CreateOpenGL();
 
             gpu = new OpenGLGPU(gl);
-            renderer = new CubeRenderer(gpu);
-            await renderer.Setup(OpenGLGPU.CubeShaderGLSL);
+            var mesh = new PlanetMesh(gridResolution: 12, radius: 1.0f, stepHeight: 0.04f, initialLevel: 1);
+            SeedDemoHeightmap(mesh);
+            renderer = new PlanetRenderer(gpu, mesh);
+            await renderer.Setup(OpenGLGPU.TerrainShaderGLSL);
 
             backend = new DesktopAppBackend(window);
             engine = new GameEngine(backend, renderer);
@@ -40,11 +42,28 @@ public static class Program
         window.Closing += () => gpu?.Dispose();
         window.Run();
     }
+
+    private static void SeedDemoHeightmap(PlanetMesh mesh)
+    {
+        int N = mesh.GridResolution;
+        for (int f = 0; f < 6; f++)
+        {
+            var face = (CubeFace)f;
+            for (int r = N / 3; r < N - N / 3; r++)
+                for (int c = N / 3; c < N - N / 3; c++)
+                    mesh.SetLevel(face, r, c, 2);
+            mesh.SetLevel(face, N / 2, N / 2, 3);
+            mesh.SetLevel(face, 0, 0, 0);
+            mesh.SetLevel(face, 0, N - 1, 0);
+            mesh.SetLevel(face, N - 1, 0, 0);
+            mesh.SetLevel(face, N - 1, N - 1, 0);
+        }
+    }
 }
 
 /// <summary>
 /// OpenGL implementation of IGPU — same interface as WebGPU, backed by Silk.NET.
-/// CubeRenderer in Game calls IGPU methods; this translates them to GL calls.
+/// PlanetRenderer in Game calls IGPU methods; this translates them to GL calls.
 /// </summary>
 internal sealed class OpenGLGPU : IGPU, IDisposable
 {
@@ -65,7 +84,7 @@ internal sealed class OpenGLGPU : IGPU, IDisposable
     private int _nextPipelineId = 1;
     private int _nextBindGroupId = 1;
 
-    public const string CubeShaderGLSL = @"
+    public const string TerrainShaderGLSL = @"
 #version 330 core
 // -- VERTEX --
 #ifdef VERTEX
@@ -158,7 +177,7 @@ void main() {
         _gl.BindVertexArray(vao);
 
         // Set up vertex attributes from layout description
-        // Layout matches CubeMesh: pos(float32x3) + color(float32x3), stride 24
+        // Layout: pos(float32x3) + color(float32x3), stride 24
         _gl.EnableVertexAttribArray(0);
         _gl.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 24, (void*)0);
         _gl.EnableVertexAttribArray(1);
@@ -270,9 +289,14 @@ internal sealed class DesktopAppBackend : IRenderBackend
     public event Action? PointerDown;
     public event Action<float, float>? PointerDrag;
     public event Action? PointerUp;
+    public event Action<float, float, int>? PointerClick;
+    public event Action<float>? Scroll;
 
     private bool _dragging;
     private Vector2 _lastMouse;
+    private Vector2 _downMouse;
+    private float _totalDragDist;
+    private const float ClickThreshold = 5f;
 
     public DesktopAppBackend(IWindow window)
     {
@@ -280,24 +304,37 @@ internal sealed class DesktopAppBackend : IRenderBackend
         var input = window.CreateInput();
         foreach (var mouse in input.Mice)
         {
-            mouse.MouseDown += (_, btn) =>
+            mouse.MouseDown += (m, btn) =>
             {
-                if (btn != MouseButton.Left) return;
                 _dragging = true;
                 _lastMouse = mouse.Position;
+                _downMouse = mouse.Position;
+                _totalDragDist = 0;
                 PointerDown?.Invoke();
             };
-            mouse.MouseUp += (_, btn) =>
-            {
-                if (btn != MouseButton.Left) return;
-                _dragging = false;
-                PointerUp?.Invoke();
-            };
-            mouse.MouseMove += (_, pos) =>
+            mouse.MouseUp += (m, btn) =>
             {
                 if (!_dragging) return;
-                PointerDrag?.Invoke(pos.X - _lastMouse.X, pos.Y - _lastMouse.Y);
+                _dragging = false;
+                PointerUp?.Invoke();
+                if (_totalDragDist < ClickThreshold)
+                {
+                    int button = btn == MouseButton.Left ? 0 : btn == MouseButton.Right ? 2 : 1;
+                    PointerClick?.Invoke(mouse.Position.X, mouse.Position.Y, button);
+                }
+            };
+            mouse.MouseMove += (m, pos) =>
+            {
+                if (!_dragging) return;
+                var dx = pos.X - _lastMouse.X;
+                var dy = pos.Y - _lastMouse.Y;
+                _totalDragDist += MathF.Abs(dx) + MathF.Abs(dy);
+                PointerDrag?.Invoke(dx, dy);
                 _lastMouse = pos;
+            };
+            mouse.Scroll += (m, wheel) =>
+            {
+                Scroll?.Invoke(wheel.Y * 120f);
             };
         }
     }

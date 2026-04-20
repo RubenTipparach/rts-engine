@@ -1,36 +1,35 @@
+using System.Numerics;
 using RtsEngine.Core;
 using Silk.NET.Maths;
 
 namespace RtsEngine.Game;
 
 /// <summary>
-/// Platform-agnostic game engine. Shared by WASM and Desktop.
-///
-/// Depends only on:
-///   - IRenderBackend (app shell — input, loop)
-///   - IRenderer (draw calls)
-///   - Silk.NET.Maths (matrix math)
+/// Planet editor engine. Orbit camera around a cube-sphere planet.
+/// Left-click to raise a cell, right-click to lower.
+/// Drag to orbit, scroll to zoom.
 /// </summary>
 public class GameEngine
 {
     private readonly IRenderBackend _app;
     private readonly IRenderer _renderer;
+    private readonly PlanetRenderer? _planet;
 
-    private float _rotationX;
-    private float _rotationY;
-    private float _velocityX;
-    private float _velocityY;
+    // Camera state
+    private float _azimuth;         // horizontal angle (radians)
+    private float _elevation = 0.4f; // vertical angle (radians), clamped to ±~85°
+    private float _distance = 3.0f;  // distance from origin
     private bool _dragging;
 
-    private const float FreeDamping = 0.04f;
     private const float PixelsToRadians = 0.005f;
+    private const float MinDist = 1.5f;
+    private const float MaxDist = 8.0f;
+    private const float MinElev = -1.4f; // ~-80°
+    private const float MaxElev = 1.4f;  // ~+80°
 
     private DateTime _lastFrameTime = DateTime.UtcNow;
     private bool _running;
-
-    public float VelocityX => _velocityX;
-    public float VelocityY => _velocityY;
-    public float SpeedMagnitude => MathF.Sqrt(_velocityX * _velocityX + _velocityY * _velocityY);
+    private bool _meshDirty;
 
     public event Action? OnFrameRendered;
 
@@ -38,18 +37,38 @@ public class GameEngine
     {
         _app = app;
         _renderer = renderer;
+        _planet = renderer as PlanetRenderer;
 
         _app.PointerDown += () => _dragging = true;
+        _app.PointerUp += () => _dragging = false;
 
         _app.PointerDrag += (dx, dy) =>
         {
-            _rotationY += dx * PixelsToRadians;
-            _rotationX -= dy * PixelsToRadians;
-            _velocityY = dx * PixelsToRadians;
-            _velocityX = -dy * PixelsToRadians;
+            if (!_dragging) return;
+            _azimuth -= dx * PixelsToRadians;
+            _elevation += dy * PixelsToRadians;
+            _elevation = Math.Clamp(_elevation, MinElev, MaxElev);
         };
 
-        _app.PointerUp += () => _dragging = false;
+        _app.Scroll += delta =>
+        {
+            _distance -= delta * 0.002f;
+            _distance = Math.Clamp(_distance, MinDist, MaxDist);
+        };
+
+        _app.PointerClick += (cx, cy, button) =>
+        {
+            if (_planet == null) return;
+            var hit = RayPick(cx, cy);
+            if (hit == null) return;
+
+            var (face, row, col) = hit.Value;
+            if (button == 0) // left click — raise
+                _planet.Mesh.CycleLevel(face, row, col, 1);
+            else if (button == 2) // right click — lower
+                _planet.Mesh.CycleLevel(face, row, col, -1);
+            _meshDirty = true;
+        };
     }
 
     public void Run()
@@ -60,48 +79,100 @@ public class GameEngine
         _app.StartLoop(Tick);
     }
 
-    private Task Tick()
+    private async Task Tick()
     {
-        var now = DateTime.UtcNow;
-        var dt = MathF.Min((float)(now - _lastFrameTime).TotalSeconds, 0.1f);
-        _lastFrameTime = now;
-
-        if (!_dragging)
+        if (_meshDirty && _planet != null)
         {
-            _rotationX += _velocityX * dt * 60f;
-            _rotationY += _velocityY * dt * 60f;
-            var damping = MathF.Pow(FreeDamping, dt);
-            _velocityX *= damping;
-            _velocityY *= damping;
-            if (MathF.Abs(_velocityX) < 0.0001f) _velocityX = 0;
-            if (MathF.Abs(_velocityY) < 0.0001f) _velocityY = 0;
+            _meshDirty = false;
+            await _planet.RebuildMesh();
         }
 
         _renderer.Draw(BuildMvp(_app.AspectRatio));
         OnFrameRendered?.Invoke();
-        return Task.CompletedTask;
     }
 
     /// <summary>
-    /// Build MVP matrix. Uses Silk.NET's built-in CreatePerspectiveFieldOfView
-    /// which maps z to [0,1] — correct for WebGPU and D3D.
-    ///
-    /// For desktop OpenGL (z:[-1,1]), the platform renderer can override
-    /// the projection or use glClipControl. The MVP math itself is shared.
-    ///
-    /// Raw row-major floats passed to GPU — WGSL/GL column-major
-    /// reinterpretation gives automatic transpose = correct.
+    /// Ray-pick: screen pixel → planet cell.
+    /// Casts a ray from the camera through the pixel into the scene and
+    /// intersects with the planet sphere (approximate — uses base radius).
     /// </summary>
-    public float[] BuildMvp(float aspectRatio)
+    private (CubeFace face, int row, int col)? RayPick(float canvasX, float canvasY)
     {
-        var model = Matrix4X4.Multiply(
-            Matrix4X4.CreateRotationX(_rotationX),
-            Matrix4X4.CreateRotationY(_rotationY));
+        if (_planet == null) return null;
 
-        var view = Matrix4X4.CreateLookAt(
-            new Vector3D<float>(0, 0, 5),
+        float w = _app.CanvasWidth;
+        float h = _app.CanvasHeight;
+        if (w < 1 || h < 1) return null;
+
+        // NDC
+        float ndcX = 2f * canvasX / w - 1f;
+        float ndcY = 1f - 2f * canvasY / h;
+
+        // Camera matrices
+        float aspect = w / h;
+        var view = BuildViewMatrix();
+        var proj = Matrix4X4.CreatePerspectiveFieldOfView(
+            Scalar.DegreesToRadians(45.0f), aspect, 0.1f, 100.0f);
+        var vp = Matrix4X4.Multiply(view, proj);
+
+        if (!Matrix4X4.Invert(vp, out var invVP))
+            return null;
+
+        // Unproject near and far points
+        var nearClip = Unproject(invVP, ndcX, ndcY, 0f);
+        var farClip = Unproject(invVP, ndcX, ndcY, 1f);
+
+        var rayOrigin = ToNumerics(nearClip);
+        var rayDir = Vector3.Normalize(ToNumerics(farClip) - rayOrigin);
+
+        // Intersect with sphere of radius slightly above max possible (to catch top of cliff 3)
+        float r = _planet.Mesh.Radius + PlanetMesh.MaxLevel * _planet.Mesh.StepHeight + 0.01f;
+        float? t = RaySphereIntersect(rayOrigin, rayDir, r);
+        if (t == null) return null;
+
+        Vector3 hitPoint = rayOrigin + rayDir * t.Value;
+        return _planet.Mesh.DirectionToCell(hitPoint);
+    }
+
+    private static float? RaySphereIntersect(Vector3 origin, Vector3 dir, float radius)
+    {
+        float b = 2f * Vector3.Dot(origin, dir);
+        float c = Vector3.Dot(origin, origin) - radius * radius;
+        float disc = b * b - 4f * c;
+        if (disc < 0) return null;
+        float sqrtDisc = MathF.Sqrt(disc);
+        float t0 = (-b - sqrtDisc) * 0.5f;
+        float t1 = (-b + sqrtDisc) * 0.5f;
+        if (t0 > 0) return t0;
+        if (t1 > 0) return t1;
+        return null;
+    }
+
+    private static Vector3D<float> Unproject(Matrix4X4<float> invVP, float ndcX, float ndcY, float ndcZ)
+    {
+        var clip = new Vector4D<float>(ndcX, ndcY, ndcZ, 1f);
+        var world = Vector4D.Transform(clip, invVP);
+        if (MathF.Abs(world.W) < 1e-10f) return default;
+        return new Vector3D<float>(world.X / world.W, world.Y / world.W, world.Z / world.W);
+    }
+
+    private static Vector3 ToNumerics(Vector3D<float> v) => new(v.X, v.Y, v.Z);
+
+    private Matrix4X4<float> BuildViewMatrix()
+    {
+        float cx = _distance * MathF.Cos(_elevation) * MathF.Cos(_azimuth);
+        float cy = _distance * MathF.Sin(_elevation);
+        float cz = _distance * MathF.Cos(_elevation) * MathF.Sin(_azimuth);
+
+        return Matrix4X4.CreateLookAt(
+            new Vector3D<float>(cx, cy, cz),
             new Vector3D<float>(0, 0, 0),
             new Vector3D<float>(0, 1, 0));
+    }
+
+    public float[] BuildMvp(float aspectRatio)
+    {
+        var view = BuildViewMatrix();
 
         var proj = Matrix4X4.CreatePerspectiveFieldOfView(
             Scalar.DegreesToRadians(45.0f),
@@ -109,7 +180,7 @@ public class GameEngine
             0.1f,
             100.0f);
 
-        var mvp = Matrix4X4.Multiply(Matrix4X4.Multiply(model, view), proj);
+        var mvp = Matrix4X4.Multiply(view, proj);
         return MatrixHelper.ToRawFloats(mvp);
     }
 }
