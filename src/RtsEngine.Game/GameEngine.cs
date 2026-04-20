@@ -16,7 +16,7 @@ public class GameEngine
     private bool _dragging;
 
     private const float PixelsToRadians = 0.005f;
-    private const float MinDist = 1.5f;
+    private const float MinDist = 2.0f;
     private const float MaxDist = 8.0f;
     private const float MinElev = -1.4f;
     private const float MaxElev = 1.4f;

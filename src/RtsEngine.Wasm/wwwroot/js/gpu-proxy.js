@@ -40,23 +40,39 @@
 
     window.GPUProxy = {
         async init(canvasId) {
+            window.GPUProxyInitError = '';
             if (!navigator.gpu) {
-                console.error('WebGPU not supported');
+                console.error('WebGPU not supported in this browser');
+                window.GPUProxyInitError = 'WebGPU not supported. Requires Chrome 121+/Safari 18+ on desktop or mobile.';
                 return false;
             }
-            const adapter = await navigator.gpu.requestAdapter();
-            if (!adapter) {
-                console.error('No GPU adapter found');
+            try {
+                const adapter = await navigator.gpu.requestAdapter();
+                if (!adapter) {
+                    window.GPUProxyInitError = 'No GPU adapter available.';
+                    return false;
+                }
+                device = await adapter.requestDevice();
+                device.lost.then(info => console.error('GPU device lost:', info));
+                device.onuncapturederror = (e) => console.error('GPU error:', e.error.message);
+                canvas = document.getElementById(canvasId);
+                if (!canvas) return false;
+                context = canvas.getContext('webgpu');
+                if (!context) {
+                    window.GPUProxyInitError = 'Failed to get WebGPU canvas context.';
+                    return false;
+                }
+                canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+                context.configure({ device, format: canvasFormat, alphaMode: 'premultiplied' });
+                return true;
+            } catch (e) {
+                window.GPUProxyInitError = 'WebGPU init failed: ' + (e?.message ?? e);
+                console.error(e);
                 return false;
             }
-            device = await adapter.requestDevice();
-            canvas = document.getElementById(canvasId);
-            if (!canvas) return false;
-            context = canvas.getContext('webgpu');
-            canvasFormat = navigator.gpu.getPreferredCanvasFormat();
-            context.configure({ device, format: canvasFormat, alphaMode: 'premultiplied' });
-            return true;
         },
+
+        getInitError() { return window.GPUProxyInitError || ''; },
 
         getCanvasFormat() { return canvasFormat; },
 
@@ -72,7 +88,16 @@
         // ── Shader / Buffer / Pipeline ──────────────────────────
 
         createShaderModule(wgslCode) {
-            return register(shaderModules, device.createShaderModule({ code: wgslCode }));
+            const mod = device.createShaderModule({ code: wgslCode });
+            // Log any compilation errors/warnings (async, won't block)
+            mod.getCompilationInfo().then(info => {
+                for (const msg of info.messages) {
+                    const prefix = `[WGSL ${msg.type}] line ${msg.lineNum}: `;
+                    if (msg.type === 'error') console.error(prefix + msg.message);
+                    else if (msg.type === 'warning') console.warn(prefix + msg.message);
+                }
+            }).catch(() => {});
+            return register(shaderModules, mod);
         },
 
         createVertexBuffer(floatData) {
@@ -234,7 +259,7 @@
                         },
                     }],
                 },
-                primitive: { topology: 'triangle-list', cullMode: 'none' },
+                primitive: { topology: 'triangle-list', cullMode: 'back' },
                 depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'always' },
             });
             return register(pipelines, pipeline);
@@ -247,22 +272,28 @@
         // ── Textures / Samplers ─────────────────────────────────
 
         async createTextureFromUrl(url) {
-            const resp = await fetch(url);
-            const blob = await resp.blob();
-            const bitmap = await createImageBitmap(blob);
-            const tex = device.createTexture({
-                size: [bitmap.width, bitmap.height, 1],
-                format: 'rgba8unorm',
-                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
-            });
-            device.queue.copyExternalImageToTexture(
-                { source: bitmap },
-                { texture: tex },
-                [bitmap.width, bitmap.height, 1]
-            );
-            const view = tex.createView();
-            textures.push(tex);
-            return register(textureViews, view);
+            try {
+                const resp = await fetch(url);
+                if (!resp.ok) throw new Error(`fetch ${url}: ${resp.status}`);
+                const blob = await resp.blob();
+                const bitmap = await createImageBitmap(blob);
+                const tex = device.createTexture({
+                    size: [bitmap.width, bitmap.height, 1],
+                    format: 'rgba8unorm',
+                    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+                });
+                device.queue.copyExternalImageToTexture(
+                    { source: bitmap },
+                    { texture: tex },
+                    [bitmap.width, bitmap.height, 1]
+                );
+                const view = tex.createView();
+                textures.push(tex);
+                return register(textureViews, view);
+            } catch (e) {
+                console.error(`createTextureFromUrl(${url}) failed:`, e);
+                throw e;
+            }
         },
 
         createSampler(filter, wrap) {

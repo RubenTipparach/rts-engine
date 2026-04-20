@@ -12,6 +12,12 @@
         <div class="hud-title">Planet Editor (WebGPU)</div>
         <div class="hud-stat">Goldberg sphere (642 cells) &nbsp; 0 water · 1 sand · 2 grass · 3 rock · 4 snow</div>
         <div class="hud-hint">Drag to orbit &bull; Scroll to zoom &bull; Left-click raise &bull; Right-click lower</div>
+        @if (!string.IsNullOrEmpty(_errorMessage))
+        {
+            <div class="hud-error" style="margin-top:8px; color:#ff9090; background:#30000080; padding:6px; border-radius:4px;">
+                <b>Render error:</b> @_errorMessage
+            </div>
+        }
     </div>
 </div>
 
@@ -19,30 +25,44 @@
     private GameEngine? _engine;
     private WebGLRenderBackend? _app;
     private PlanetRenderer? _planet;
+    private string? _errorMessage;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (!firstRender) return;
+        try
+        {
+            var gpu = new WebGPU(JS);
+            if (!await gpu.Init("gpuCanvas"))
+            {
+                _errorMessage = await JS.InvokeAsync<string>("GPUProxy.getInitError")
+                    ?? "WebGPU initialization failed. This demo requires Chrome 121+, Edge 121+, or Safari 18+.";
+                StateHasChanged();
+                return;
+            }
 
-        var gpu = new WebGPU(JS);
-        if (!await gpu.Init("gpuCanvas")) return;
+            _app = new WebGLRenderBackend(JS);
+            await _app.InitializeAsync("gpuCanvas");
 
-        _app = new WebGLRenderBackend(JS);
-        await _app.InitializeAsync("gpuCanvas");
+            var shaderCode = await Http.GetStringAsync("shaders/terrain.wgsl");
+            var mesh = new PlanetMesh(subdivisions: 3, radius: 1.0f, stepHeight: 0.04f);
+            mesh.GenerateFromNoise(seed: 42);
 
-        var shaderCode = await Http.GetStringAsync("shaders/terrain.wgsl");
-        var mesh = new PlanetMesh(subdivisions: 3, radius: 1.0f, stepHeight: 0.04f);
-        mesh.GenerateFromNoise(seed: 42);
+            _planet = new PlanetRenderer(gpu, mesh);
+            await _planet.Setup(shaderCode);
 
-        _planet = new PlanetRenderer(gpu, mesh);
-        await _planet.Setup(shaderCode);
+            var atmoShader = await Http.GetStringAsync("shaders/atmosphere.wgsl");
+            await _planet.SetupAtmosphere(atmoShader);
 
-        var atmoShader = await Http.GetStringAsync("shaders/atmosphere.wgsl");
-        await _planet.SetupAtmosphere(atmoShader);
-
-        _engine = new GameEngine(_app, _planet);
-        _engine.OnFrameRendered += () => InvokeAsync(StateHasChanged);
-        _engine.Run();
+            _engine = new GameEngine(_app, _planet);
+            _engine.OnFrameRendered += () => InvokeAsync(StateHasChanged);
+            _engine.Run();
+        }
+        catch (Exception e)
+        {
+            _errorMessage = e.Message;
+            await InvokeAsync(StateHasChanged);
+        }
     }
 
     public void Dispose()
