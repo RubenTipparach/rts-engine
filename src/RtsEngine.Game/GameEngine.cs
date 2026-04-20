@@ -38,7 +38,7 @@ public class GameEngine
         _app.PointerDrag += (dx, dy) =>
         {
             if (!_dragging) return;
-            _azimuth -= dx * PixelsToRadians;
+            _azimuth += dx * PixelsToRadians;
             _elevation += dy * PixelsToRadians;
             _elevation = Math.Clamp(_elevation, MinElev, MaxElev);
         };
