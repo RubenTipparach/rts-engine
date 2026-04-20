@@ -2,8 +2,8 @@ namespace RtsEngine.Core;
 
 /// <summary>
 /// Abstraction over the draw call.
-/// WASM: CubeRenderer calls GPU.* → WebGPU.
-/// Desktop: DesktopRenderer calls Silk.NET.OpenGL.
+/// Platform-agnostic draw contract.
+/// Implementations receive MVP matrix per frame.
 /// </summary>
 public interface IRenderer
 {

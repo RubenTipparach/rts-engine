@@ -1,11 +1,9 @@
 namespace RtsEngine.Core;
 
-/// <summary>
-/// GPU abstraction — what CubeRenderer codes against.
+/// GPU abstraction — what renderers code against.
 /// WASM implements this via JS interop → WebGPU.
 /// Desktop implements this via Silk.NET → OpenGL.
 /// Game code never knows which.
-/// </summary>
 public interface IGPU
 {
     Task<int> CreateShaderModule(string shaderCode);
@@ -16,5 +14,15 @@ public interface IGPU
     Task<int> CreateRenderPipeline(int shaderModuleId, object[] vertexBufferLayouts);
     Task<int> CreateBindGroup(int pipelineId, int groupIndex, object[] entries);
     void Render(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount);
+
+    /// <summary>Same as Render but preserves previous content (loadOp: load). For multi-pass.</summary>
+    void RenderAdditional(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount);
+
     void DestroyBuffer(int bufferId);
+
+    Task<int> CreateTextureFromUrl(string url);
+    Task<int> CreateSampler(string filter = "linear", string wrap = "repeat");
+
+    /// <summary>Same as CreateRenderPipeline but with alpha blend + depth write off. For transparent overlays.</summary>
+    Task<int> CreateRenderPipelineAlphaBlend(int shaderModuleId, object[] vertexBufferLayouts);
 }

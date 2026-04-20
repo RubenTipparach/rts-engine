@@ -39,6 +39,18 @@ public sealed class WebGPU : IGPU
     public void Render(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount)
         => _js.InvokeVoidAsync("GPUProxy.render", pipelineId, vertexBufferId, indexBufferId, bindGroupId, indexCount);
 
+    public void RenderAdditional(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount)
+        => _js.InvokeVoidAsync("GPUProxy.renderAdditional", pipelineId, vertexBufferId, indexBufferId, bindGroupId, indexCount);
+
     public void DestroyBuffer(int bufferId)
         => _js.InvokeVoidAsync("GPUProxy.destroyBuffer", bufferId);
+
+    public async Task<int> CreateTextureFromUrl(string url)
+        => await _js.InvokeAsync<int>("GPUProxy.createTextureFromUrl", url);
+
+    public async Task<int> CreateSampler(string filter = "linear", string wrap = "repeat")
+        => await _js.InvokeAsync<int>("GPUProxy.createSampler", filter, wrap);
+
+    public async Task<int> CreateRenderPipelineAlphaBlend(int shaderModuleId, object[] vertexBufferLayouts)
+        => await _js.InvokeAsync<int>("GPUProxy.createRenderPipelineAlphaBlend", shaderModuleId, vertexBufferLayouts);
 }
