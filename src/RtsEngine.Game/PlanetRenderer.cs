@@ -147,7 +147,7 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
 
         var (v, i) = Mesh.BuildMesh();
         _tVbo = await _gpu.CreateVertexBuffer(v);
-        _tIbo = await _gpu.CreateIndexBuffer(i);
+        _tIbo = await _gpu.CreateIndexBuffer32(i);
         _tIndexCount = i.Length;
     }
 
