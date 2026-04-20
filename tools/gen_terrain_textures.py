@@ -229,6 +229,39 @@ def gen_atlas():
     print(f"  wrote terrain_atlas.png")
 
 
+# ── Water DuDv map ──────────────────────────────────────────────────
+def gen_water_dudv():
+    """DuDv map: RG channels encode UV distortion offsets (centered at 128).
+    Seamlessly tileable. Used for water surface wave distortion."""
+    n1 = fbm_tileable(SIZE, SIZE, 4, 5, seed=7001, persistence=0.6)
+    n2 = fbm_tileable(SIZE, SIZE, 4, 5, seed=7002, persistence=0.6)
+    # Map [-ish,+ish] noise to [0, 1] centered at 0.5
+    du = clip01(n1 * 0.5 + 0.5)
+    dv = clip01(n2 * 0.5 + 0.5)
+    # Pack RG (du, dv) + B=0
+    rgb = np.stack([du, dv, np.zeros_like(du)], axis=-1)
+    save_rgb("water_dudv.png", rgb)
+
+
+# ── Water normal map ────────────────────────────────────────────────
+def gen_water_normal():
+    """Normal map from tileable heightfield. RGB = normal XYZ remapped to [0,1]."""
+    hf = fbm_tileable(SIZE, SIZE, 6, 5, seed=8001, persistence=0.55)
+    # Compute normals from heightfield via finite differences (tileable wrap)
+    strength = 2.0
+    dx = np.roll(hf, -1, axis=1) - np.roll(hf, 1, axis=1)
+    dy = np.roll(hf, -1, axis=0) - np.roll(hf, 1, axis=0)
+    nx = -dx * strength
+    ny = -dy * strength
+    nz = np.ones_like(nx)
+    # Normalize
+    length = np.sqrt(nx*nx + ny*ny + nz*nz)
+    nx /= length; ny /= length; nz /= length
+    # Remap from [-1,1] to [0,1]
+    rgb = np.stack([nx * 0.5 + 0.5, ny * 0.5 + 0.5, nz * 0.5 + 0.5], axis=-1)
+    save_rgb("water_normal.png", rgb)
+
+
 if __name__ == "__main__":
     print(f"Generating terrain textures → {OUT_DIR}")
     gen_water()
@@ -237,4 +270,6 @@ if __name__ == "__main__":
     gen_rock()
     gen_snow()
     gen_atlas()
+    gen_water_dudv()
+    gen_water_normal()
     print("done.")

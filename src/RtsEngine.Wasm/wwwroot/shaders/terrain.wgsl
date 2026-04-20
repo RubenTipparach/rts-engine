@@ -1,6 +1,6 @@
-// Terrain shader — defensive rewrite using textureSampleLevel to avoid
-// any non-uniform control flow / derivative issues that can make the
-// pipeline invalid on certain mobile GPUs.
+// Terrain shader — triplanar atlas + Lambert + OpenGL-Water style water
+// (DuDv distortion map + normal map + Fresnel + specular).
+// Uses textureSampleLevel exclusively for non-uniform flow safety.
 
 struct Uniforms {
     mvp: mat4x4f,
@@ -10,8 +10,10 @@ struct Uniforms {
 }
 
 @binding(0) @group(0) var<uniform> u: Uniforms;
-@binding(1) @group(0) var terrainSampler: sampler;
+@binding(1) @group(0) var samp: sampler;
 @binding(2) @group(0) var terrainAtlas: texture_2d<f32>;
+@binding(3) @group(0) var waterDuDv: texture_2d<f32>;
+@binding(4) @group(0) var waterNormal: texture_2d<f32>;
 
 struct VSOutput {
     @builtin(position) position: vec4f,
@@ -34,7 +36,7 @@ fn vs_main(
     return out;
 }
 
-// ── Fallback level colors (used when texture sample is black) ─────
+// ── Fallback level colors ─────────────────────────────────────────
 
 fn levelColor(level: f32) -> vec3f {
     let lvl = i32(level + 0.5);
@@ -46,15 +48,11 @@ fn levelColor(level: f32) -> vec3f {
 }
 
 // ── Atlas sampling ────────────────────────────────────────────────
-// Uses textureSampleLevel (explicit mip) — no implicit derivatives,
-// works in any control flow.
 
 fn sampleTile(uv: vec2f, level: f32) -> vec3f {
     let tileW = 0.2;
     let au = level * tileW + fract(uv.x) * tileW;
-    let av = fract(uv.y);
-    let tex = textureSampleLevel(terrainAtlas, terrainSampler, vec2f(au, av), 0.0).rgb;
-    // Shader-side fallback if texture failed to load
+    let tex = textureSampleLevel(terrainAtlas, samp, vec2f(au, fract(uv.y)), 0.0).rgb;
     let brightness = tex.r + tex.g + tex.b;
     if (brightness < 0.01) { return levelColor(level); }
     return tex;
@@ -64,29 +62,77 @@ fn triplanarTile(wp: vec3f, N: vec3f, level: f32) -> vec3f {
     let s = 4.0;
     let b = max(abs(N), vec3f(0.001, 0.001, 0.001));
     let total = b.x + b.y + b.z;
+    return sampleTile(wp.zy * s, level) * (b.x / total)
+         + sampleTile(wp.xz * s, level) * (b.y / total)
+         + sampleTile(wp.xy * s, level) * (b.z / total);
+}
+
+// ── Water (OpenGL-Water style: DuDv distortion + normal map) ──────
+
+fn waterShader(wp: vec3f, N: vec3f, V: vec3f, L: vec3f) -> vec3f {
+    let t = u.time;
+    let tiling = 6.0;
+
+    // Triplanar UV for sphere
+    let b = max(abs(N), vec3f(0.001, 0.001, 0.001));
+    let total = b.x + b.y + b.z;
     let wx = b.x / total;
     let wy = b.y / total;
     let wz = b.z / total;
-    return sampleTile(wp.zy * s, level) * wx
-         + sampleTile(wp.xz * s, level) * wy
-         + sampleTile(wp.xy * s, level) * wz;
-}
 
-// ── Small value noise (for wave perturbation) ─────────────────────
+    // Dominant UV plane
+    var waterUV: vec2f;
+    if (wy > wx && wy > wz) { waterUV = wp.xz * tiling; }
+    else if (wx > wz)       { waterUV = wp.zy * tiling; }
+    else                     { waterUV = wp.xy * tiling; }
 
-fn hash2(p: vec2f) -> f32 {
-    return fract(sin(dot(p, vec2f(127.1, 311.7))) * 43758.5453);
-}
+    // Animated DuDv distortion (two scrolling layers like OpenGL-Water)
+    let moveSpeed = 0.03;
+    let moveFactor = t * moveSpeed;
+    let dudvUV1 = vec2f(waterUV.x + moveFactor, waterUV.y);
+    let dudv1 = textureSampleLevel(waterDuDv, samp, dudvUV1, 0.0).rg * 0.1;
+    let dudvUV2 = waterUV + vec2f(dudv1.x, dudv1.y + moveFactor);
+    let distortion = (textureSampleLevel(waterDuDv, samp, dudvUV2, 0.0).rg * 2.0 - 1.0) * 0.02;
 
-fn vnoise(p: vec2f) -> f32 {
-    let i = floor(p);
-    let f = fract(p);
-    let smoothf = f * f * (3.0 - 2.0 * f);
-    let a = hash2(i);
-    let b = hash2(i + vec2f(1.0, 0.0));
-    let c = hash2(i + vec2f(0.0, 1.0));
-    let d = hash2(i + vec2f(1.0, 1.0));
-    return mix(mix(a, b, smoothf.x), mix(c, d, smoothf.x), smoothf.y);
+    // Normal from normal map (perturbed by distortion)
+    let nmSample = textureSampleLevel(waterNormal, samp, dudvUV2, 0.0).rgb;
+    let mapNormal = vec3f(nmSample.r * 2.0 - 1.0, nmSample.b * 3.0, nmSample.g * 2.0 - 1.0);
+
+    // Transform map normal from tangent space to world
+    var tang = cross(N, vec3f(0.0, 1.0, 0.0));
+    if (dot(tang, tang) < 0.01) { tang = cross(N, vec3f(1.0, 0.0, 0.0)); }
+    tang = normalize(tang);
+    let bitang = normalize(cross(N, tang));
+    let waveN = normalize(tang * mapNormal.x + N * mapNormal.y + bitang * mapNormal.z);
+
+    // Fresnel — more reflection at grazing angle
+    let refractiveFactor = pow(max(dot(V, waveN), 0.0), 0.5);
+
+    // Depth scatter: view-dependent color for seeing "into" the water
+    let viewDepth = max(dot(N, V), 0.0);
+    let shallowColor = vec3f(0.20, 0.50, 0.55);
+    let deepColor = vec3f(0.02, 0.06, 0.15);
+    let refractColor = mix(deepColor, shallowColor, pow(viewDepth, 0.6));
+
+    // Reflection: approximated sky gradient
+    let R = reflect(-V, waveN);
+    let skyGrad = R.y * 0.5 + 0.5;
+    let reflectColor = mix(vec3f(0.30, 0.40, 0.50), vec3f(0.50, 0.65, 0.85), skyGrad);
+
+    // Blend refraction and reflection via Fresnel
+    let waterBase = mix(reflectColor, refractColor, refractiveFactor);
+
+    // Tint toward water blue
+    let tinted = mix(waterBase, vec3f(0.0, 0.3, 0.5), 0.2);
+
+    // Sun specular on wave surface
+    let reflectedLight = reflect(-L, waveN);
+    let spec = pow(max(dot(reflectedLight, V), 0.0), 64.0);
+    let specHighlight = vec3f(1.0, 0.95, 0.85) * spec * 0.5;
+
+    // Lambert (gentle)
+    let NdotL = max(dot(N, L), 0.0);
+    return tinted * (0.2 + NdotL * 0.4) + specHighlight;
 }
 
 // ── Fragment ──────────────────────────────────────────────────────
@@ -102,52 +148,14 @@ fn fs_main(
     let V = normalize(u.cameraPos.xyz - worldPos);
     let NdotL = max(dot(N, L), 0.0);
 
-    // Always sample the atlas (uniform control flow)
-    let base = triplanarTile(worldPos, N, level);
+    // Always sample terrain atlas unconditionally (uniform flow)
+    let terrainBase = triplanarTile(worldPos, N, level);
 
-    var lit = base * (0.25 + NdotL * 0.9);
-
-    // Water tier: add animated effects on top of base color
+    var lit: vec3f;
     if (level < 0.5) {
-        let t = u.time;
-
-        // Wave normal perturbation (simple, no texture sample)
-        let n1 = vnoise(worldPos.xz * 12.0 + vec2f(t * 0.6, t * 0.4)) - 0.5;
-        let n2 = vnoise(worldPos.zy * 9.0  + vec2f(t * -0.5, t * 0.7)) - 0.5;
-
-        var tang = cross(N, vec3f(0.0, 1.0, 0.0));
-        if (dot(tang, tang) < 0.01) { tang = cross(N, vec3f(1.0, 0.0, 0.0)); }
-        tang = normalize(tang);
-        let bitang = normalize(cross(N, tang));
-        let waveN = normalize(N + tang * (n1 * 0.15) + bitang * (n2 * 0.15));
-
-        // Fresnel
-        let fresnel = pow(1.0 - max(dot(waveN, V), 0.0), 4.0);
-
-        // Depth scatter tint
-        let viewDepth = max(dot(N, V), 0.0);
-        let scatter = mix(vec3f(0.03, 0.08, 0.18), vec3f(0.25, 0.55, 0.60), pow(viewDepth, 0.6));
-        let waterBase = mix(scatter, base, 0.3 + viewDepth * 0.3);
-
-        // Sky reflection
-        let R = reflect(-V, waveN);
-        let skyGrad = R.y * 0.5 + 0.5;
-        let skyColor = mix(vec3f(0.35, 0.45, 0.55), vec3f(0.55, 0.70, 0.90), skyGrad);
-        let reflected = mix(waterBase, skyColor, fresnel * 0.6);
-
-        // Specular
-        let H = normalize(L + V);
-        let spec = pow(max(dot(waveN, H), 0.0), 64.0);
-        let sunSpec = vec3f(1.0, 0.95, 0.85) * spec * 1.2 * NdotL;
-
-        // SSS
-        let sss = pow(max(dot(V, -L), 0.0), 3.0) * 0.15;
-        let sssColor = vec3f(0.1, 0.35, 0.25) * sss;
-
-        // Caustics
-        let caustic = vnoise(worldPos.xz * 20.0 + vec2f(t * 0.3, t * 0.3)) * 0.1 * NdotL;
-
-        lit = reflected * (0.15 + NdotL * 0.5) + sunSpec + sssColor + vec3f(caustic, caustic, caustic);
+        lit = waterShader(worldPos, N, V, L);
+    } else {
+        lit = terrainBase * (0.25 + NdotL * 0.9);
     }
 
     // Rim atmosphere glow

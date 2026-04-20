@@ -19,7 +19,7 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
 
     // Terrain
     private int _tPipeline, _tVbo, _tIbo, _tUbo, _tBindGroup;
-    private int _samplerId, _atlasTexId;
+    private int _samplerId, _atlasTexId, _dudvTexId, _normalTexId;
     private int _tIndexCount;
     private readonly float[] _tUni = new float[TerrainUniFloats];
 
@@ -51,10 +51,11 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
 
     public async Task Setup(string terrainShader, string atlasUrl = "textures/terrain_atlas.png")
     {
-        // Terrain pipeline
         var tShader = await _gpu.CreateShaderModule(terrainShader);
         _tUbo = await _gpu.CreateUniformBuffer(TerrainUniformSize);
         _atlasTexId = await _gpu.CreateTextureFromUrl(atlasUrl);
+        _dudvTexId = await _gpu.CreateTextureFromUrl("textures/water_dudv.png");
+        _normalTexId = await _gpu.CreateTextureFromUrl("textures/water_normal.png");
         _samplerId = await _gpu.CreateSampler("linear", "repeat");
 
         var (tv, ti) = Mesh.BuildMesh();
@@ -80,6 +81,8 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
             new { binding = 0, bufferId = _tUbo },
             new { binding = 1, samplerId = _samplerId },
             new { binding = 2, textureViewId = _atlasTexId },
+            new { binding = 3, textureViewId = _dudvTexId },
+            new { binding = 4, textureViewId = _normalTexId },
         });
     }
 
