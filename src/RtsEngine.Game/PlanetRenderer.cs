@@ -98,7 +98,7 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         _aUbo = await _gpu.CreateUniformBuffer(AtmoUniformSize);
 
         float pR = Mesh.Radius * 0.92f;
-        float aR = Mesh.Radius * 2.0f; // 4× thicker atmosphere shell
+        float aR = Mesh.Radius * 1.5f; // 50% thickness atmosphere shell
         _aUni[24] = pR;
         _aUni[25] = aR;
         _aUni[26] = 30.0f;
