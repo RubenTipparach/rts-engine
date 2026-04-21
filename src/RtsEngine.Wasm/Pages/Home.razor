@@ -54,6 +54,9 @@
             var atmoShader = await Http.GetStringAsync("shaders/atmosphere.wgsl");
             await _planet.SetupAtmosphere(atmoShader);
 
+            var outlineShader = await Http.GetStringAsync("shaders/outline.wgsl");
+            await _planet.SetupOutline(outlineShader);
+
             _engine = new GameEngine(_app, _planet);
             _engine.OnFrameRendered += () => InvokeAsync(StateHasChanged);
             _engine.Run();

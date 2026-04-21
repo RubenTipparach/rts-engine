@@ -107,6 +107,29 @@ public sealed class PlanetMesh
 
     public Vector3 GetCellCenter(int cell) => _centers[cell];
 
+    /// <summary>
+    /// Build a line-list mesh (pos3f per vertex) outlining the hex/pentagon
+    /// boundary of the given cell, slightly above the cell's top surface.
+    /// Returns N line segments = 2N vertices for an N-sided polygon.
+    /// </summary>
+    public float[] BuildCellOutline(int cell)
+    {
+        byte level = _levels[cell];
+        float h = Radius + level * StepHeight + 0.003f; // slightly above to avoid z-fighting
+        var poly = _polyVerts[cell];
+        int n = poly.Length;
+        var data = new float[n * 2 * 3];
+        for (int i = 0; i < n; i++)
+        {
+            int j = (i + 1) % n;
+            var a = poly[i] * h;
+            var b = poly[j] * h;
+            data[i * 6 + 0] = a.X; data[i * 6 + 1] = a.Y; data[i * 6 + 2] = a.Z;
+            data[i * 6 + 3] = b.X; data[i * 6 + 4] = b.Y; data[i * 6 + 5] = b.Z;
+        }
+        return data;
+    }
+
     public int? DirectionToCell(Vector3 dir)
     {
         if (dir.LengthSquared() < 1e-12f) return null;

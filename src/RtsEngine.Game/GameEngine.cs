@@ -97,16 +97,8 @@ public class GameEngine
             var cam = CameraPosition();
             _planet.SetCameraPosition(cam.X, cam.Y, cam.Z);
             _planet.SetTime((float)(DateTime.UtcNow - _startTime).TotalSeconds);
-
-            if (_hoveredCell >= 0)
-            {
-                var dir = _planet.Mesh.GetCellCenter(_hoveredCell);
-                _planet.SetHighlight(dir.X, dir.Y, dir.Z);
-            }
-            else
-            {
-                _planet.SetHighlight(0, 0, 0);
-            }
+            _planet.SetHighlightCell(_hoveredCell);
+            await _planet.SyncOutline();
         }
 
         _lastMvp = BuildMvp(_app.AspectRatio);

@@ -282,6 +282,30 @@
             return register(pipelines, pipeline);
         },
 
+        createRenderPipelineLines(shaderModuleId, vertexBufferLayouts) {
+            const pipeline = device.createRenderPipeline({
+                layout: 'auto',
+                vertex: {
+                    module: shaderModules[shaderModuleId],
+                    entryPoint: 'vs_main',
+                    buffers: vertexBufferLayouts.map(l => ({
+                        arrayStride: l.arrayStride,
+                        attributes: l.attributes.map(a => ({
+                            format: a.format, offset: a.offset, shaderLocation: a.shaderLocation,
+                        })),
+                    })),
+                },
+                fragment: {
+                    module: shaderModules[shaderModuleId],
+                    entryPoint: 'fs_main',
+                    targets: [{ format: canvasFormat }],
+                },
+                primitive: { topology: 'line-list' },
+                depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less-equal' },
+            });
+            return register(pipelines, pipeline);
+        },
+
         destroyBuffer(id) {
             if (buffers[id]) { buffers[id].destroy(); buffers[id] = null; }
         },

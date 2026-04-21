@@ -5,9 +5,9 @@ namespace RtsEngine.Game;
 
 public sealed class PlanetRenderer : IRenderer, IDisposable
 {
-    // Terrain uniform: mvp(64) + sunDir(16) + camPos(16) + time+pad(16) + highlightDir(16) = 128
-    public const int TerrainUniformSize = 128;
-    private const int TerrainUniFloats = 32;
+    // Terrain uniform: mvp(64) + sunDir(16) + camPos(16) + time+pad(16) = 112
+    public const int TerrainUniformSize = 112;
+    private const int TerrainUniFloats = 28;
 
     // Atmosphere uniform: mat4 mvp (64) + vec4 sunDir (16) + vec4 camPos (16) + vec4 params (16) = 112
     public const int AtmoUniformSize = 112;
@@ -29,6 +29,16 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
     private readonly float[] _aUni = new float[AtmoUniFloats];
     private bool _atmoReady;
 
+    // Outline (hovered cell highlight — line-list mesh)
+    private int _oPipeline, _oUbo, _oBindGroup;
+    private int _oVbo = 0;
+    private int _oIbo = 0; // sequential [0..11] for up to 12 verts
+    private int _oVertCount = 0;
+    private int _highlightedCell = -1;
+    private bool _oReady;
+    private bool _outlineDirty;
+    private readonly float[] _oUni = new float[16];
+
     public PlanetMesh Mesh { get; }
 
     public PlanetRenderer(IGPU gpu, PlanetMesh mesh)
@@ -47,10 +57,11 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         _aUni[20] = x; _aUni[21] = y; _aUni[22] = z;
     }
 
-    public void SetHighlight(float dx, float dy, float dz)
+    public void SetHighlightCell(int cell)
     {
-        _tUni[28] = dx; _tUni[29] = dy; _tUni[30] = dz;
-        _tUni[31] = (dx * dx + dy * dy + dz * dz) > 0.001f ? 1.0f : 0.0f;
+        if (cell == _highlightedCell) return;
+        _highlightedCell = cell;
+        _outlineDirty = true;
     }
 
     // ── Setup ───────────────────────────────────────────────────────
@@ -127,6 +138,34 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         _atmoReady = true;
     }
 
+    public async Task SetupOutline(string outlineShader)
+    {
+        var oShader = await _gpu.CreateShaderModule(outlineShader);
+        _oUbo = await _gpu.CreateUniformBuffer(64);
+
+        _oPipeline = await _gpu.CreateRenderPipelineLines(oShader, new object[]
+        {
+            new {
+                arrayStride = 12,
+                attributes = new object[]
+                {
+                    new { format = "float32x3", offset = 0, shaderLocation = 0 },
+                }
+            }
+        });
+        _oBindGroup = await _gpu.CreateBindGroup(_oPipeline, 0, new object[]
+        {
+            new { binding = 0, bufferId = _oUbo },
+        });
+
+        // Sequential indices [0..11] — covers any cell (max 6 edges × 2 verts)
+        var seq = new ushort[12];
+        for (ushort i = 0; i < 12; i++) seq[i] = i;
+        _oIbo = await _gpu.CreateIndexBuffer(seq);
+
+        _oReady = true;
+    }
+
     // ── Draw ────────────────────────────────────────────────────────
 
     public void Draw(float[] mvpRawFloats)
@@ -143,6 +182,28 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
             _gpu.WriteBuffer(_aUbo, _aUni);
             _gpu.RenderAdditional(_aPipeline, _aVbo, _aIbo, _aBindGroup, _aIndexCount);
         }
+
+        // Outline pass — yellow line-list around hovered cell
+        if (_oReady && _oVbo > 0 && _oVertCount > 0)
+        {
+            Array.Copy(mvpRawFloats, 0, _oUni, 0, 16);
+            _gpu.WriteBuffer(_oUbo, _oUni);
+            _gpu.RenderAdditional(_oPipeline, _oVbo, _oIbo, _oBindGroup, _oVertCount);
+        }
+    }
+
+    /// <summary>Rebuild the outline VBO if the highlighted cell changed. Call from the tick before Draw.</summary>
+    public async Task SyncOutline()
+    {
+        if (!_outlineDirty) return;
+        _outlineDirty = false;
+
+        if (_oVbo > 0) { _gpu.DestroyBuffer(_oVbo); _oVbo = 0; _oVertCount = 0; }
+        if (_highlightedCell < 0) return;
+
+        var data = Mesh.BuildCellOutline(_highlightedCell);
+        _oVbo = await _gpu.CreateVertexBuffer(data);
+        _oVertCount = data.Length / 3;
     }
 
     public async Task RebuildMesh()
