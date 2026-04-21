@@ -27,7 +27,7 @@ fn vs_main(@location(0) pos: vec3f) -> VSOutput {
 const PI: f32 = 3.14159265;
 const NUM_SAMPLES: i32 = 8;
 const NUM_LIGHT_SAMPLES: i32 = 4;
-const SCALE_HEIGHT: f32 = 0.25;
+const SCALE_HEIGHT: f32 = 0.5;
 // (1/wavelength)^4 for 680nm, 550nm, 440nm — Rayleigh scattering wavelength dependence
 const WAVE_INV4: vec3f = vec3f(5.602, 9.473, 19.644);
 

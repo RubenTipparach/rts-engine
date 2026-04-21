@@ -276,8 +276,8 @@
                         },
                     }],
                 },
-                primitive: { topology: 'triangle-list', cullMode: 'back' },
-                depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'always' },
+                primitive: { topology: 'triangle-list', cullMode: 'front' },
+                depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less' },
             });
             return register(pipelines, pipeline);
         },

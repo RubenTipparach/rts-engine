@@ -97,12 +97,11 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         var aShader = await _gpu.CreateShaderModule(atmosphereShader);
         _aUbo = await _gpu.CreateUniformBuffer(AtmoUniformSize);
 
-        // Atmosphere params: planetRadius, atmosphereRadius, sunIntensity
-        float pR = Mesh.Radius * 0.92f; // inner radius below ground so glow starts at surface
-        float aR = Mesh.Radius * 1.25f;
-        _aUni[24] = pR;   // params.x
-        _aUni[25] = aR;   // params.y
-        _aUni[26] = 15.0f; // params.z (sunIntensity)
+        float pR = Mesh.Radius * 0.92f;
+        float aR = Mesh.Radius * 2.0f; // 4× thicker atmosphere shell
+        _aUni[24] = pR;
+        _aUni[25] = aR;
+        _aUni[26] = 30.0f;
 
         var (av, ai) = BuildAtmoSphere(aR, 3);
         _aVbo = await _gpu.CreateVertexBuffer(av);
