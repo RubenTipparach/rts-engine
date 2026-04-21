@@ -28,9 +28,29 @@ public static class Program
             var gl = window.CreateOpenGL();
 
             gpu = new OpenGLGPU(gl);
-            var mesh = new PlanetMesh(subdivisions: 4, radius: 1.0f, stepHeight: 0.04f);
-            mesh.GenerateFromNoise(seed: 42);
+
+            // Desktop: load YAML from the published wwwroot copy next to the exe,
+            // or fall back to defaults if the file isn't there.
+            PlanetConfig config = new();
+            try
+            {
+                var yamlPath = Path.Combine(AppContext.BaseDirectory, "planets", "earth.yaml");
+                if (File.Exists(yamlPath))
+                    config = PlanetConfig.FromYaml(File.ReadAllText(yamlPath));
+            }
+            catch { /* use defaults */ }
+
+            var mesh = new PlanetMesh(
+                subdivisions: config.Subdivisions,
+                radius: config.Radius,
+                stepHeight: config.StepHeight);
+            mesh.GenerateFromNoise(
+                seed: config.Generation.Seed,
+                frequency: config.Generation.Frequency,
+                thresholds: config.Generation.Thresholds.ToArray());
+
             renderer = new PlanetRenderer(gpu, mesh);
+            renderer.ApplyConfig(config);
             await renderer.Setup(OpenGLGPU.TerrainShaderGLSL);
 
             backend = new DesktopAppBackend(window);

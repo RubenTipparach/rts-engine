@@ -44,11 +44,21 @@
             _app = new WebGLRenderBackend(JS);
             await _app.InitializeAsync("gpuCanvas");
 
+            var configYaml = await Http.GetStringAsync("planets/earth.yaml");
+            var config = PlanetConfig.FromYaml(configYaml);
+
             var shaderCode = await Http.GetStringAsync("shaders/terrain.wgsl");
-            var mesh = new PlanetMesh(subdivisions: 4, radius: 1.0f, stepHeight: 0.04f);
-            mesh.GenerateFromNoise(seed: 42);
+            var mesh = new PlanetMesh(
+                subdivisions: config.Subdivisions,
+                radius: config.Radius,
+                stepHeight: config.StepHeight);
+            mesh.GenerateFromNoise(
+                seed: config.Generation.Seed,
+                frequency: config.Generation.Frequency,
+                thresholds: config.Generation.Thresholds.ToArray());
 
             _planet = new PlanetRenderer(gpu, mesh);
+            _planet.ApplyConfig(config);
             await _planet.Setup(shaderCode);
 
             var atmoShader = await Http.GetStringAsync("shaders/atmosphere.wgsl");

@@ -146,8 +146,9 @@ public sealed class PlanetMesh
 
     // ── Noise terrain generation ────────────────────────────────────
 
-    public void GenerateFromNoise(int seed = 42, float frequency = 2.5f)
+    public void GenerateFromNoise(int seed = 42, float frequency = 2.5f, float[]? thresholds = null)
     {
+        var th = thresholds ?? new[] { 0.30f, 0.45f, 0.65f, 0.82f };
         for (int i = 0; i < CellCount; i++)
         {
             Vector3 p = _centers[i];
@@ -155,10 +156,10 @@ public sealed class PlanetMesh
                 p.X * frequency, p.Y * frequency, p.Z * frequency,
                 4, 0.5f, seed);
             float t = (n + 1f) * 0.5f;
-            _levels[i] = t < 0.30f ? (byte)0 :
-                         t < 0.45f ? (byte)1 :
-                         t < 0.65f ? (byte)2 :
-                         t < 0.82f ? (byte)3 : (byte)4;
+            byte lvl = 4;
+            for (int k = 0; k < th.Length && k < 4; k++)
+                if (t < th[k]) { lvl = (byte)k; break; }
+            _levels[i] = lvl;
         }
     }
 

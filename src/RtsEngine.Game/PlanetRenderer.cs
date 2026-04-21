@@ -14,6 +14,21 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
     private const int AtmoUniFloats = 28;
 
     private static readonly float[] DefaultSunDir = { 0.5f, 0.7f, 0.5f, 0f };
+    private PlanetConfig _config = new();
+
+    public void ApplyConfig(PlanetConfig config)
+    {
+        _config = config;
+        if (config.Atmosphere.SunDirection.Count >= 3)
+        {
+            _tUni[16] = config.Atmosphere.SunDirection[0];
+            _tUni[17] = config.Atmosphere.SunDirection[1];
+            _tUni[18] = config.Atmosphere.SunDirection[2];
+            _aUni[16] = config.Atmosphere.SunDirection[0];
+            _aUni[17] = config.Atmosphere.SunDirection[1];
+            _aUni[18] = config.Atmosphere.SunDirection[2];
+        }
+    }
 
     private readonly IGPU _gpu;
 
@@ -66,13 +81,13 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
 
     // ── Setup ───────────────────────────────────────────────────────
 
-    public async Task Setup(string terrainShader, string atlasUrl = "textures/terrain_atlas.png")
+    public async Task Setup(string terrainShader, string? atlasUrl = null)
     {
         var tShader = await _gpu.CreateShaderModule(terrainShader);
         _tUbo = await _gpu.CreateUniformBuffer(TerrainUniformSize);
-        _atlasTexId = await _gpu.CreateTextureFromUrl(atlasUrl);
-        _dudvTexId = await _gpu.CreateTextureFromUrl("textures/water_dudv.png");
-        _normalTexId = await _gpu.CreateTextureFromUrl("textures/water_normal.png");
+        _atlasTexId = await _gpu.CreateTextureFromUrl(atlasUrl ?? _config.Terrain.AtlasUrl);
+        _dudvTexId = await _gpu.CreateTextureFromUrl(_config.Water.DuDvUrl);
+        _normalTexId = await _gpu.CreateTextureFromUrl(_config.Water.NormalUrl);
         _samplerId = await _gpu.CreateSampler("linear", "repeat");
 
         var (tv, ti) = Mesh.BuildMesh();
@@ -108,11 +123,11 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         var aShader = await _gpu.CreateShaderModule(atmosphereShader);
         _aUbo = await _gpu.CreateUniformBuffer(AtmoUniformSize);
 
-        float pR = Mesh.Radius * 0.92f;
-        float aR = Mesh.Radius * 1.5f; // 50% thickness atmosphere shell
+        float pR = Mesh.Radius * _config.Atmosphere.InnerRadiusMul;
+        float aR = Mesh.Radius * _config.Atmosphere.OuterRadiusMul;
         _aUni[24] = pR;
         _aUni[25] = aR;
-        _aUni[26] = 30.0f;
+        _aUni[26] = _config.Atmosphere.SunIntensity;
 
         var (av, ai) = BuildAtmoSphere(aR, 3);
         _aVbo = await _gpu.CreateVertexBuffer(av);
