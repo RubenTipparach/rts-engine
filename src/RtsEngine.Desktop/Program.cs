@@ -19,7 +19,7 @@ public static class Program
 
         var window = Window.Create(opts);
         OpenGLGPU? gpu = null;
-        CubeRenderer? renderer = null;
+        PlanetRenderer? renderer = null;
         DesktopAppBackend? backend = null;
         GameEngine? engine = null;
 
@@ -28,8 +28,10 @@ public static class Program
             var gl = window.CreateOpenGL();
 
             gpu = new OpenGLGPU(gl);
-            renderer = new CubeRenderer(gpu);
-            await renderer.Setup(OpenGLGPU.CubeShaderGLSL);
+            var mesh = new PlanetMesh(subdivisions: 4, radius: 1.0f, stepHeight: 0.04f);
+            mesh.GenerateFromNoise(seed: 42);
+            renderer = new PlanetRenderer(gpu, mesh);
+            await renderer.Setup(OpenGLGPU.TerrainShaderGLSL);
 
             backend = new DesktopAppBackend(window);
             engine = new GameEngine(backend, renderer);
@@ -40,11 +42,12 @@ public static class Program
         window.Closing += () => gpu?.Dispose();
         window.Run();
     }
+
 }
 
 /// <summary>
 /// OpenGL implementation of IGPU — same interface as WebGPU, backed by Silk.NET.
-/// CubeRenderer in Game calls IGPU methods; this translates them to GL calls.
+/// PlanetRenderer in Game calls IGPU methods; this translates them to GL calls.
 /// </summary>
 internal sealed class OpenGLGPU : IGPU, IDisposable
 {
@@ -53,6 +56,7 @@ internal sealed class OpenGLGPU : IGPU, IDisposable
     // Handle tables (mirroring the JS proxy pattern)
     private readonly List<uint> _shaders = new() { 0 };
     private readonly List<uint> _buffers = new() { 0 };
+    private readonly List<bool> _indexIs32 = new() { false };
     private readonly List<uint> _programs = new() { 0 };
     private readonly List<int> _uniforms = new() { 0 };
     private readonly List<uint> _vaos = new() { 0 };
@@ -65,25 +69,54 @@ internal sealed class OpenGLGPU : IGPU, IDisposable
     private int _nextPipelineId = 1;
     private int _nextBindGroupId = 1;
 
-    public const string CubeShaderGLSL = @"
+    // Desktop fallback: lit vertex-colored terrain. No textures (texture loading
+    // via Silk.NET OpenGL requires an image decoder dependency that isn't added
+    // yet; WASM is the primary deploy target).
+    public const string TerrainShaderGLSL = @"
 #version 330 core
 // -- VERTEX --
 #ifdef VERTEX
 layout(location = 0) in vec3 aPos;
-layout(location = 1) in vec3 aCol;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in float aLevel;
 uniform mat4 uMVP;
-out vec3 vColor;
+out vec3 vWorldPos;
+out vec3 vNormal;
+out float vLevel;
 void main() {
     gl_Position = uMVP * vec4(aPos, 1.0);
-    vColor = aCol;
+    vWorldPos = aPos;
+    vNormal = normalize(aNormal);
+    vLevel = aLevel;
 }
 #endif
 // -- FRAGMENT --
 #ifdef FRAGMENT
-in vec3 vColor;
+in vec3 vWorldPos;
+in vec3 vNormal;
+in float vLevel;
+uniform vec3 uSunDir;
+uniform vec3 uCameraPos;
 out vec4 FragColor;
 void main() {
-    FragColor = vec4(vColor, 1.0);
+    vec3 levelColors[5] = vec3[5](
+        vec3(0.15, 0.35, 0.75),
+        vec3(0.90, 0.80, 0.55),
+        vec3(0.30, 0.65, 0.25),
+        vec3(0.55, 0.55, 0.55),
+        vec3(0.95, 0.97, 1.00)
+    );
+    int lvl = int(vLevel + 0.5);
+    if (lvl < 0) lvl = 0; if (lvl > 4) lvl = 4;
+    vec3 base = levelColors[lvl];
+    vec3 N = normalize(vNormal);
+    vec3 L = normalize(uSunDir);
+    vec3 V = normalize(uCameraPos - vWorldPos);
+    float NdotL = max(dot(N, L), 0.0);
+    float rim = pow(1.0 - max(dot(N, V), 0.0), 3.5);
+    vec3 lit = base * (0.25 + NdotL * 0.9);
+    lit += vec3(0.35, 0.55, 0.95) * rim * 0.35 * smoothstep(-0.1, 0.3, NdotL);
+    FragColor = vec4(lit, 1.0);
 }
 #endif
 ";
@@ -132,6 +165,19 @@ void main() {
             _gl.BufferData(BufferTargetARB.ElementArrayBuffer, (nuint)(data.Length * sizeof(ushort)), p, BufferUsageARB.StaticDraw);
         var id = _buffers.Count;
         _buffers.Add(buf);
+        _indexIs32.Add(false);
+        return Task.FromResult(id);
+    }
+
+    public unsafe Task<int> CreateIndexBuffer32(uint[] data)
+    {
+        var buf = _gl.GenBuffer();
+        _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, buf);
+        fixed (uint* p = data)
+            _gl.BufferData(BufferTargetARB.ElementArrayBuffer, (nuint)(data.Length * sizeof(uint)), p, BufferUsageARB.StaticDraw);
+        var id = _buffers.Count;
+        _buffers.Add(buf);
+        _indexIs32.Add(true);
         return Task.FromResult(id);
     }
 
@@ -157,12 +203,13 @@ void main() {
         var vao = _gl.GenVertexArray();
         _gl.BindVertexArray(vao);
 
-        // Set up vertex attributes from layout description
-        // Layout matches CubeMesh: pos(float32x3) + color(float32x3), stride 24
+        // Layout: pos(vec3) + normal(vec3) + level(float), stride 28
         _gl.EnableVertexAttribArray(0);
-        _gl.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 24, (void*)0);
+        _gl.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 28, (void*)0);
         _gl.EnableVertexAttribArray(1);
-        _gl.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, 24, (void*)12);
+        _gl.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, 28, (void*)12);
+        _gl.EnableVertexAttribArray(2);
+        _gl.VertexAttribPointer(2, 1, VertexAttribPointerType.Float, false, 28, (void*)24);
 
         var vaoId = _vaos.Count;
         _vaos.Add(vao);
@@ -192,22 +239,32 @@ void main() {
         _gl.BindVertexArray(vao);
         _gl.BindBuffer(BufferTargetARB.ArrayBuffer, _buffers[vertexBufferId]);
 
-        // Re-set vertex attribs (needed after binding new VBO)
         _gl.EnableVertexAttribArray(0);
-        _gl.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 24, (void*)0);
+        _gl.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 28, (void*)0);
         _gl.EnableVertexAttribArray(1);
-        _gl.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, 24, (void*)12);
+        _gl.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, 28, (void*)12);
+        _gl.EnableVertexAttribArray(2);
+        _gl.VertexAttribPointer(2, 1, VertexAttribPointerType.Float, false, 28, (void*)24);
 
         _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, _buffers[indexBufferId]);
 
-        if (_pendingMvp != null)
+        if (_pendingMvp != null && _pendingMvp.Length >= 16)
         {
             var loc = _gl.GetUniformLocation(program, "uMVP");
             fixed (float* ptr = _pendingMvp)
                 _gl.UniformMatrix4(loc, 1, false, ptr);
         }
+        if (_pendingMvp != null && _pendingMvp.Length >= 23)
+        {
+            var locSun = _gl.GetUniformLocation(program, "uSunDir");
+            if (locSun >= 0) _gl.Uniform3(locSun, _pendingMvp[16], _pendingMvp[17], _pendingMvp[18]);
+            var locCam = _gl.GetUniformLocation(program, "uCameraPos");
+            if (locCam >= 0) _gl.Uniform3(locCam, _pendingMvp[20], _pendingMvp[21], _pendingMvp[22]);
+        }
 
-        _gl.DrawElements(PrimitiveType.Triangles, (uint)indexCount, DrawElementsType.UnsignedShort, null);
+        var elemType = (indexBufferId < _indexIs32.Count && _indexIs32[indexBufferId])
+            ? DrawElementsType.UnsignedInt : DrawElementsType.UnsignedShort;
+        _gl.DrawElements(PrimitiveType.Triangles, (uint)indexCount, elemType, null);
     }
 
     public void DestroyBuffer(int bufferId)
@@ -218,6 +275,11 @@ void main() {
             _buffers[bufferId] = 0;
         }
     }
+
+    public void RenderAdditional(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount) { }
+    public Task<int> CreateTextureFromUrl(string url) => Task.FromResult(0);
+    public Task<int> CreateSampler(string filter = "linear", string wrap = "repeat") => Task.FromResult(0);
+    public Task<int> CreateRenderPipelineAlphaBlend(int shaderModuleId, object[] vertexBufferLayouts) => Task.FromResult(0);
 
     public void Dispose()
     {
@@ -270,9 +332,15 @@ internal sealed class DesktopAppBackend : IRenderBackend
     public event Action? PointerDown;
     public event Action<float, float>? PointerDrag;
     public event Action? PointerUp;
+    public event Action<float, float, int>? PointerClick;
+    public event Action<float>? Scroll;
+    public event Action<float, float>? PointerMove;
 
     private bool _dragging;
     private Vector2 _lastMouse;
+    private Vector2 _downMouse;
+    private float _totalDragDist;
+    private const float ClickThreshold = 5f;
 
     public DesktopAppBackend(IWindow window)
     {
@@ -280,24 +348,37 @@ internal sealed class DesktopAppBackend : IRenderBackend
         var input = window.CreateInput();
         foreach (var mouse in input.Mice)
         {
-            mouse.MouseDown += (_, btn) =>
+            mouse.MouseDown += (m, btn) =>
             {
-                if (btn != MouseButton.Left) return;
                 _dragging = true;
                 _lastMouse = mouse.Position;
+                _downMouse = mouse.Position;
+                _totalDragDist = 0;
                 PointerDown?.Invoke();
             };
-            mouse.MouseUp += (_, btn) =>
-            {
-                if (btn != MouseButton.Left) return;
-                _dragging = false;
-                PointerUp?.Invoke();
-            };
-            mouse.MouseMove += (_, pos) =>
+            mouse.MouseUp += (m, btn) =>
             {
                 if (!_dragging) return;
-                PointerDrag?.Invoke(pos.X - _lastMouse.X, pos.Y - _lastMouse.Y);
+                _dragging = false;
+                PointerUp?.Invoke();
+                if (_totalDragDist < ClickThreshold)
+                {
+                    int button = btn == MouseButton.Left ? 0 : btn == MouseButton.Right ? 2 : 1;
+                    PointerClick?.Invoke(mouse.Position.X, mouse.Position.Y, button);
+                }
+            };
+            mouse.MouseMove += (m, pos) =>
+            {
+                if (!_dragging) return;
+                var dx = pos.X - _lastMouse.X;
+                var dy = pos.Y - _lastMouse.Y;
+                _totalDragDist += MathF.Abs(dx) + MathF.Abs(dy);
+                PointerDrag?.Invoke(dx, dy);
                 _lastMouse = pos;
+            };
+            mouse.Scroll += (m, wheel) =>
+            {
+                Scroll?.Invoke(wheel.Y * 120f);
             };
         }
     }

@@ -24,41 +24,93 @@
             new ResizeObserver(resize).observe(canvas);
             resize();
 
-            // Mouse
+            // Mouse — track drag vs click
             let dragging = false, lastX = 0, lastY = 0;
+            let downX = 0, downY = 0, downButton = 0, totalDragDist = 0;
+            const CLICK_THRESHOLD = 5; // pixels — below this, treat mouseup as click
+
+            // Block context menu on canvas and its container
+            canvas.addEventListener('contextmenu', e => { e.preventDefault(); e.stopPropagation(); });
+            canvas.parentElement?.addEventListener?.('contextmenu', e => { e.preventDefault(); e.stopPropagation(); });
+
             canvas.addEventListener('mousedown', e => {
-                dragging = true; lastX = e.clientX; lastY = e.clientY;
-                dotnetRef.invokeMethodAsync('OnPointerDown');
                 e.preventDefault();
+                dragging = true;
+                lastX = e.clientX; lastY = e.clientY;
+                downX = e.clientX; downY = e.clientY;
+                downButton = e.button;
+                totalDragDist = 0;
+                if (e.button === 0) dotnetRef.invokeMethodAsync('OnPointerDown');
             });
             canvas.addEventListener('mousemove', e => {
+                // Always send move for hover highlight
+                const rect2 = canvas.getBoundingClientRect();
+                const dpr2 = window.devicePixelRatio || 1;
+                dotnetRef.invokeMethodAsync('OnPointerMove',
+                    (e.clientX - rect2.left) * dpr2,
+                    (e.clientY - rect2.top) * dpr2);
+
                 if (!dragging) return;
-                dotnetRef.invokeMethodAsync('OnPointerDrag', e.clientX - lastX, e.clientY - lastY);
+                const dx = e.clientX - lastX, dy = e.clientY - lastY;
+                totalDragDist += Math.abs(dx) + Math.abs(dy);
+                if (downButton === 0) dotnetRef.invokeMethodAsync('OnPointerDrag', dx, dy);
                 lastX = e.clientX; lastY = e.clientY;
             });
-            canvas.addEventListener('mouseup', () => { if (dragging) { dragging = false; dotnetRef.invokeMethodAsync('OnPointerUp'); } });
-            canvas.addEventListener('mouseleave', () => { if (dragging) { dragging = false; dotnetRef.invokeMethodAsync('OnPointerUp'); } });
+            canvas.addEventListener('mouseup', e => {
+                if (!dragging) return;
+                dragging = false;
+                if (downButton === 0) dotnetRef.invokeMethodAsync('OnPointerUp');
+                if (totalDragDist < CLICK_THRESHOLD) {
+                    const rect = canvas.getBoundingClientRect();
+                    const dpr = window.devicePixelRatio || 1;
+                    const cx = (e.clientX - rect.left) * dpr;
+                    const cy = (e.clientY - rect.top) * dpr;
+                    dotnetRef.invokeMethodAsync('OnPointerClick', cx, cy, e.button);
+                }
+            });
+            canvas.addEventListener('mouseleave', () => {
+                if (dragging) { dragging = false; dotnetRef.invokeMethodAsync('OnPointerUp'); }
+            });
+
+            // Scroll
+            canvas.addEventListener('wheel', e => {
+                e.preventDefault();
+                dotnetRef.invokeMethodAsync('OnScroll', -e.deltaY);
+            }, { passive: false });
 
             // Touch
             let touchActive = false, lastTX = 0, lastTY = 0;
+            let touchDownX = 0, touchDownY = 0, touchDragDist = 0;
             canvas.addEventListener('touchstart', e => {
                 e.preventDefault();
                 if (e.touches.length === 1) {
                     touchActive = true;
                     lastTX = e.touches[0].clientX; lastTY = e.touches[0].clientY;
+                    touchDownX = lastTX; touchDownY = lastTY; touchDragDist = 0;
                     dotnetRef.invokeMethodAsync('OnPointerDown');
                 }
             }, { passive: false });
             canvas.addEventListener('touchmove', e => {
                 e.preventDefault();
                 if (!touchActive || e.touches.length !== 1) return;
-                dotnetRef.invokeMethodAsync('OnPointerDrag',
-                    e.touches[0].clientX - lastTX, e.touches[0].clientY - lastTY);
+                const dx = e.touches[0].clientX - lastTX, dy = e.touches[0].clientY - lastTY;
+                touchDragDist += Math.abs(dx) + Math.abs(dy);
+                dotnetRef.invokeMethodAsync('OnPointerDrag', dx, dy);
                 lastTX = e.touches[0].clientX; lastTY = e.touches[0].clientY;
             }, { passive: false });
             canvas.addEventListener('touchend', e => {
                 e.preventDefault();
-                if (touchActive) { touchActive = false; dotnetRef.invokeMethodAsync('OnPointerUp'); }
+                if (touchActive) {
+                    touchActive = false;
+                    dotnetRef.invokeMethodAsync('OnPointerUp');
+                    if (touchDragDist < CLICK_THRESHOLD) {
+                        const rect = canvas.getBoundingClientRect();
+                        const dpr = window.devicePixelRatio || 1;
+                        const cx = (touchDownX - rect.left) * dpr;
+                        const cy = (touchDownY - rect.top) * dpr;
+                        dotnetRef.invokeMethodAsync('OnPointerClick', cx, cy, 0);
+                    }
+                }
             }, { passive: false });
         },
 

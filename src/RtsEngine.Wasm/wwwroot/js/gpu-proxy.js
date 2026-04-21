@@ -1,19 +1,22 @@
 // WebGPU proxy — the Emscripten-equivalent translation layer for WebGPU.
 // Maps integer handles to WebGPU objects, forwards calls 1:1.
-// Infrastructure, not application code. Engine dev never touches this.
 
 (() => {
     let device = null;
     let context = null;
     let canvasFormat = null;
     let canvas = null;
+    let depthTexture = null;
+    let depthTextureSize = [0, 0];
 
-    // Handle tables (index 0 = null sentinel)
     const shaderModules = [null];
     const pipelines = [null];
     const buffers = [null];
     const bindGroups = [null];
-    const bindGroupLayouts = [null];
+    const textures = [null];
+    const textureViews = [null];
+    const samplers = [null];
+    const indexFormats = new Map(); // bufferId → 'uint16' | 'uint32'
 
     function register(table, obj) {
         const id = table.length;
@@ -21,29 +24,58 @@
         return id;
     }
 
+    function ensureDepthTexture() {
+        if (!canvas || !device) return null;
+        if (depthTexture && canvas.width === depthTextureSize[0] && canvas.height === depthTextureSize[1]) {
+            return depthTexture;
+        }
+        if (depthTexture) depthTexture.destroy();
+        depthTexture = device.createTexture({
+            size: [canvas.width, canvas.height],
+            format: 'depth24plus',
+            usage: GPUTextureUsage.RENDER_ATTACHMENT,
+        });
+        depthTextureSize = [canvas.width, canvas.height];
+        return depthTexture;
+    }
+
     window.GPUProxy = {
         async init(canvasId) {
+            window.GPUProxyInitError = '';
             if (!navigator.gpu) {
-                console.error('WebGPU not supported');
+                console.error('WebGPU not supported in this browser');
+                window.GPUProxyInitError = 'WebGPU not supported. Requires Chrome 121+/Safari 18+ on desktop or mobile.';
                 return false;
             }
-            const adapter = await navigator.gpu.requestAdapter();
-            if (!adapter) {
-                console.error('No GPU adapter found');
+            try {
+                const adapter = await navigator.gpu.requestAdapter();
+                if (!adapter) {
+                    window.GPUProxyInitError = 'No GPU adapter available.';
+                    return false;
+                }
+                device = await adapter.requestDevice();
+                device.lost.then(info => console.error('GPU device lost:', info));
+                device.onuncapturederror = (e) => console.error('GPU error:', e.error.message);
+                canvas = document.getElementById(canvasId);
+                if (!canvas) return false;
+                context = canvas.getContext('webgpu');
+                if (!context) {
+                    window.GPUProxyInitError = 'Failed to get WebGPU canvas context.';
+                    return false;
+                }
+                canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+                context.configure({ device, format: canvasFormat, alphaMode: 'premultiplied' });
+                return true;
+            } catch (e) {
+                window.GPUProxyInitError = 'WebGPU init failed: ' + (e?.message ?? e);
+                console.error(e);
                 return false;
             }
-            device = await adapter.requestDevice();
-            canvas = document.getElementById(canvasId);
-            if (!canvas) return false;
-            context = canvas.getContext('webgpu');
-            canvasFormat = navigator.gpu.getPreferredCanvasFormat();
-            context.configure({ device, format: canvasFormat, alphaMode: 'premultiplied' });
-            return true;
         },
 
-        getCanvasFormat() {
-            return canvasFormat;
-        },
+        getInitError() { return window.GPUProxyInitError || ''; },
+
+        getCanvasFormat() { return canvasFormat; },
 
         resizeCanvas() {
             if (!canvas || !context || !device) return;
@@ -54,13 +86,21 @@
             context.configure({ device, format: canvasFormat, alphaMode: 'premultiplied' });
         },
 
-        // ── Shader Modules ───────────────────────────────────────
+        // ── Shader / Buffer / Pipeline ──────────────────────────
+
         createShaderModule(wgslCode) {
             const mod = device.createShaderModule({ code: wgslCode });
+            // Log any compilation errors/warnings (async, won't block)
+            mod.getCompilationInfo().then(info => {
+                for (const msg of info.messages) {
+                    const prefix = `[WGSL ${msg.type}] line ${msg.lineNum}: `;
+                    if (msg.type === 'error') console.error(prefix + msg.message);
+                    else if (msg.type === 'warning') console.warn(prefix + msg.message);
+                }
+            }).catch(() => {});
             return register(shaderModules, mod);
         },
 
-        // ── Buffers ──────────────────────────────────────────────
         createVertexBuffer(floatData) {
             const f32 = new Float32Array(floatData);
             const buf = device.createBuffer({
@@ -75,7 +115,6 @@
 
         createIndexBuffer(ushortData) {
             const u16 = new Uint16Array(ushortData);
-            // Pad to 4-byte alignment
             const padded = u16.byteLength % 4 === 0 ? u16.byteLength : u16.byteLength + 2;
             const buf = device.createBuffer({
                 size: padded,
@@ -84,35 +123,46 @@
             });
             new Uint16Array(buf.getMappedRange(0, u16.byteLength)).set(u16);
             buf.unmap();
-            return register(buffers, buf);
+            const id = register(buffers, buf);
+            indexFormats.set(id, 'uint16');
+            return id;
+        },
+
+        createIndexBuffer32(uintData) {
+            const u32 = new Uint32Array(uintData);
+            const buf = device.createBuffer({
+                size: u32.byteLength,
+                usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+                mappedAtCreation: true,
+            });
+            new Uint32Array(buf.getMappedRange()).set(u32);
+            buf.unmap();
+            const id = register(buffers, buf);
+            indexFormats.set(id, 'uint32');
+            return id;
         },
 
         createUniformBuffer(sizeBytes) {
-            const buf = device.createBuffer({
+            return register(buffers, device.createBuffer({
                 size: sizeBytes,
                 usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-            });
-            return register(buffers, buf);
+            }));
         },
 
         writeBuffer(bufferId, floatData) {
-            const f32 = new Float32Array(floatData);
-            device.queue.writeBuffer(buffers[bufferId], 0, f32);
+            device.queue.writeBuffer(buffers[bufferId], 0, new Float32Array(floatData));
         },
 
-        // ── Pipeline ─────────────────────────────────────────────
         createRenderPipeline(shaderModuleId, vertexBufferLayouts) {
             const pipeline = device.createRenderPipeline({
                 layout: 'auto',
                 vertex: {
                     module: shaderModules[shaderModuleId],
                     entryPoint: 'vs_main',
-                    buffers: vertexBufferLayouts.map(layout => ({
-                        arrayStride: layout.arrayStride,
-                        attributes: layout.attributes.map(attr => ({
-                            format: attr.format,
-                            offset: attr.offset,
-                            shaderLocation: attr.shaderLocation,
+                    buffers: vertexBufferLayouts.map(l => ({
+                        arrayStride: l.arrayStride,
+                        attributes: l.attributes.map(a => ({
+                            format: a.format, offset: a.offset, shaderLocation: a.shaderLocation,
                         })),
                     })),
                 },
@@ -121,52 +171,46 @@
                     entryPoint: 'fs_main',
                     targets: [{ format: canvasFormat }],
                 },
-                primitive: {
-                    topology: 'triangle-list',
-                    cullMode: 'back',
-                },
-                depthStencil: {
-                    format: 'depth24plus',
-                    depthWriteEnabled: true,
-                    depthCompare: 'less',
-                },
+                primitive: { topology: 'triangle-list', cullMode: 'back' },
+                depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' },
             });
             return register(pipelines, pipeline);
         },
 
-        // ── Bind Groups ──────────────────────────────────────────
         createBindGroup(pipelineId, groupIndex, entries) {
             const pipeline = pipelines[pipelineId];
             const bg = device.createBindGroup({
                 layout: pipeline.getBindGroupLayout(groupIndex),
-                entries: entries.map(e => ({
-                    binding: e.binding,
-                    resource: { buffer: buffers[e.bufferId] },
-                })),
+                entries: entries.map(e => {
+                    if (e.bufferId !== undefined && e.bufferId !== null) {
+                        return { binding: e.binding, resource: { buffer: buffers[e.bufferId] } };
+                    }
+                    if (e.textureViewId !== undefined && e.textureViewId !== null) {
+                        return { binding: e.binding, resource: textureViews[e.textureViewId] };
+                    }
+                    if (e.samplerId !== undefined && e.samplerId !== null) {
+                        return { binding: e.binding, resource: samplers[e.samplerId] };
+                    }
+                    throw new Error('bind group entry missing bufferId/textureViewId/samplerId');
+                }),
             });
             return register(bindGroups, bg);
         },
 
-        // ── Render ───────────────────────────────────────────────
         render(pipelineId, vertexBufferId, indexBufferId, bindGroupId, indexCount) {
             if (!device || !context) return;
-
-            const depthTexture = device.createTexture({
-                size: [canvas.width, canvas.height],
-                format: 'depth24plus',
-                usage: GPUTextureUsage.RENDER_ATTACHMENT,
-            });
+            const depthTex = ensureDepthTexture();
 
             const encoder = device.createCommandEncoder();
             const pass = encoder.beginRenderPass({
                 colorAttachments: [{
                     view: context.getCurrentTexture().createView(),
-                    clearValue: { r: 0.05, g: 0.05, b: 0.12, a: 1.0 },
+                    clearValue: { r: 0.02, g: 0.02, b: 0.06, a: 1.0 },
                     loadOp: 'clear',
                     storeOp: 'store',
                 }],
                 depthStencilAttachment: {
-                    view: depthTexture.createView(),
+                    view: depthTex.createView(),
                     depthClearValue: 1.0,
                     depthLoadOp: 'clear',
                     depthStoreOp: 'store',
@@ -175,18 +219,133 @@
 
             pass.setPipeline(pipelines[pipelineId]);
             pass.setVertexBuffer(0, buffers[vertexBufferId]);
-            pass.setIndexBuffer(buffers[indexBufferId], 'uint16');
+            pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
             pass.setBindGroup(0, bindGroups[bindGroupId]);
             pass.drawIndexed(indexCount);
             pass.end();
 
             device.queue.submit([encoder.finish()]);
-            depthTexture.destroy();
         },
 
-        // ── Cleanup ──────────────────────────────────────────────
+        renderAdditional(pipelineId, vertexBufferId, indexBufferId, bindGroupId, indexCount) {
+            if (!device || !context) return;
+            const depthTex = ensureDepthTexture();
+            const encoder = device.createCommandEncoder();
+            const pass = encoder.beginRenderPass({
+                colorAttachments: [{
+                    view: context.getCurrentTexture().createView(),
+                    loadOp: 'load',
+                    storeOp: 'store',
+                }],
+                depthStencilAttachment: {
+                    view: depthTex.createView(),
+                    depthLoadOp: 'load',
+                    depthStoreOp: 'store',
+                },
+            });
+            pass.setPipeline(pipelines[pipelineId]);
+            pass.setVertexBuffer(0, buffers[vertexBufferId]);
+            pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
+            pass.setBindGroup(0, bindGroups[bindGroupId]);
+            pass.drawIndexed(indexCount);
+            pass.end();
+            device.queue.submit([encoder.finish()]);
+        },
+
+        createRenderPipelineAlphaBlend(shaderModuleId, vertexBufferLayouts) {
+            const pipeline = device.createRenderPipeline({
+                layout: 'auto',
+                vertex: {
+                    module: shaderModules[shaderModuleId],
+                    entryPoint: 'vs_main',
+                    buffers: vertexBufferLayouts.map(l => ({
+                        arrayStride: l.arrayStride,
+                        attributes: l.attributes.map(a => ({
+                            format: a.format, offset: a.offset, shaderLocation: a.shaderLocation,
+                        })),
+                    })),
+                },
+                fragment: {
+                    module: shaderModules[shaderModuleId],
+                    entryPoint: 'fs_main',
+                    targets: [{
+                        format: canvasFormat,
+                        blend: {
+                            color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                        },
+                    }],
+                },
+                primitive: { topology: 'triangle-list', cullMode: 'back' },
+                depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'always' },
+            });
+            return register(pipelines, pipeline);
+        },
+
         destroyBuffer(id) {
             if (buffers[id]) { buffers[id].destroy(); buffers[id] = null; }
+        },
+
+        // ── Textures / Samplers ─────────────────────────────────
+
+        async createTextureFromUrl(url) {
+            try {
+                console.log(`[GPU] Loading texture: ${url}`);
+                const resp = await fetch(url);
+                if (!resp.ok) throw new Error(`fetch ${url}: HTTP ${resp.status}`);
+                const blob = await resp.blob();
+                console.log(`[GPU] Fetched ${url}: ${blob.size} bytes, type=${blob.type}`);
+                const bitmap = await createImageBitmap(blob);
+                console.log(`[GPU] Bitmap: ${bitmap.width}×${bitmap.height}`);
+                const tex = device.createTexture({
+                    size: [bitmap.width, bitmap.height, 1],
+                    format: 'rgba8unorm',
+                    // RENDER_ATTACHMENT is required by Dawn's copyExternalImageToTexture
+                    // validator (it's how the implementation actually writes the pixels).
+                    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+                });
+                device.queue.copyExternalImageToTexture(
+                    { source: bitmap },
+                    { texture: tex },
+                    [bitmap.width, bitmap.height, 1]
+                );
+                bitmap.close();
+                const view = tex.createView();
+                textures.push(tex);
+                const id = register(textureViews, view);
+                console.log(`[GPU] Texture loaded OK, id=${id}`);
+                return id;
+            } catch (e) {
+                console.error(`[GPU] createTextureFromUrl(${url}) FAILED:`, e);
+                // Return a 1x1 white fallback texture so rendering doesn't break
+                const fallback = device.createTexture({
+                    size: [1, 1, 1],
+                    format: 'rgba8unorm',
+                    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+                });
+                device.queue.writeTexture(
+                    { texture: fallback },
+                    new Uint8Array([255, 255, 255, 255]),
+                    { bytesPerRow: 4 },
+                    [1, 1, 1]
+                );
+                textures.push(fallback);
+                return register(textureViews, fallback.createView());
+            }
+        },
+
+        createSampler(filter, wrap) {
+            const filt = filter === 'nearest' ? 'nearest' : 'linear';
+            const addr = wrap === 'clamp' ? 'clamp-to-edge' : 'repeat';
+            const sampler = device.createSampler({
+                magFilter: filt,
+                minFilter: filt,
+                mipmapFilter: filt,
+                addressModeU: addr,
+                addressModeV: addr,
+                addressModeW: addr,
+            });
+            return register(samplers, sampler);
         },
     };
 })();
