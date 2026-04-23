@@ -22,12 +22,9 @@ public class GameEngine
     private const float MaxElev = 1.4f;
 
     private bool _running;
-    private bool _meshDirty;
     private DateTime _startTime = DateTime.UtcNow;
 
     private int _hoveredCell = -1;
-    private float _lastMvpAspect;
-    private float[]? _lastMvp;
 
     public event Action? OnFrameRendered;
 
@@ -61,20 +58,20 @@ public class GameEngine
     private void OnClick(float cx, float cy, int button)
     {
         if (_planet == null) return;
-        var hit = RayPick(cx, cy);
+        var hit = PickCell(cx, cy);
         if (hit == null) return;
 
         if (button == 0)
             _planet.Mesh.ChangeLevel(hit.Value, +1);
         else if (button == 2)
             _planet.Mesh.ChangeLevel(hit.Value, -1);
-        _meshDirty = true;
+        _planet.MarkDirty(hit.Value);
     }
 
     private void OnMove(float cx, float cy)
     {
         if (_planet == null) return;
-        _hoveredCell = RayPick(cx, cy) ?? -1;
+        _hoveredCell = PickCell(cx, cy) ?? -1;
     }
 
     public void Run()
@@ -86,10 +83,9 @@ public class GameEngine
 
     private async Task Tick()
     {
-        if (_meshDirty && _planet != null)
+        if (_planet != null)
         {
-            _meshDirty = false;
-            await _planet.RebuildMesh();
+            await _planet.RebuildDirtyPatches();
         }
 
         if (_planet != null)
@@ -101,8 +97,7 @@ public class GameEngine
             await _planet.SyncOutline();
         }
 
-        _lastMvp = BuildMvp(_app.AspectRatio);
-        _renderer.Draw(_lastMvp);
+        _renderer.Draw(BuildMvp(_app.AspectRatio));
         OnFrameRendered?.Invoke();
     }
 
@@ -129,18 +124,15 @@ public class GameEngine
         return MatrixHelper.ToRawFloats(mvp);
     }
 
-    // ── Ray picking — uses actual MVP matrix for exact match ────────
+    // ── Picking — project every cell center to screen, find closest ──
+    // Exact: uses the same MVP as rendering, no geometric approximation.
 
-    private int? RayPick(float canvasX, float canvasY)
+    private int? PickCell(float canvasX, float canvasY)
     {
         if (_planet == null) return null;
         float w = _app.CanvasWidth, h = _app.CanvasHeight;
         if (w < 1 || h < 1) return null;
 
-        float ndcX = 2f * canvasX / w - 1f;
-        float ndcY = 1f - 2f * canvasY / h;
-
-        // Build the same MVP used for rendering, convert to System.Numerics for inversion
         var m = BuildMvp(w / h);
         var mvp = new Matrix4x4(
             m[0], m[1], m[2], m[3],
@@ -148,38 +140,29 @@ public class GameEngine
             m[8], m[9], m[10], m[11],
             m[12], m[13], m[14], m[15]);
 
-        if (!Matrix4x4.Invert(mvp, out var inv))
-            return null;
+        var mesh = _planet.Mesh;
+        float bestDist = float.MaxValue;
+        int bestCell = -1;
 
-        var nearPt = Unproj(inv, ndcX, ndcY, 0f);
-        var farPt  = Unproj(inv, ndcX, ndcY, 1f);
-        var rayDir = Vector3.Normalize(farPt - nearPt);
+        for (int i = 0; i < mesh.CellCount; i++)
+        {
+            float cellH = mesh.Radius + mesh.GetLevel(i) * mesh.StepHeight;
+            var center = mesh.GetCellCenter(i) * cellH;
 
-        float r = _planet.Mesh.Radius + PlanetMesh.MaxLevel * _planet.Mesh.StepHeight + 0.01f;
-        float? t = RaySphere(nearPt, rayDir, r);
-        if (t == null) return null;
+            var clip = Vector4.Transform(new Vector4(center, 1f), mvp);
+            if (clip.W <= 0.001f) continue;
 
-        return _planet.Mesh.DirectionToCell(nearPt + rayDir * t.Value);
-    }
+            float sx = (clip.X / clip.W * 0.5f + 0.5f) * w;
+            float sy = (0.5f - clip.Y / clip.W * 0.5f) * h;
 
-    private static Vector3 Unproj(Matrix4x4 inv, float nx, float ny, float nz)
-    {
-        var c = Vector4.Transform(new Vector4(nx, ny, nz, 1f), inv);
-        if (MathF.Abs(c.W) < 1e-10f) return default;
-        return new Vector3(c.X / c.W, c.Y / c.W, c.Z / c.W);
-    }
+            float dx = sx - canvasX;
+            float dy = sy - canvasY;
+            float dist = dx * dx + dy * dy;
 
-    private static float? RaySphere(Vector3 origin, Vector3 dir, float radius)
-    {
-        float b = 2f * Vector3.Dot(origin, dir);
-        float c = Vector3.Dot(origin, origin) - radius * radius;
-        float disc = b * b - 4f * c;
-        if (disc < 0) return null;
-        float sq = MathF.Sqrt(disc);
-        float t0 = (-b - sq) * 0.5f;
-        float t1 = (-b + sq) * 0.5f;
-        if (t0 > 0) return t0;
-        if (t1 > 0) return t1;
-        return null;
+            if (dist < bestDist) { bestDist = dist; bestCell = i; }
+        }
+
+        if (bestDist > 40f * 40f) return null;
+        return bestCell;
     }
 }

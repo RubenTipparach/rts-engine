@@ -32,10 +32,13 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
 
     private readonly IGPU _gpu;
 
-    // Terrain
-    private int _tPipeline, _tVbo, _tIbo, _tUbo, _tBindGroup;
+    // Terrain (20 patches)
+    private int _tPipeline, _tUbo, _tBindGroup;
     private int _samplerId, _atlasTexId, _dudvTexId, _normalTexId;
-    private int _tIndexCount;
+    private readonly int[] _patchVbo = new int[PlanetMesh.PatchCount];
+    private readonly int[] _patchIbo = new int[PlanetMesh.PatchCount];
+    private readonly int[] _patchIdxCount = new int[PlanetMesh.PatchCount];
+    private readonly HashSet<int> _dirtyPatches = new();
     private readonly float[] _tUni = new float[TerrainUniFloats];
 
     // Atmosphere
@@ -90,10 +93,14 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         _normalTexId = await _gpu.CreateTextureFromUrl(_config.Water.NormalUrl);
         _samplerId = await _gpu.CreateSampler("linear", "repeat");
 
-        var (tv, ti) = Mesh.BuildMesh();
-        _tVbo = await _gpu.CreateVertexBuffer(tv);
-        _tIbo = await _gpu.CreateIndexBuffer32(ti);
-        _tIndexCount = ti.Length;
+        // Build per-patch VBO/IBO (20 patches)
+        for (int p = 0; p < PlanetMesh.PatchCount; p++)
+        {
+            var (pv, pi) = Mesh.BuildPatchMesh(p);
+            _patchVbo[p] = await _gpu.CreateVertexBuffer(pv);
+            _patchIbo[p] = await _gpu.CreateIndexBuffer32(pi);
+            _patchIdxCount[p] = pi.Length;
+        }
 
         _tPipeline = await _gpu.CreateRenderPipeline(tShader, new object[]
         {
@@ -185,10 +192,24 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
 
     public void Draw(float[] mvpRawFloats)
     {
-        // Terrain pass (clears)
         Array.Copy(mvpRawFloats, 0, _tUni, 0, 16);
         _gpu.WriteBuffer(_tUbo, _tUni);
-        _gpu.Render(_tPipeline, _tVbo, _tIbo, _tBindGroup, _tIndexCount);
+
+        // Draw first patch with Render (clears), rest with RenderAdditional (loads)
+        bool first = true;
+        for (int p = 0; p < PlanetMesh.PatchCount; p++)
+        {
+            if (_patchIdxCount[p] == 0) continue;
+            if (first)
+            {
+                _gpu.Render(_tPipeline, _patchVbo[p], _patchIbo[p], _tBindGroup, _patchIdxCount[p]);
+                first = false;
+            }
+            else
+            {
+                _gpu.RenderAdditional(_tPipeline, _patchVbo[p], _patchIbo[p], _tBindGroup, _patchIdxCount[p]);
+            }
+        }
 
         // Atmosphere pass (alpha-blended on top)
         if (_atmoReady)
@@ -221,21 +242,38 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         _oVertCount = data.Length / 3;
     }
 
-    public async Task RebuildMesh()
+    /// <summary>Mark patches dirty for the edited cell (+ its neighbor patches for cliff updates).</summary>
+    public void MarkDirty(int cell)
     {
-        _gpu.DestroyBuffer(_tVbo);
-        _gpu.DestroyBuffer(_tIbo);
+        foreach (int p in Mesh.GetAffectedPatches(cell))
+            _dirtyPatches.Add(p);
+    }
 
-        var (v, i) = Mesh.BuildMesh();
-        _tVbo = await _gpu.CreateVertexBuffer(v);
-        _tIbo = await _gpu.CreateIndexBuffer32(i);
-        _tIndexCount = i.Length;
+    /// <summary>Rebuild only dirty patches. Call once per frame before Draw.</summary>
+    public async Task RebuildDirtyPatches()
+    {
+        if (_dirtyPatches.Count == 0) return;
+
+        foreach (int p in _dirtyPatches)
+        {
+            _gpu.DestroyBuffer(_patchVbo[p]);
+            _gpu.DestroyBuffer(_patchIbo[p]);
+
+            var (v, i) = Mesh.BuildPatchMesh(p);
+            _patchVbo[p] = await _gpu.CreateVertexBuffer(v);
+            _patchIbo[p] = await _gpu.CreateIndexBuffer32(i);
+            _patchIdxCount[p] = i.Length;
+        }
+        _dirtyPatches.Clear();
     }
 
     public void Dispose()
     {
-        _gpu.DestroyBuffer(_tVbo);
-        _gpu.DestroyBuffer(_tIbo);
+        for (int p = 0; p < PlanetMesh.PatchCount; p++)
+        {
+            _gpu.DestroyBuffer(_patchVbo[p]);
+            _gpu.DestroyBuffer(_patchIbo[p]);
+        }
         _gpu.DestroyBuffer(_tUbo);
     }
 
