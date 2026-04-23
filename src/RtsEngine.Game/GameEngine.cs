@@ -144,8 +144,13 @@ public class GameEngine
         float bestDist = float.MaxValue;
         int bestCell = -1;
 
+        var camDir = Vector3.Normalize(CameraPosition());
+
         for (int i = 0; i < mesh.CellCount; i++)
         {
+            // Skip cells on the back side of the planet
+            if (Vector3.Dot(mesh.GetCellCenter(i), camDir) < -0.05f) continue;
+
             float cellH = mesh.Radius + mesh.GetLevel(i) * mesh.StepHeight;
             var center = mesh.GetCellCenter(i) * cellH;
 
@@ -162,7 +167,9 @@ public class GameEngine
             if (dist < bestDist) { bestDist = dist; bestCell = i; }
         }
 
-        if (bestDist > 40f * 40f) return null;
+        // No distance cap — if cursor is near the planet, the closest visible cell wins.
+        // Return null only if no front-facing cell was found.
+        if (bestCell < 0) return null;
         return bestCell;
     }
 }
