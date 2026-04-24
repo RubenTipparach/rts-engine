@@ -12,24 +12,25 @@
         @if (_mode == EditorMode.PlanetEdit)
         {
             <div class="hud-title">Planet Editor — @_planetName</div>
-            <div class="hud-hint">Drag orbit &bull; Scroll zoom &bull; L-click raise &bull; R-click lower &bull; [Esc] Solar System</div>
+            <div class="hud-hint">
+                Drag orbit &bull; Scroll zoom &bull; L-click raise &bull; R-click lower
+                &bull; <a href="javascript:void(0)" @onclick="GoToSolarSystem" style="color:#0ff;text-decoration:underline;">⬅ Solar System</a>
+            </div>
         }
         else if (_mode == EditorMode.SolarSystem)
         {
             <div class="hud-title">Solar System</div>
-            <div class="hud-hint">Click planet to edit &bull; Drag orbit &bull; Scroll zoom &bull; [Tab] Star Map</div>
+            <div class="hud-hint">Click a planet to edit &bull; Drag orbit &bull; Scroll zoom</div>
         }
         else
         {
             <div class="hud-title">Star Map — @_starMapLevel</div>
             <div class="hud-hint">Click to select &bull; [Backspace] Zoom out &bull; [Tab] Solar System</div>
         }
-        <div id="gpu-errors" style="color:#ff9090;font-size:11px;max-height:80px;overflow:auto;"></div>
+        <div id="gpu-errors" style="color:#ff9090;font-size:11px;max-height:60px;overflow:auto;"></div>
         @if (!string.IsNullOrEmpty(_errorMessage))
         {
-            <div class="hud-error" style="margin-top:4px;color:#ff9090;background:#30000080;padding:6px;border-radius:4px;font-size:11px;">
-                <b>Error:</b> @_errorMessage
-            </div>
+            <div style="color:#ff9090;font-size:11px;">@_errorMessage</div>
         }
     </div>
 </div>
@@ -40,10 +41,18 @@
     private PlanetRenderer? _planet;
     private StarMapRenderer? _starMap;
     private SolarSystemRenderer? _solarSystem;
+    private IGPU? _gpu;
     private string? _errorMessage;
     private EditorMode _mode = EditorMode.SolarSystem;
     private string _starMapLevel = "Galaxy";
     private string _planetName = "Earth";
+    private string _currentConfig = "planets/earth.yaml";
+    private bool _loadingPlanet;
+
+    private void GoToSolarSystem()
+    {
+        if (_engine != null) _engine.Mode = EditorMode.SolarSystem;
+    }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -54,10 +63,11 @@
             if (!await gpu.Init("gpuCanvas"))
             {
                 _errorMessage = await JS.InvokeAsync<string>("GPUProxy.getInitError")
-                    ?? "WebGPU init failed. Requires Chrome 121+ / Safari 18+.";
+                    ?? "WebGPU init failed.";
                 StateHasChanged();
                 return;
             }
+            _gpu = gpu;
 
             _app = new WebGLRenderBackend(JS);
             await _app.InitializeAsync("gpuCanvas");
@@ -74,21 +84,13 @@
             _starMap = new StarMapRenderer(gpu, galaxy);
             await _starMap.Setup(starmapShader);
 
-            // Planet editor (default: Earth)
-            _planet = await CreatePlanetRenderer(gpu, "planets/earth.yaml");
+            // Planet editor (default Earth)
+            _planet = await CreatePlanetRenderer("planets/earth.yaml");
 
             // Engine
             _engine = new GameEngine(_app, _planet, _starMap, _solarSystem);
             _engine.Mode = EditorMode.SolarSystem;
-            _engine.OnFrameRendered += () =>
-            {
-                _mode = _engine.Mode;
-                _starMapLevel = _starMap?.Level.ToString() ?? "";
-                // If user selected a different planet via solar system view
-                if (_engine.SelectedPlanetConfig != null && _engine.SelectedPlanetConfig != _currentConfig)
-                    _ = LoadPlanet(gpu, _engine.SelectedPlanetConfig);
-                InvokeAsync(StateHasChanged);
-            };
+            _engine.OnFrameRendered += OnFrame;
             _engine.Run();
         }
         catch (Exception e)
@@ -98,10 +100,46 @@
         }
     }
 
-    private string _currentConfig = "planets/earth.yaml";
-
-    private async Task<PlanetRenderer> CreatePlanetRenderer(IGPU gpu, string configPath)
+    private void OnFrame()
     {
+        if (_engine == null) return;
+        _mode = _engine.Mode;
+        _starMapLevel = _starMap?.Level.ToString() ?? "";
+
+        var wanted = _engine.SelectedPlanetConfig;
+        if (wanted != null && wanted != _currentConfig && !_loadingPlanet)
+        {
+            _loadingPlanet = true;
+            _ = LoadPlanetAsync(wanted);
+        }
+
+        InvokeAsync(StateHasChanged);
+    }
+
+    private async Task LoadPlanetAsync(string configPath)
+    {
+        try
+        {
+            var newPlanet = await CreatePlanetRenderer(configPath);
+            var old = _planet;
+            _planet = newPlanet;
+            _engine?.SetPlanetRenderer(newPlanet);
+            old?.Dispose();
+        }
+        catch (Exception e)
+        {
+            _errorMessage = $"Load {configPath}: {e.Message}";
+        }
+        finally
+        {
+            _loadingPlanet = false;
+        }
+    }
+
+    private async Task<PlanetRenderer> CreatePlanetRenderer(string configPath)
+    {
+        if (_gpu == null) throw new InvalidOperationException("GPU not initialized");
+
         var yaml = await Http.GetStringAsync(configPath);
         var config = PlanetConfig.FromYaml(yaml);
         var shader = await Http.GetStringAsync("shaders/terrain.wgsl");
@@ -115,7 +153,7 @@
             frequency: config.Generation.Frequency,
             thresholds: config.Generation.Thresholds.ToArray());
 
-        var renderer = new PlanetRenderer(gpu, mesh);
+        var renderer = new PlanetRenderer(_gpu, mesh);
         renderer.ApplyConfig(config);
         await renderer.Setup(shader);
 
@@ -128,17 +166,6 @@
         _planetName = config.Name;
         _currentConfig = configPath;
         return renderer;
-    }
-
-    private async Task LoadPlanet(IGPU gpu, string configPath)
-    {
-        try
-        {
-            _planet?.Dispose();
-            _planet = await CreatePlanetRenderer(gpu, configPath);
-            _engine?.SetPlanetRenderer(_planet);
-        }
-        catch (Exception e) { _errorMessage = e.Message; }
     }
 
     public void Dispose()
