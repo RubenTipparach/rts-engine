@@ -14,14 +14,14 @@ public sealed class StarMapRenderer : IRenderer, IDisposable
 {
     public const int VertexFloats = 7; // pos3 + color3 + brightness1
     public const int VertexStride = 28;
-    public const int UniformSize = 128; // mvp(64) + camRight(16) + camUp(16) + pad(16)
+    public const int UniformSize = 64; // just mvp
 
     private readonly IGPU _gpu;
     private readonly GalaxyData _galaxy;
 
     private int _pipeline, _vbo, _ibo, _ubo, _bindGroup;
     private int _indexCount;
-    private readonly float[] _uni = new float[32];
+    private readonly float[] _uni = new float[16];
     private bool _ready;
 
     // View state

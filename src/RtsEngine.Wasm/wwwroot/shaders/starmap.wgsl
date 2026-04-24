@@ -1,12 +1,8 @@
-// Star map shader — renders stars as screen-facing quads.
-// Per-vertex: worldPos(3f) + color(3f) + brightness(1f) = 7 floats, stride 28.
-// brightness: 1.0 = in current selection, 0.2 = outside.
-// Quads are billboarded toward the camera in the vertex shader.
+// Star map / solar system shader — colored vertices with MVP transform.
+// Per-vertex: pos(3f) + color(3f) + brightness(1f), stride 28.
 
 struct Uniforms {
     mvp: mat4x4f,
-    cameraRight: vec4f,   // camera right vector (for billboarding)
-    cameraUp: vec4f,      // camera up vector
 }
 
 @binding(0) @group(0) var<uniform> u: Uniforms;
@@ -35,6 +31,5 @@ fn fs_main(
     @location(0) color: vec3f,
     @location(1) brightness: f32,
 ) -> @location(0) vec4f {
-    let lit = color * brightness;
-    return vec4f(lit, 1.0);
+    return vec4f(color * brightness, 1.0);
 }
