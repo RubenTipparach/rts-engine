@@ -55,7 +55,13 @@
                 }
                 device = await adapter.requestDevice();
                 device.lost.then(info => console.error('GPU device lost:', info));
-                device.onuncapturederror = (e) => console.error('GPU error:', e.error.message);
+                device.onuncapturederror = (e) => {
+                    const msg = e.error?.message || e.error || 'unknown GPU error';
+                    console.error('GPU error:', msg);
+                    // Show on screen for mobile debugging
+                    const el = document.getElementById('gpu-errors');
+                    if (el) el.textContent = msg;
+                };
                 canvas = document.getElementById(canvasId);
                 if (!canvas) return false;
                 context = canvas.getContext('webgpu');

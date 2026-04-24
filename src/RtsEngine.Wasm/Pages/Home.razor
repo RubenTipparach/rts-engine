@@ -24,9 +24,10 @@
             <div class="hud-title">Star Map — @_starMapLevel</div>
             <div class="hud-hint">Click to select &bull; [Backspace] Zoom out &bull; [Tab] Solar System</div>
         }
+        <div id="gpu-errors" style="color:#ff9090;font-size:11px;max-height:80px;overflow:auto;"></div>
         @if (!string.IsNullOrEmpty(_errorMessage))
         {
-            <div class="hud-error" style="margin-top:8px;color:#ff9090;background:#30000080;padding:6px;border-radius:4px;">
+            <div class="hud-error" style="margin-top:4px;color:#ff9090;background:#30000080;padding:6px;border-radius:4px;font-size:11px;">
                 <b>Error:</b> @_errorMessage
             </div>
         }
