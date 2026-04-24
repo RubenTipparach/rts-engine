@@ -71,7 +71,7 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
             new { binding = 0, bufferId = _ubo },
         });
 
-        RebuildMesh(0f);
+        await RebuildMeshAsync(0f);
         _ready = true;
     }
 
@@ -114,7 +114,7 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
 
     // ── Mesh ────────────────────────────────────────────────────────
 
-    private async void RebuildMesh(float time)
+    private async Task RebuildMeshAsync(float time)
     {
         if (_bodyVbo > 0) _gpu.DestroyBuffer(_bodyVbo);
         if (_bodyIbo > 0) _gpu.DestroyBuffer(_bodyIbo);
@@ -240,7 +240,18 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
             _gpu.RenderAdditional(_linePipeline, _orbitVbo, _orbitIbo, _lineBindGroup, _orbitVertCount);
     }
 
-    public void UpdatePositions() => RebuildMesh(_time);
+    private float _lastRebuildTime = -999f;
+    private bool _rebuilding;
+
+    public async Task UpdatePositionsIfNeeded()
+    {
+        if (_rebuilding) return;
+        if (MathF.Abs(_time - _lastRebuildTime) < 0.5f) return; // rebuild at most 2x/sec
+        _rebuilding = true;
+        _lastRebuildTime = _time;
+        await RebuildMeshAsync(_time);
+        _rebuilding = false;
+    }
 
     public float[] BuildMvpFloats(float aspect)
     {

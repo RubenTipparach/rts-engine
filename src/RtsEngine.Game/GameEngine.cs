@@ -165,7 +165,7 @@ public class GameEngine
         else if (Mode == EditorMode.SolarSystem && _solarSystem != null)
         {
             _solarSystem.SetTime(elapsed);
-            _solarSystem.UpdatePositions();
+            await _solarSystem.UpdatePositionsIfNeeded();
             var mvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
             _solarSystem.Draw(mvp);
         }
