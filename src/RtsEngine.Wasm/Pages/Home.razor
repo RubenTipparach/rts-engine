@@ -9,13 +9,21 @@
 <div id="game-container">
     <canvas id="gpuCanvas"></canvas>
     <div id="hud">
-        <div class="hud-title">Planet Editor (WebGPU)</div>
-        <div class="hud-stat">Goldberg sphere (2562 cells) &nbsp; 0 water · 1 sand · 2 grass · 3 rock · 4 snow</div>
-        <div class="hud-hint">Drag to orbit &bull; Scroll to zoom &bull; Left-click raise &bull; Right-click lower</div>
+        @if (_mode == EditorMode.PlanetEdit)
+        {
+            <div class="hud-title">Planet Editor (WebGPU)</div>
+            <div class="hud-stat">Goldberg sphere (2562 cells) &nbsp; 0 water · 1 sand · 2 grass · 3 rock · 4 snow</div>
+            <div class="hud-hint">Drag to orbit &bull; Scroll to zoom &bull; Left-click raise &bull; Right-click lower &bull; [Tab] Star Map</div>
+        }
+        else
+        {
+            <div class="hud-title">Star Map — @_starMapLevelText</div>
+            <div class="hud-hint">Click to select &bull; Scroll to zoom &bull; [Backspace] Zoom out &bull; [Tab] Planet</div>
+        }
         @if (!string.IsNullOrEmpty(_errorMessage))
         {
             <div class="hud-error" style="margin-top:8px; color:#ff9090; background:#30000080; padding:6px; border-radius:4px;">
-                <b>Render error:</b> @_errorMessage
+                <b>Error:</b> @_errorMessage
             </div>
         }
     </div>
@@ -25,7 +33,10 @@
     private GameEngine? _engine;
     private WebGLRenderBackend? _app;
     private PlanetRenderer? _planet;
+    private StarMapRenderer? _starMap;
     private string? _errorMessage;
+    private EditorMode _mode = EditorMode.StarMap;
+    private string _starMapLevelText = "Galaxy";
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -36,7 +47,7 @@
             if (!await gpu.Init("gpuCanvas"))
             {
                 _errorMessage = await JS.InvokeAsync<string>("GPUProxy.getInitError")
-                    ?? "WebGPU initialization failed. This demo requires Chrome 121+, Edge 121+, or Safari 18+.";
+                    ?? "WebGPU init failed. Requires Chrome 121+ / Safari 18+.";
                 StateHasChanged();
                 return;
             }
@@ -44,10 +55,16 @@
             _app = new WebGLRenderBackend(JS);
             await _app.InitializeAsync("gpuCanvas");
 
+            // Star map
+            var galaxy = GalaxyData.Generate(seed: 42);
+            var starmapShader = await Http.GetStringAsync("shaders/starmap.wgsl");
+            _starMap = new StarMapRenderer(gpu, galaxy);
+            await _starMap.Setup(starmapShader);
+
+            // Planet editor
             var configYaml = await Http.GetStringAsync("planets/earth.yaml");
             var config = PlanetConfig.FromYaml(configYaml);
-
-            var shaderCode = await Http.GetStringAsync("shaders/terrain.wgsl");
+            var terrainShader = await Http.GetStringAsync("shaders/terrain.wgsl");
             var mesh = new PlanetMesh(
                 subdivisions: config.Subdivisions,
                 radius: config.Radius,
@@ -59,7 +76,7 @@
 
             _planet = new PlanetRenderer(gpu, mesh);
             _planet.ApplyConfig(config);
-            await _planet.Setup(shaderCode);
+            await _planet.Setup(terrainShader);
 
             var atmoShader = await Http.GetStringAsync("shaders/atmosphere.wgsl");
             await _planet.SetupAtmosphere(atmoShader);
@@ -67,8 +84,15 @@
             var outlineShader = await Http.GetStringAsync("shaders/outline.wgsl");
             await _planet.SetupOutline(outlineShader);
 
-            _engine = new GameEngine(_app, _planet);
-            _engine.OnFrameRendered += () => InvokeAsync(StateHasChanged);
+            // Engine — starts in star map mode
+            _engine = new GameEngine(_app, _planet, _starMap);
+            _engine.Mode = _mode;
+            _engine.OnFrameRendered += () =>
+            {
+                _mode = _engine.Mode;
+                _starMapLevelText = _starMap.Level.ToString();
+                InvokeAsync(StateHasChanged);
+            };
             _engine.Run();
         }
         catch (Exception e)
@@ -81,6 +105,7 @@
     public void Dispose()
     {
         _planet?.Dispose();
+        _starMap?.Dispose();
         _app?.Dispose();
     }
 }

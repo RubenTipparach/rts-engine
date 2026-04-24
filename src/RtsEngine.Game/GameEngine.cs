@@ -7,71 +7,109 @@ namespace RtsEngine.Game;
 public class GameEngine
 {
     private readonly IRenderBackend _app;
-    private readonly IRenderer _renderer;
-    private readonly PlanetRenderer? _planet;
+    private readonly PlanetRenderer _planet;
+    private readonly StarMapRenderer? _starMap;
 
-    private float _azimuth;
-    private float _elevation = 0.4f;
-    private float _distance = 3.0f;
+    // Planet edit camera
+    private float _azimuth, _elevation = 0.4f, _distance = 3.0f;
     private bool _dragging;
-
-    private const float PixelsToRadians = 0.005f;
-    private const float MinDist = 2.0f;
-    private const float MaxDist = 8.0f;
-    private const float MinElev = -1.4f;
-    private const float MaxElev = 1.4f;
-
-    private bool _running;
+    private int _hoveredCell = -1;
     private DateTime _startTime = DateTime.UtcNow;
 
-    private int _hoveredCell = -1;
+    private const float PixelsToRadians = 0.005f;
 
+    private bool _running;
+    public EditorMode Mode { get; set; } = EditorMode.StarMap;
     public event Action? OnFrameRendered;
 
-    public GameEngine(IRenderBackend app, IRenderer renderer)
+    public GameEngine(IRenderBackend app, PlanetRenderer planet, StarMapRenderer? starMap = null)
     {
         _app = app;
-        _renderer = renderer;
-        _planet = renderer as PlanetRenderer;
+        _planet = planet;
+        _starMap = starMap;
 
-        _app.PointerDown += () => _dragging = true;
-        _app.PointerUp += () => _dragging = false;
+        _app.PointerDown += () =>
+        {
+            _dragging = true;
+            if (Mode == EditorMode.StarMap) _starMap?.SetDragging(true);
+        };
+        _app.PointerUp += () =>
+        {
+            _dragging = false;
+            if (Mode == EditorMode.StarMap) _starMap?.SetDragging(false);
+        };
 
         _app.PointerDrag += (dx, dy) =>
         {
             if (!_dragging) return;
-            _azimuth += dx * PixelsToRadians;
-            _elevation += dy * PixelsToRadians;
-            _elevation = Math.Clamp(_elevation, MinElev, MaxElev);
+            if (Mode == EditorMode.PlanetEdit)
+            {
+                _azimuth += dx * PixelsToRadians;
+                _elevation += dy * PixelsToRadians;
+                _elevation = Math.Clamp(_elevation, -1.4f, 1.4f);
+            }
+            else
+            {
+                _starMap?.Orbit(dx, dy);
+            }
         };
 
         _app.Scroll += delta =>
         {
-            _distance -= delta * 0.002f;
-            _distance = Math.Clamp(_distance, MinDist, MaxDist);
+            if (Mode == EditorMode.PlanetEdit)
+            {
+                _distance -= delta * 0.002f;
+                _distance = Math.Clamp(_distance, 2.0f, 8.0f);
+            }
+            else
+            {
+                _starMap?.Zoom(delta);
+            }
         };
 
         _app.PointerClick += OnClick;
         _app.PointerMove += OnMove;
+        _app.KeyDown += OnKey;
     }
 
     private void OnClick(float cx, float cy, int button)
     {
-        if (_planet == null) return;
-        var hit = PickCell(cx, cy);
-        if (hit == null) return;
-
-        if (button == 0)
-            _planet.Mesh.ChangeLevel(hit.Value, +1);
-        else if (button == 2)
-            _planet.Mesh.ChangeLevel(hit.Value, -1);
-        _planet.MarkDirty(hit.Value);
+        if (Mode == EditorMode.PlanetEdit)
+        {
+            var hit = PickCell(cx, cy);
+            if (hit == null) return;
+            if (button == 0) _planet.Mesh.ChangeLevel(hit.Value, +1);
+            else if (button == 2) _planet.Mesh.ChangeLevel(hit.Value, -1);
+            _planet.MarkDirty(hit.Value);
+        }
+        else if (_starMap != null && button == 0)
+        {
+            int child = _starMap.PickChild(cx, cy, _app.CanvasWidth, _app.CanvasHeight);
+            if (child >= 0)
+            {
+                _starMap.DrillDown(child);
+                _ = _starMap.RebuildMesh();
+            }
+        }
     }
 
     private void OnMove(float cx, float cy)
     {
-        if (_planet == null) return;
-        _hoveredCell = PickCell(cx, cy) ?? -1;
+        if (Mode == EditorMode.PlanetEdit)
+            _hoveredCell = PickCell(cx, cy) ?? -1;
+    }
+
+    private void OnKey(string key)
+    {
+        if (key == "Tab")
+        {
+            Mode = Mode == EditorMode.PlanetEdit ? EditorMode.StarMap : EditorMode.PlanetEdit;
+        }
+        else if (key == "Backspace" && Mode == EditorMode.StarMap && _starMap != null)
+        {
+            _starMap.ZoomOut();
+            _ = _starMap.RebuildMesh();
+        }
     }
 
     public void Run()
@@ -83,25 +121,28 @@ public class GameEngine
 
     private async Task Tick()
     {
-        if (_planet != null)
+        if (Mode == EditorMode.PlanetEdit)
         {
             await _planet.RebuildDirtyPatches();
-        }
 
-        if (_planet != null)
-        {
             var cam = CameraPosition();
             _planet.SetCameraPosition(cam.X, cam.Y, cam.Z);
             _planet.SetTime((float)(DateTime.UtcNow - _startTime).TotalSeconds);
             _planet.SetHighlightCell(_hoveredCell);
             await _planet.SyncOutline();
+
+            _planet.Draw(BuildPlanetMvp(_app.AspectRatio));
+        }
+        else if (_starMap != null)
+        {
+            var mvp = _starMap.BuildMvpFloats(_app.AspectRatio);
+            _starMap.Draw(mvp);
         }
 
-        _renderer.Draw(BuildMvp(_app.AspectRatio));
         OnFrameRendered?.Invoke();
     }
 
-    // ── Camera ──────────────────────────────────────────────────────
+    // ── Planet camera ───────────────────────────────────────────────
 
     private Vector3 CameraPosition()
     {
@@ -111,7 +152,7 @@ public class GameEngine
         return new Vector3(cx, cy, cz);
     }
 
-    public float[] BuildMvp(float aspectRatio)
+    private float[] BuildPlanetMvp(float aspectRatio)
     {
         var pos = CameraPosition();
         var view = Matrix4X4.CreateLookAt(
@@ -120,56 +161,44 @@ public class GameEngine
             new Vector3D<float>(0, 1, 0));
         var proj = Matrix4X4.CreatePerspectiveFieldOfView(
             Scalar.DegreesToRadians(45.0f), aspectRatio, 0.1f, 100.0f);
-        var mvp = Matrix4X4.Multiply(view, proj);
-        return MatrixHelper.ToRawFloats(mvp);
+        return MatrixHelper.ToRawFloats(Matrix4X4.Multiply(view, proj));
     }
 
-    // ── Picking — project every cell center to screen, find closest ──
-    // Exact: uses the same MVP as rendering, no geometric approximation.
+    // Keep BuildMvp for back-compat with IRenderer.Draw signature
+    public float[] BuildMvp(float aspectRatio) => BuildPlanetMvp(aspectRatio);
+
+    // ── Picking ─────────────────────────────────────────────────────
 
     private int? PickCell(float canvasX, float canvasY)
     {
-        if (_planet == null) return null;
         float w = _app.CanvasWidth, h = _app.CanvasHeight;
         if (w < 1 || h < 1) return null;
 
-        var m = BuildMvp(w / h);
+        var m = BuildPlanetMvp(w / h);
         var mvp = new Matrix4x4(
-            m[0], m[1], m[2], m[3],
-            m[4], m[5], m[6], m[7],
-            m[8], m[9], m[10], m[11],
-            m[12], m[13], m[14], m[15]);
+            m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7],
+            m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
 
         var mesh = _planet.Mesh;
         float bestDist = float.MaxValue;
         int bestCell = -1;
-
         var camDir = Vector3.Normalize(CameraPosition());
 
         for (int i = 0; i < mesh.CellCount; i++)
         {
-            // Skip cells on the back side of the planet
             if (Vector3.Dot(mesh.GetCellCenter(i), camDir) < -0.05f) continue;
 
             float cellH = mesh.Radius + mesh.GetLevel(i) * mesh.StepHeight;
             var center = mesh.GetCellCenter(i) * cellH;
-
             var clip = Vector4.Transform(new Vector4(center, 1f), mvp);
             if (clip.W <= 0.001f) continue;
 
             float sx = (clip.X / clip.W * 0.5f + 0.5f) * w;
             float sy = (0.5f - clip.Y / clip.W * 0.5f) * h;
-
-            float dx = sx - canvasX;
-            float dy = sy - canvasY;
-            float dist = dx * dx + dy * dy;
-
-            if (dist < bestDist) { bestDist = dist; bestCell = i; }
+            float d = (sx - canvasX) * (sx - canvasX) + (sy - canvasY) * (sy - canvasY);
+            if (d < bestDist) { bestDist = d; bestCell = i; }
         }
 
-        // No distance cap — if cursor is near the planet, the closest visible cell wins.
-        // Return null only if no front-facing cell was found.
-        if (bestCell < 0) return null;
-        return bestCell;
+        return bestCell >= 0 ? bestCell : null;
     }
 }

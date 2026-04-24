@@ -78,6 +78,11 @@
                 dotnetRef.invokeMethodAsync('OnScroll', -e.deltaY);
             }, { passive: false });
 
+            // Keyboard
+            document.addEventListener('keydown', e => {
+                dotnetRef.invokeMethodAsync('OnKeyDown', e.key);
+            });
+
             // Touch
             let touchActive = false, lastTX = 0, lastTY = 0;
             let touchDownX = 0, touchDownY = 0, touchDragDist = 0;
