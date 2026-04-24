@@ -136,8 +136,7 @@
         {
             _planet?.Dispose();
             _planet = await CreatePlanetRenderer(gpu, configPath);
-            // Hot-swap the planet renderer in the engine (engine still references old one
-            // via constructor, but Draw is called via Mode check so this works for now)
+            _engine?.SetPlanetRenderer(_planet);
         }
         catch (Exception e) { _errorMessage = e.Message; }
     }

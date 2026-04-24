@@ -7,7 +7,7 @@ namespace RtsEngine.Game;
 public class GameEngine
 {
     private readonly IRenderBackend _app;
-    private readonly PlanetRenderer _planet;
+    private PlanetRenderer _planet;
     private readonly StarMapRenderer? _starMap;
     private readonly SolarSystemRenderer? _solarSystem;
 
@@ -23,6 +23,8 @@ public class GameEngine
     public EditorMode Mode { get; set; } = EditorMode.SolarSystem;
     public string? SelectedPlanetConfig { get; private set; }
     public event Action? OnFrameRendered;
+
+    public void SetPlanetRenderer(PlanetRenderer p) => _planet = p;
 
     public GameEngine(IRenderBackend app, PlanetRenderer planet,
         StarMapRenderer? starMap = null, SolarSystemRenderer? solarSystem = null)
@@ -164,8 +166,6 @@ public class GameEngine
         }
         else if (Mode == EditorMode.SolarSystem && _solarSystem != null)
         {
-            _solarSystem.SetTime(elapsed);
-            await _solarSystem.UpdatePositionsIfNeeded();
             var mvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
             _solarSystem.Draw(mvp);
         }

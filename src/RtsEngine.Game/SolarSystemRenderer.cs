@@ -240,18 +240,7 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
             _gpu.RenderAdditional(_linePipeline, _orbitVbo, _orbitIbo, _lineBindGroup, _orbitVertCount);
     }
 
-    private float _lastRebuildTime = -999f;
-    private bool _rebuilding;
-
-    public async Task UpdatePositionsIfNeeded()
-    {
-        if (_rebuilding) return;
-        if (MathF.Abs(_time - _lastRebuildTime) < 0.5f) return; // rebuild at most 2x/sec
-        _rebuilding = true;
-        _lastRebuildTime = _time;
-        await RebuildMeshAsync(_time);
-        _rebuilding = false;
-    }
+    // Planets are static — no orbital animation needed in the editor view
 
     public float[] BuildMvpFloats(float aspect)
     {
