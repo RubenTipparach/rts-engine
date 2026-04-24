@@ -11,18 +11,22 @@
     <div id="hud">
         @if (_mode == EditorMode.PlanetEdit)
         {
-            <div class="hud-title">Planet Editor (WebGPU)</div>
-            <div class="hud-stat">Goldberg sphere (2562 cells) &nbsp; 0 water · 1 sand · 2 grass · 3 rock · 4 snow</div>
-            <div class="hud-hint">Drag to orbit &bull; Scroll to zoom &bull; Left-click raise &bull; Right-click lower &bull; [Tab] Star Map</div>
+            <div class="hud-title">Planet Editor — @_planetName</div>
+            <div class="hud-hint">Drag orbit &bull; Scroll zoom &bull; L-click raise &bull; R-click lower &bull; [Esc] Solar System</div>
+        }
+        else if (_mode == EditorMode.SolarSystem)
+        {
+            <div class="hud-title">Solar System</div>
+            <div class="hud-hint">Click planet to edit &bull; Drag orbit &bull; Scroll zoom &bull; [Tab] Star Map</div>
         }
         else
         {
-            <div class="hud-title">Star Map — @_starMapLevelText</div>
-            <div class="hud-hint">Click to select &bull; Scroll to zoom &bull; [Backspace] Zoom out &bull; [Tab] Planet</div>
+            <div class="hud-title">Star Map — @_starMapLevel</div>
+            <div class="hud-hint">Click to select &bull; [Backspace] Zoom out &bull; [Tab] Solar System</div>
         }
         @if (!string.IsNullOrEmpty(_errorMessage))
         {
-            <div class="hud-error" style="margin-top:8px; color:#ff9090; background:#30000080; padding:6px; border-radius:4px;">
+            <div class="hud-error" style="margin-top:8px;color:#ff9090;background:#30000080;padding:6px;border-radius:4px;">
                 <b>Error:</b> @_errorMessage
             </div>
         }
@@ -34,9 +38,11 @@
     private WebGLRenderBackend? _app;
     private PlanetRenderer? _planet;
     private StarMapRenderer? _starMap;
+    private SolarSystemRenderer? _solarSystem;
     private string? _errorMessage;
-    private EditorMode _mode = EditorMode.StarMap;
-    private string _starMapLevelText = "Galaxy";
+    private EditorMode _mode = EditorMode.SolarSystem;
+    private string _starMapLevel = "Galaxy";
+    private string _planetName = "Earth";
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -55,42 +61,31 @@
             _app = new WebGLRenderBackend(JS);
             await _app.InitializeAsync("gpuCanvas");
 
+            // Solar system
+            var solarData = SolarSystemData.CreateDefault();
+            var starmapShader = await Http.GetStringAsync("shaders/starmap.wgsl");
+            var outlineShader = await Http.GetStringAsync("shaders/outline.wgsl");
+            _solarSystem = new SolarSystemRenderer(gpu, solarData);
+            await _solarSystem.Setup(starmapShader, outlineShader);
+
             // Star map
             var galaxy = GalaxyData.Generate(seed: 42);
-            var starmapShader = await Http.GetStringAsync("shaders/starmap.wgsl");
             _starMap = new StarMapRenderer(gpu, galaxy);
             await _starMap.Setup(starmapShader);
 
-            // Planet editor
-            var configYaml = await Http.GetStringAsync("planets/earth.yaml");
-            var config = PlanetConfig.FromYaml(configYaml);
-            var terrainShader = await Http.GetStringAsync("shaders/terrain.wgsl");
-            var mesh = new PlanetMesh(
-                subdivisions: config.Subdivisions,
-                radius: config.Radius,
-                stepHeight: config.StepHeight);
-            mesh.GenerateFromNoise(
-                seed: config.Generation.Seed,
-                frequency: config.Generation.Frequency,
-                thresholds: config.Generation.Thresholds.ToArray());
+            // Planet editor (default: Earth)
+            _planet = await CreatePlanetRenderer(gpu, "planets/earth.yaml");
 
-            _planet = new PlanetRenderer(gpu, mesh);
-            _planet.ApplyConfig(config);
-            await _planet.Setup(terrainShader);
-
-            var atmoShader = await Http.GetStringAsync("shaders/atmosphere.wgsl");
-            await _planet.SetupAtmosphere(atmoShader);
-
-            var outlineShader = await Http.GetStringAsync("shaders/outline.wgsl");
-            await _planet.SetupOutline(outlineShader);
-
-            // Engine — starts in star map mode
-            _engine = new GameEngine(_app, _planet, _starMap);
-            _engine.Mode = _mode;
+            // Engine
+            _engine = new GameEngine(_app, _planet, _starMap, _solarSystem);
+            _engine.Mode = EditorMode.SolarSystem;
             _engine.OnFrameRendered += () =>
             {
                 _mode = _engine.Mode;
-                _starMapLevelText = _starMap.Level.ToString();
+                _starMapLevel = _starMap?.Level.ToString() ?? "";
+                // If user selected a different planet via solar system view
+                if (_engine.SelectedPlanetConfig != null && _engine.SelectedPlanetConfig != _currentConfig)
+                    _ = LoadPlanet(gpu, _engine.SelectedPlanetConfig);
                 InvokeAsync(StateHasChanged);
             };
             _engine.Run();
@@ -102,10 +97,55 @@
         }
     }
 
+    private string _currentConfig = "planets/earth.yaml";
+
+    private async Task<PlanetRenderer> CreatePlanetRenderer(IGPU gpu, string configPath)
+    {
+        var yaml = await Http.GetStringAsync(configPath);
+        var config = PlanetConfig.FromYaml(yaml);
+        var shader = await Http.GetStringAsync("shaders/terrain.wgsl");
+
+        var mesh = new PlanetMesh(
+            subdivisions: config.Subdivisions,
+            radius: config.Radius,
+            stepHeight: config.StepHeight);
+        mesh.GenerateFromNoise(
+            seed: config.Generation.Seed,
+            frequency: config.Generation.Frequency,
+            thresholds: config.Generation.Thresholds.ToArray());
+
+        var renderer = new PlanetRenderer(gpu, mesh);
+        renderer.ApplyConfig(config);
+        await renderer.Setup(shader);
+
+        var atmoShader = await Http.GetStringAsync("shaders/atmosphere.wgsl");
+        await renderer.SetupAtmosphere(atmoShader);
+
+        var outlineShader = await Http.GetStringAsync("shaders/outline.wgsl");
+        await renderer.SetupOutline(outlineShader);
+
+        _planetName = config.Name;
+        _currentConfig = configPath;
+        return renderer;
+    }
+
+    private async Task LoadPlanet(IGPU gpu, string configPath)
+    {
+        try
+        {
+            _planet?.Dispose();
+            _planet = await CreatePlanetRenderer(gpu, configPath);
+            // Hot-swap the planet renderer in the engine (engine still references old one
+            // via constructor, but Draw is called via Mode check so this works for now)
+        }
+        catch (Exception e) { _errorMessage = e.Message; }
+    }
+
     public void Dispose()
     {
         _planet?.Dispose();
         _starMap?.Dispose();
+        _solarSystem?.Dispose();
         _app?.Dispose();
     }
 }

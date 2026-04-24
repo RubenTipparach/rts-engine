@@ -9,6 +9,7 @@ public class GameEngine
     private readonly IRenderBackend _app;
     private readonly PlanetRenderer _planet;
     private readonly StarMapRenderer? _starMap;
+    private readonly SolarSystemRenderer? _solarSystem;
 
     // Planet edit camera
     private float _azimuth, _elevation = 0.4f, _distance = 3.0f;
@@ -19,24 +20,29 @@ public class GameEngine
     private const float PixelsToRadians = 0.005f;
 
     private bool _running;
-    public EditorMode Mode { get; set; } = EditorMode.StarMap;
+    public EditorMode Mode { get; set; } = EditorMode.SolarSystem;
+    public string? SelectedPlanetConfig { get; private set; }
     public event Action? OnFrameRendered;
 
-    public GameEngine(IRenderBackend app, PlanetRenderer planet, StarMapRenderer? starMap = null)
+    public GameEngine(IRenderBackend app, PlanetRenderer planet,
+        StarMapRenderer? starMap = null, SolarSystemRenderer? solarSystem = null)
     {
         _app = app;
         _planet = planet;
         _starMap = starMap;
+        _solarSystem = solarSystem;
 
         _app.PointerDown += () =>
         {
             _dragging = true;
             if (Mode == EditorMode.StarMap) _starMap?.SetDragging(true);
+            if (Mode == EditorMode.SolarSystem) _solarSystem?.SetDragging(true);
         };
         _app.PointerUp += () =>
         {
             _dragging = false;
             if (Mode == EditorMode.StarMap) _starMap?.SetDragging(false);
+            if (Mode == EditorMode.SolarSystem) _solarSystem?.SetDragging(false);
         };
 
         _app.PointerDrag += (dx, dy) =>
@@ -48,9 +54,13 @@ public class GameEngine
                 _elevation += dy * PixelsToRadians;
                 _elevation = Math.Clamp(_elevation, -1.4f, 1.4f);
             }
-            else
+            else if (Mode == EditorMode.StarMap)
             {
                 _starMap?.Orbit(dx, dy);
+            }
+            else if (Mode == EditorMode.SolarSystem)
+            {
+                _solarSystem?.Orbit(dx, dy);
             }
         };
 
@@ -61,10 +71,10 @@ public class GameEngine
                 _distance -= delta * 0.002f;
                 _distance = Math.Clamp(_distance, 2.0f, 8.0f);
             }
-            else
-            {
+            else if (Mode == EditorMode.StarMap)
                 _starMap?.Zoom(delta);
-            }
+            else if (Mode == EditorMode.SolarSystem)
+                _solarSystem?.Zoom(delta);
         };
 
         _app.PointerClick += OnClick;
@@ -82,13 +92,22 @@ public class GameEngine
             else if (button == 2) _planet.Mesh.ChangeLevel(hit.Value, -1);
             _planet.MarkDirty(hit.Value);
         }
-        else if (_starMap != null && button == 0)
+        else if (Mode == EditorMode.StarMap && _starMap != null && button == 0)
         {
             int child = _starMap.PickChild(cx, cy, _app.CanvasWidth, _app.CanvasHeight);
             if (child >= 0)
             {
                 _starMap.DrillDown(child);
                 _ = _starMap.RebuildMesh();
+            }
+        }
+        else if (Mode == EditorMode.SolarSystem && _solarSystem != null && button == 0)
+        {
+            var planet = _solarSystem.PickPlanet(cx, cy, _app.CanvasWidth, _app.CanvasHeight);
+            if (planet != null)
+            {
+                SelectedPlanetConfig = planet;
+                Mode = EditorMode.PlanetEdit;
             }
         }
     }
@@ -103,12 +122,22 @@ public class GameEngine
     {
         if (key == "Tab")
         {
-            Mode = Mode == EditorMode.PlanetEdit ? EditorMode.StarMap : EditorMode.PlanetEdit;
+            if (Mode == EditorMode.PlanetEdit) Mode = EditorMode.SolarSystem;
+            else if (Mode == EditorMode.SolarSystem) Mode = EditorMode.StarMap;
+            else Mode = EditorMode.SolarSystem;
         }
-        else if (key == "Backspace" && Mode == EditorMode.StarMap && _starMap != null)
+        else if (key == "Backspace")
         {
-            _starMap.ZoomOut();
-            _ = _starMap.RebuildMesh();
+            if (Mode == EditorMode.PlanetEdit) Mode = EditorMode.SolarSystem;
+            else if (Mode == EditorMode.StarMap && _starMap != null)
+            {
+                _starMap.ZoomOut();
+                _ = _starMap.RebuildMesh();
+            }
+        }
+        else if (key == "Escape")
+        {
+            if (Mode == EditorMode.PlanetEdit) Mode = EditorMode.SolarSystem;
         }
     }
 
@@ -121,19 +150,26 @@ public class GameEngine
 
     private async Task Tick()
     {
+        float elapsed = (float)(DateTime.UtcNow - _startTime).TotalSeconds;
+
         if (Mode == EditorMode.PlanetEdit)
         {
             await _planet.RebuildDirtyPatches();
-
             var cam = CameraPosition();
             _planet.SetCameraPosition(cam.X, cam.Y, cam.Z);
-            _planet.SetTime((float)(DateTime.UtcNow - _startTime).TotalSeconds);
+            _planet.SetTime(elapsed);
             _planet.SetHighlightCell(_hoveredCell);
             await _planet.SyncOutline();
-
             _planet.Draw(BuildPlanetMvp(_app.AspectRatio));
         }
-        else if (_starMap != null)
+        else if (Mode == EditorMode.SolarSystem && _solarSystem != null)
+        {
+            _solarSystem.SetTime(elapsed);
+            _solarSystem.UpdatePositions();
+            var mvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
+            _solarSystem.Draw(mvp);
+        }
+        else if (Mode == EditorMode.StarMap && _starMap != null)
         {
             var mvp = _starMap.BuildMvpFloats(_app.AspectRatio);
             _starMap.Draw(mvp);
@@ -164,7 +200,6 @@ public class GameEngine
         return MatrixHelper.ToRawFloats(Matrix4X4.Multiply(view, proj));
     }
 
-    // Keep BuildMvp for back-compat with IRenderer.Draw signature
     public float[] BuildMvp(float aspectRatio) => BuildPlanetMvp(aspectRatio);
 
     // ── Picking ─────────────────────────────────────────────────────
