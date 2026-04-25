@@ -26,6 +26,18 @@ public class GameEngine
 
     public void SetPlanetRenderer(PlanetRenderer p) => _planet = p;
 
+    public void SwitchToPlanetEdit()
+    {
+        Mode = EditorMode.PlanetEdit;
+        _hoveredCell = -1;
+    }
+
+    public void SwitchToSolarSystem()
+    {
+        Mode = EditorMode.SolarSystem;
+        SelectedPlanetConfig = null;
+    }
+
     public GameEngine(IRenderBackend app, PlanetRenderer planet,
         StarMapRenderer? starMap = null, SolarSystemRenderer? solarSystem = null)
     {
@@ -108,8 +120,10 @@ public class GameEngine
             var planet = _solarSystem.PickPlanet(cx, cy, _app.CanvasWidth, _app.CanvasHeight);
             if (planet != null)
             {
+                // Don't switch mode yet — stay in solar system while planet loads.
+                // Home.razor detects SelectedPlanetConfig change, loads the planet,
+                // then calls SwitchToPlanetEdit() when ready.
                 SelectedPlanetConfig = planet;
-                Mode = EditorMode.PlanetEdit;
             }
         }
     }
@@ -124,13 +138,13 @@ public class GameEngine
     {
         if (key == "Tab")
         {
-            if (Mode == EditorMode.PlanetEdit) Mode = EditorMode.SolarSystem;
+            if (Mode == EditorMode.PlanetEdit) SwitchToSolarSystem();
             else if (Mode == EditorMode.SolarSystem) Mode = EditorMode.StarMap;
-            else Mode = EditorMode.SolarSystem;
+            else SwitchToSolarSystem();
         }
         else if (key == "Backspace")
         {
-            if (Mode == EditorMode.PlanetEdit) Mode = EditorMode.SolarSystem;
+            if (Mode == EditorMode.PlanetEdit) SwitchToSolarSystem();
             else if (Mode == EditorMode.StarMap && _starMap != null)
             {
                 _starMap.ZoomOut();
@@ -139,7 +153,7 @@ public class GameEngine
         }
         else if (key == "Escape")
         {
-            if (Mode == EditorMode.PlanetEdit) Mode = EditorMode.SolarSystem;
+            if (Mode == EditorMode.PlanetEdit) SwitchToSolarSystem();
         }
     }
 

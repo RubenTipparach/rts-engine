@@ -14,7 +14,7 @@
             <div class="hud-title">Planet Editor — @_planetName</div>
             <div class="hud-hint">
                 Drag orbit &bull; Scroll zoom &bull; L-click raise &bull; R-click lower
-                &bull; <a href="javascript:void(0)" @onclick="GoToSolarSystem" style="color:#0ff;text-decoration:underline;">⬅ Solar System</a>
+                &bull; <span @onclick="GoToSolarSystem" style="color:#0ff;text-decoration:underline;cursor:pointer;">⬅ Solar System</span>
             </div>
         }
         else if (_mode == EditorMode.SolarSystem)
@@ -51,7 +51,8 @@
 
     private void GoToSolarSystem()
     {
-        if (_engine != null) _engine.Mode = EditorMode.SolarSystem;
+        _engine?.SwitchToSolarSystem();
+        _currentConfig = "";
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -124,6 +125,7 @@
             var old = _planet;
             _planet = newPlanet;
             _engine?.SetPlanetRenderer(newPlanet);
+            _engine?.SwitchToPlanetEdit();
             old?.Dispose();
         }
         catch (Exception e)
