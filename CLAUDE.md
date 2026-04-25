@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-WebAssembly RTS game engine prototype in C# (.NET 8) using the **sokol pattern** — a platform-agnostic abstraction layer separating rendering (IGPU) from app lifecycle (IRenderBackend). Currently renders an interactive spinning cube via WebGPU (WASM) and OpenGL 3.3+ (Desktop).
+WebAssembly RTS game engine prototype in C# (.NET 8) using the **sokol pattern** — a platform-agnostic abstraction layer separating rendering (IGPU) from app lifecycle (IRenderBackend). Features a planet terrain editor with Goldberg sphere geometry, textured terrain + water shaders, atmospheric scattering, and a solar system navigation view.
 
 ## Build & Run Commands
 
@@ -23,6 +23,10 @@ dotnet run --project src/RtsEngine.Desktop
 
 # Publish WASM for release
 dotnet publish src/RtsEngine.Wasm/RtsEngine.Wasm.csproj -c Release -o release --nologo
+
+# Generate planet textures (requires Python 3 + Pillow + numpy)
+python3 tools/gen_terrain_textures.py   # Earth textures
+python3 tools/gen_planet_textures.py    # Moon, Mars, Venus, Ice textures
 ```
 
 No test framework or linter is configured yet.
@@ -30,34 +34,68 @@ No test framework or linter is configured yet.
 ## Architecture
 
 ```
-Game Logic (RtsEngine.Game)     — platform-agnostic game loop, renderers
-Engine Core (RtsEngine.Core)    — IGPU, IRenderBackend, IRenderer interfaces
-    ├── WASM Backend            — WebGPU via JS interop (gpu-proxy.js, app-shell.js)
-    └── Desktop Backend         — OpenGL via Silk.NET P/Invoke
+RtsEngine.Game (platform-agnostic)
+├── GameEngine          — tick loop, mode switching, camera, picking, input
+├── PlanetMesh          — Goldberg sphere heightmap (icosphere dual), 20-patch chunked
+├── PlanetRenderer      — textured terrain + atmosphere + outline (multi-pass)
+├── SolarSystemRenderer — sun + orbit rings + planet spheres
+├── StarMapRenderer     — hierarchical galaxy/cluster/group star map
+├── EngineUI            — screen-space GPU-rendered buttons (no HTML)
+├── PlanetConfig        — YAML-driven planet definition (YamlDotNet)
+├── GalaxyData          — procedural galaxy hierarchy
+├── SolarSystemData     — orbital bodies with positions
+└── Noise3D             — gradient noise for terrain generation
+
+RtsEngine.Core (interfaces only)
+├── IGPU                — GPU abstraction (buffers, pipelines, textures, samplers, render)
+├── IRenderBackend      — app shell (canvas, frame loop, input: drag/click/scroll/move/key)
+├── IRenderer           — Draw(float[] mvp)
+└── MatrixHelper        — row-major → raw floats for GPU upload
+
+RtsEngine.Wasm (Blazor WebAssembly host — COMPILE LAYER ONLY)
+├── WebGPU : IGPU       — JS interop → gpu-proxy.js
+├── WebGLRenderBackend  — JS interop → app-shell.js
+├── Home.razor          — bootstrap only, NO game UI (UI lives in GameEngine/EngineUI)
+└── wwwroot/
+    ├── shaders/        — terrain.wgsl, atmosphere.wgsl, starmap.wgsl, outline.wgsl, ui.wgsl
+    ├── textures/       — terrain_atlas.png, water_dudv.png, water_normal.png
+    ├── textures/{moon,mars,venus,ice}/ — per-planet texture sets
+    ├── planets/        — earth.yaml, moon.yaml, mars.yaml, venus.yaml, ice.yaml
+    └── js/             — gpu-proxy.js, app-shell.js
+
+RtsEngine.Desktop (Silk.NET OpenGL host)
+└── OpenGLGPU : IGPU    — native GL calls (texture support stubbed)
 ```
-
-**Key interfaces in RtsEngine.Core:**
-- `IGPU` — GPU abstraction (create buffers, pipelines, bind groups, render)
-- `IRenderBackend` — App shell (canvas size, frame loop, input events)
-- `IRenderer` — Draw call contract (Init, Render, Resize)
-
-**Dependency rule:** Game and Core have zero platform awareness. All platform-specific code lives in the host projects (Wasm/Desktop).
 
 ## Critical Conventions
 
-- **Matrix math:** Silk.NET.Maths uses row-major storage with row-vector multiplication. Composition is left-to-right: `MVP = Model * View * Projection`. Transpose to column-major before GPU upload.
-- **Projection z-range:** WebGPU uses [0,1] (same as D3D/Vulkan), OpenGL uses [-1,1]. The `MatrixHelper` in Core handles this.
-- **GPU abstraction:** IGPU uses integer handles for all GPU resources. WASM backend translates handles to JS objects via `gpu-proxy.js` handle tables. Desktop backend maps to native GL calls.
-- **Shaders:** WGSL for WebGPU (`wwwroot/shaders/`), GLSL for Desktop.
+- **Blazor is a compile/host layer only.** All game logic, UI, mode switching, and rendering lives in RtsEngine.Game. Home.razor bootstraps the engine and handles planet hot-swap loading. No game UI in HTML/Blazor markup.
+- **Matrix math:** Silk.NET.Maths row-major, row-vector multiplication. `MVP = View * Proj`. `MatrixHelper.ToRawFloats` extracts row-major; WGSL interprets as column-major (auto-transpose).
+- **Projection z-range:** WebGPU [0,1], OpenGL [-1,1].
+- **GPU abstraction:** IGPU uses integer handles. WASM → gpu-proxy.js handle tables. Desktop → GL calls.
+- **Shaders:** WGSL for WebGPU (wwwroot/shaders/), GLSL embedded in Desktop Program.cs.
+- **textureSampleLevel only:** Never use `textureSample` in shaders — it requires uniform control flow which breaks on mobile GPUs. Always use `textureSampleLevel(tex, samp, uv, 0.0)`.
+- **Texture creation:** `copyExternalImageToTexture` requires `TEXTURE_BINDING | COPY_DST | RENDER_ATTACHMENT` usage flags (Dawn/Chrome requirement).
+- **Index buffers:** Use `CreateIndexBuffer32(uint[])` for meshes that may exceed 65535 vertices (planet terrain). Use `CreateIndexBuffer(ushort[])` for small meshes (atmosphere, UI).
+- **Planet config:** YAML files in wwwroot/planets/ drive all planet parameters (radius, subdivisions, textures, atmosphere, noise). New planet = new YAML + texture set, no code changes.
+- **20-patch chunked rebuild:** Planet mesh is split into 20 icosahedron patches with independent VBO/IBO. Edits only rebuild affected patches (~5-15% of mesh).
+
+## Editor Modes
+
+- **SolarSystem:** Sun + planets + orbit rings. Click planet → load + zoom to planet edit.
+- **PlanetEdit:** Goldberg sphere heightmap editor. Left-click raise, right-click lower. Hex outline highlight. In-engine "Back" button returns to solar system.
+- **StarMap:** Hierarchical galaxy navigation (galaxy → sector → cluster → group → star).
 
 ## CI/CD
 
-GitHub Actions workflow (`.github/workflows/deploy.yml`) triggers on any push:
+GitHub Actions (`.github/workflows/deploy.yml`) triggers on any push:
 - Builds + deploys WASM to GitHub Pages
-- Builds desktop binaries for Linux/Windows/macOS (uploaded as artifacts)
+- Builds desktop binaries for Linux/Windows/macOS (artifacts)
 
 ## Dependencies
 
-- `Silk.NET.Maths v2.21.0` — all projects (math types)
-- `Silk.NET v2.21.0` — desktop only (OpenGL bindings, requires `AllowUnsafeBlocks`)
+- `Silk.NET.Maths v2.21.0` — all projects
+- `Silk.NET v2.21.0` — desktop only (OpenGL, requires `AllowUnsafeBlocks`)
+- `YamlDotNet v15.1.6` — Game project (planet config parsing)
 - `Microsoft.AspNetCore.Components.WebAssembly v8.0.25` — WASM host
+- `Pillow + numpy` — texture generation scripts (Python, not a runtime dep)

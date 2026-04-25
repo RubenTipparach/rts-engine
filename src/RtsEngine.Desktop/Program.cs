@@ -54,7 +54,7 @@ public static class Program
             await renderer.Setup(OpenGLGPU.TerrainShaderGLSL);
 
             backend = new DesktopAppBackend(window);
-            engine = new GameEngine(backend, renderer);
+            engine = new GameEngine(backend, gpu, renderer);
             engine.Run();
         };
 

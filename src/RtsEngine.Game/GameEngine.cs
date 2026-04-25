@@ -10,14 +10,21 @@ public class GameEngine
     private PlanetRenderer _planet;
     private readonly StarMapRenderer? _starMap;
     private readonly SolarSystemRenderer? _solarSystem;
+    private readonly IGPU _gpu;
+    private EngineUI? _ui;
 
-    // Planet edit camera
     private float _azimuth, _elevation = 0.4f, _distance = 3.0f;
     private bool _dragging;
     private int _hoveredCell = -1;
     private DateTime _startTime = DateTime.UtcNow;
 
     private const float PixelsToRadians = 0.005f;
+
+    // Camera transition
+    private bool _transitioning;
+    private float _transitionStart;
+    private float _transitionDuration = 1.2f;
+    private EditorMode _transitionTarget;
 
     private bool _running;
     public EditorMode Mode { get; set; } = EditorMode.SolarSystem;
@@ -28,7 +35,10 @@ public class GameEngine
 
     public void SwitchToPlanetEdit()
     {
-        Mode = EditorMode.PlanetEdit;
+        // Start zoom-in transition
+        _transitioning = true;
+        _transitionStart = Elapsed();
+        _transitionTarget = EditorMode.PlanetEdit;
         _hoveredCell = -1;
     }
 
@@ -36,12 +46,14 @@ public class GameEngine
     {
         Mode = EditorMode.SolarSystem;
         SelectedPlanetConfig = null;
+        _transitioning = false;
     }
 
-    public GameEngine(IRenderBackend app, PlanetRenderer planet,
+    public GameEngine(IRenderBackend app, IGPU gpu, PlanetRenderer planet,
         StarMapRenderer? starMap = null, SolarSystemRenderer? solarSystem = null)
     {
         _app = app;
+        _gpu = gpu;
         _planet = planet;
         _starMap = starMap;
         _solarSystem = solarSystem;
@@ -61,7 +73,7 @@ public class GameEngine
 
         _app.PointerDrag += (dx, dy) =>
         {
-            if (!_dragging) return;
+            if (!_dragging || _transitioning) return;
             if (Mode == EditorMode.PlanetEdit)
             {
                 _azimuth += dx * PixelsToRadians;
@@ -69,17 +81,14 @@ public class GameEngine
                 _elevation = Math.Clamp(_elevation, -1.4f, 1.4f);
             }
             else if (Mode == EditorMode.StarMap)
-            {
                 _starMap?.Orbit(dx, dy);
-            }
             else if (Mode == EditorMode.SolarSystem)
-            {
                 _solarSystem?.Orbit(dx, dy);
-            }
         };
 
         _app.Scroll += delta =>
         {
+            if (_transitioning) return;
             if (Mode == EditorMode.PlanetEdit)
             {
                 _distance -= delta * 0.002f;
@@ -96,15 +105,36 @@ public class GameEngine
         _app.KeyDown += OnKey;
     }
 
+    public async Task SetupUI(string uiShaderCode)
+    {
+        _ui = new EngineUI(_gpu);
+        await _ui.Setup(uiShaderCode);
+
+        var btn = _ui.AddButton("back_solar", "Solar System", 10, 60, 150, 40);
+        btn.HasArrow = true;
+        btn.BgColor = new Vector4(0.05f, 0.15f, 0.25f, 0.9f);
+        btn.FgColor = new Vector4(0f, 1f, 1f, 1f);
+        btn.Visible = false;
+    }
+
     private void OnClick(float cx, float cy, int button)
     {
+        if (_transitioning) return;
+
+        // UI buttons consume clicks first
+        if (_ui != null && button == 0)
+        {
+            var hit = _ui.HitTest(cx, cy);
+            if (hit == "back_solar") { SwitchToSolarSystem(); return; }
+        }
+
         if (Mode == EditorMode.PlanetEdit)
         {
-            var hit = PickCell(cx, cy);
-            if (hit == null) return;
-            if (button == 0) _planet.Mesh.ChangeLevel(hit.Value, +1);
-            else if (button == 2) _planet.Mesh.ChangeLevel(hit.Value, -1);
-            _planet.MarkDirty(hit.Value);
+            var cell = PickCell(cx, cy);
+            if (cell == null) return;
+            if (button == 0) _planet.Mesh.ChangeLevel(cell.Value, +1);
+            else if (button == 2) _planet.Mesh.ChangeLevel(cell.Value, -1);
+            _planet.MarkDirty(cell.Value);
         }
         else if (Mode == EditorMode.StarMap && _starMap != null && button == 0)
         {
@@ -119,23 +149,19 @@ public class GameEngine
         {
             var planet = _solarSystem.PickPlanet(cx, cy, _app.CanvasWidth, _app.CanvasHeight);
             if (planet != null)
-            {
-                // Don't switch mode yet — stay in solar system while planet loads.
-                // Home.razor detects SelectedPlanetConfig change, loads the planet,
-                // then calls SwitchToPlanetEdit() when ready.
                 SelectedPlanetConfig = planet;
-            }
         }
     }
 
     private void OnMove(float cx, float cy)
     {
-        if (Mode == EditorMode.PlanetEdit)
+        if (Mode == EditorMode.PlanetEdit && !_transitioning)
             _hoveredCell = PickCell(cx, cy) ?? -1;
     }
 
     private void OnKey(string key)
     {
+        if (_transitioning) return;
         if (key == "Tab")
         {
             if (Mode == EditorMode.PlanetEdit) SwitchToSolarSystem();
@@ -164,10 +190,44 @@ public class GameEngine
         _app.StartLoop(Tick);
     }
 
+    private float Elapsed() => (float)(DateTime.UtcNow - _startTime).TotalSeconds;
+
     private async Task Tick()
     {
-        float elapsed = (float)(DateTime.UtcNow - _startTime).TotalSeconds;
+        float elapsed = Elapsed();
 
+        // Handle zoom transition
+        if (_transitioning)
+        {
+            float t = Math.Clamp((elapsed - _transitionStart) / _transitionDuration, 0f, 1f);
+            float smooth = t * t * (3f - 2f * t); // smoothstep
+
+            if (_transitionTarget == EditorMode.PlanetEdit)
+            {
+                // Lerp camera distance from current to planet-edit distance
+                _distance = 3.0f; // target planet distance
+                float scale = 1f - smooth;
+
+                // Render planet with a pull-back during transition
+                var cam = CameraPosition();
+                float transitionDist = 3.0f + (80f - 3.0f) * (1f - smooth);
+                var transPos = Vector3.Normalize(cam) * transitionDist;
+                _planet.SetCameraPosition(transPos.X, transPos.Y, transPos.Z);
+                _planet.SetTime(elapsed);
+                _planet.Draw(BuildPlanetMvpAt(transPos, _app.AspectRatio));
+            }
+
+            if (t >= 1f)
+            {
+                _transitioning = false;
+                Mode = _transitionTarget;
+            }
+
+            OnFrameRendered?.Invoke();
+            return;
+        }
+
+        // Normal tick
         if (Mode == EditorMode.PlanetEdit)
         {
             await _planet.RebuildDirtyPatches();
@@ -177,14 +237,22 @@ public class GameEngine
             _planet.SetHighlightCell(_hoveredCell);
             await _planet.SyncOutline();
             _planet.Draw(BuildPlanetMvp(_app.AspectRatio));
+
+            // UI buttons
+            _ui?.SetButtonVisible("back_solar", true);
+            _ui?.SetCanvasSize(_app.CanvasWidth, _app.CanvasHeight);
+            if (_ui != null) await _ui.SyncBuffers();
+            _ui?.Draw();
         }
         else if (Mode == EditorMode.SolarSystem && _solarSystem != null)
         {
+            _ui?.SetButtonVisible("back_solar", false);
             var mvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
             _solarSystem.Draw(mvp);
         }
         else if (Mode == EditorMode.StarMap && _starMap != null)
         {
+            _ui?.SetButtonVisible("back_solar", false);
             var mvp = _starMap.BuildMvpFloats(_app.AspectRatio);
             _starMap.Draw(mvp);
         }
@@ -192,7 +260,7 @@ public class GameEngine
         OnFrameRendered?.Invoke();
     }
 
-    // ── Planet camera ───────────────────────────────────────────────
+    // ── Camera ───────────────────────────────────────────────────────
 
     private Vector3 CameraPosition()
     {
@@ -203,10 +271,12 @@ public class GameEngine
     }
 
     private float[] BuildPlanetMvp(float aspectRatio)
+        => BuildPlanetMvpAt(CameraPosition(), aspectRatio);
+
+    private float[] BuildPlanetMvpAt(Vector3 camPos, float aspectRatio)
     {
-        var pos = CameraPosition();
         var view = Matrix4X4.CreateLookAt(
-            new Vector3D<float>(pos.X, pos.Y, pos.Z),
+            new Vector3D<float>(camPos.X, camPos.Y, camPos.Z),
             new Vector3D<float>(0, 0, 0),
             new Vector3D<float>(0, 1, 0));
         var proj = Matrix4X4.CreatePerspectiveFieldOfView(
