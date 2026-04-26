@@ -128,12 +128,6 @@ public class GameEngine
         if (_transitioning) return;
 
         // UI buttons consume clicks first
-        if (_ui != null && button == 0)
-        {
-            var hit = _ui.HitTest(cx, cy);
-            if (hit == "back_solar") { SwitchToSolarSystem(); return; }
-        }
-
         if (Mode == EditorMode.PlanetEdit)
         {
             var cell = PickCell(cx, cy);

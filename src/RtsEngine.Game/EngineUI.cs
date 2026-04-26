@@ -131,7 +131,7 @@ public sealed class EngineUI
 
         if (verts.Count == 0 || idx.Count == 0)
         {
-            _vertCount = 0; _idxCount = 0;
+            _idxCount = 0;
             return;
         }
 
@@ -140,7 +140,7 @@ public sealed class EngineUI
         var idxArr = idx.ToArray();
         if (idxArr.Length == 0) { _idxCount = 0; return; }
         _ibo = await _gpu.CreateIndexBuffer(idxArr);
-        _vertCount = verts.Count / 6;
+        // vertCount removed — only idxCount is needed for drawIndexed
         _idxCount = idx.Count;
     }
 
