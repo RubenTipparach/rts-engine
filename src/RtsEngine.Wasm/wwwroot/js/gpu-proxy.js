@@ -121,7 +121,8 @@
 
         createIndexBuffer(ushortData) {
             const u16 = new Uint16Array(ushortData);
-            const padded = u16.byteLength % 4 === 0 ? u16.byteLength : u16.byteLength + 2;
+            const rawSize = u16.byteLength > 0 ? u16.byteLength : 4; // min 4 bytes
+            const padded = rawSize % 4 === 0 ? rawSize : rawSize + 2;
             const buf = device.createBuffer({
                 size: padded,
                 usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,

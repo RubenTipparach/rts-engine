@@ -92,8 +92,9 @@ public sealed class EngineUI
         if (!_dirty || !_ready) return;
         _dirty = false;
 
-        if (_vbo > 0) _gpu.DestroyBuffer(_vbo);
-        if (_ibo > 0) _gpu.DestroyBuffer(_ibo);
+        if (_vbo > 0) { _gpu.DestroyBuffer(_vbo); _vbo = 0; }
+        if (_ibo > 0) { _gpu.DestroyBuffer(_ibo); _ibo = 0; }
+        _idxCount = 0;
 
         var verts = new List<float>();
         var idx = new List<ushort>();
@@ -133,14 +134,17 @@ public sealed class EngineUI
             }
         }
 
-        if (verts.Count == 0)
+        if (verts.Count == 0 || idx.Count == 0)
         {
             _vertCount = 0; _idxCount = 0;
             return;
         }
 
         _vbo = await _gpu.CreateVertexBuffer(verts.ToArray());
-        _ibo = await _gpu.CreateIndexBuffer(idx.ToArray());
+        // Ensure at least 4 bytes for the index buffer (WebGPU requires size > 0)
+        var idxArr = idx.ToArray();
+        if (idxArr.Length == 0) { _idxCount = 0; return; }
+        _ibo = await _gpu.CreateIndexBuffer(idxArr);
         _vertCount = verts.Count / 6;
         _idxCount = idx.Count;
     }
