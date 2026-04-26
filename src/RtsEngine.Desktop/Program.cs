@@ -302,6 +302,7 @@ void main() {
     public Task<int> CreateRenderPipelineLines(int shaderModuleId, object[] vertexBufferLayouts) => Task.FromResult(0);
     public Task<int> CreateRenderPipelineAlphaBlend(int shaderModuleId, object[] vertexBufferLayouts) => Task.FromResult(0);
     public Task<int> CreateRenderPipelineUI(int shaderModuleId, object[] vertexBufferLayouts) => Task.FromResult(0);
+    public void RenderNoBind(int pipelineId, int vertexBufferId, int indexBufferId, int indexCount) { }
 
     public void Dispose()
     {

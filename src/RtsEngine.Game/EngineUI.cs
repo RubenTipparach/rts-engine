@@ -13,11 +13,11 @@ public sealed class EngineUI
     private readonly List<UIButton> _buttons = new();
     private readonly IGPU _gpu;
 
-    private int _pipeline, _vbo, _ibo, _ubo, _bindGroup;
-    private int _vertCount, _idxCount;
+    private int _pipeline;
+    private int _vbo = 0, _ibo = 0;
+    private int _idxCount;
     private bool _ready, _dirty = true;
     private float _canvasW, _canvasH;
-    private readonly float[] _uni = new float[16]; // ortho projection mat4
 
     public EngineUI(IGPU gpu) => _gpu = gpu;
 
@@ -59,22 +59,17 @@ public sealed class EngineUI
     public async Task Setup(string shaderCode)
     {
         var shader = await _gpu.CreateShaderModule(shaderCode);
-        _ubo = await _gpu.CreateUniformBuffer(64);
 
         _pipeline = await _gpu.CreateRenderPipelineUI(shader, new object[]
         {
             new {
-                arrayStride = 24, // pos2 + color4 = 6 floats
+                arrayStride = 24,
                 attributes = new object[]
                 {
                     new { format = "float32x2", offset = 0,  shaderLocation = 0 },
                     new { format = "float32x4", offset = 8,  shaderLocation = 1 },
                 }
             }
-        });
-        _bindGroup = await _gpu.CreateBindGroup(_pipeline, 0, new object[]
-        {
-            new { binding = 0, bufferId = _ubo },
         });
         _ready = true;
     }
@@ -151,12 +146,8 @@ public sealed class EngineUI
 
     public void Draw()
     {
-        if (!_ready || _idxCount == 0) return;
-        // Identity ortho (NDC passthrough)
-        for (int i = 0; i < 16; i++) _uni[i] = 0;
-        _uni[0] = 1; _uni[5] = 1; _uni[10] = 1; _uni[15] = 1;
-        _gpu.WriteBuffer(_ubo, _uni);
-        _gpu.RenderAdditional(_pipeline, _vbo, _ibo, _bindGroup, _idxCount);
+        if (!_ready || _idxCount == 0 || _vbo == 0 || _ibo == 0) return;
+        _gpu.RenderNoBind(_pipeline, _vbo, _ibo, _idxCount);
     }
 
     private static void EmitVert(List<float> v, float x, float y, Vector4 color)

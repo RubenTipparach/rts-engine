@@ -30,6 +30,9 @@ public interface IGPU
     /// <summary>Screen-space UI: alpha blend, no depth test, no culling.</summary>
     Task<int> CreateRenderPipelineUI(int shaderModuleId, object[] vertexBufferLayouts);
 
+    /// <summary>Draw without bind group (for shaders with no uniforms/textures).</summary>
+    void RenderNoBind(int pipelineId, int vertexBufferId, int indexBufferId, int indexCount);
+
     /// <summary>Creates a line-list pipeline. For wireframe overlays (cell outlines, debug lines).</summary>
     Task<int> CreateRenderPipelineLines(int shaderModuleId, object[] vertexBufferLayouts);
 }
