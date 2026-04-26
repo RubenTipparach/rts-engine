@@ -87,14 +87,16 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         _distance -= delta * _distance * 0.001f;
         _distance = Math.Clamp(_distance, 20f, 200f);
     }
+    public float Distance => _distance;
     public void SetDragging(bool d) => _dragging = d;
     public bool IsDragging => _dragging;
 
-    public string? PickPlanet(float cx, float cy, float w, float h)
+    public (string? config, Vector3 position) PickPlanet(float cx, float cy, float w, float h)
     {
         var mvp = FloatsToMatrix(BuildMvpFloats(w / h));
         float bestDist = float.MaxValue;
         string? best = null;
+        Vector3 bestPos = Vector3.Zero;
 
         void CheckBody(OrbitalBody body, Vector3 parentPos)
         {
@@ -104,12 +106,12 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
             float sx = (clip.X / clip.W * 0.5f + 0.5f) * w;
             float sy = (0.5f - clip.Y / clip.W * 0.5f) * h;
             float d = (sx - cx) * (sx - cx) + (sy - cy) * (sy - cy);
-            if (d < bestDist) { bestDist = d; best = body.ConfigFile; }
+            if (d < bestDist) { bestDist = d; best = body.ConfigFile; bestPos = pos; }
             foreach (var moon in body.Moons) CheckBody(moon, pos);
         }
 
         foreach (var p in _system.Planets) CheckBody(p, Vector3.Zero);
-        return bestDist < 50 * 50 ? best : null;
+        return bestDist < 50 * 50 ? (best, bestPos) : (null, Vector3.Zero);
     }
 
     // ── Mesh ────────────────────────────────────────────────────────
@@ -125,20 +127,20 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         var bi = new List<uint>();
         var ov = new List<float>(); // orbit line verts (pos3 only)
 
-        // Sun
+        // Sun (bright, single color)
         EmitSphere(bv, bi, Vector3.Zero, _system.SunRadius, _system.SunColor, 1.5f, 12);
 
-        // Planets
+        // Planets — noise-colored for visual variety
         foreach (var planet in _system.Planets)
         {
             var pos = planet.GetPosition(time);
-            EmitSphere(bv, bi, pos, planet.DisplayRadius, planet.Color, 1.0f, 8);
+            EmitNoiseSphere(bv, bi, pos, planet.DisplayRadius, planet.Color, 1.0f, 10, planet.NoiseSeed);
             EmitOrbitRing(ov, Vector3.Zero, planet.OrbitRadius, 64);
 
             foreach (var moon in planet.Moons)
             {
                 var moonPos = pos + moon.GetPosition(time);
-                EmitSphere(bv, bi, moonPos, moon.DisplayRadius, moon.Color, 0.8f, 6);
+                EmitNoiseSphere(bv, bi, moonPos, moon.DisplayRadius, moon.Color, 0.8f, 8, moon.NoiseSeed);
                 EmitOrbitRing(ov, pos, moon.OrbitRadius, 32);
             }
         }
@@ -209,6 +211,67 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         }
     }
 
+    private static void EmitNoiseSphere(List<float> v, List<uint> idx,
+        Vector3 center, float radius, Vector3 baseColor, float brightness, int segments, int seed)
+    {
+        uint baseIdx = (uint)(v.Count / VertexFloats);
+        int rings = segments / 2;
+
+        Vector3 ColorAt(Vector3 dir)
+        {
+            float n = Noise3D.Octaves(dir.X * 2.5f, dir.Y * 2.5f, dir.Z * 2.5f, 3, 0.5f, seed);
+            float t = (n + 1f) * 0.5f;
+            // Blend between darker and lighter versions of the base color
+            var dark = baseColor * 0.4f;
+            var mid = baseColor;
+            var light = baseColor * 1.3f;
+            if (t < 0.3f) return Vector3.Lerp(dark, mid, t / 0.3f);
+            if (t < 0.7f) return mid;
+            return Vector3.Lerp(mid, light, (t - 0.7f) / 0.3f);
+        }
+
+        var topDir = Vector3.UnitY;
+        Emit(v, center + topDir * radius, ColorAt(topDir), brightness);
+        for (int r = 1; r < rings; r++)
+        {
+            float phi = MathF.PI * r / rings;
+            float y = MathF.Cos(phi); float ringR = MathF.Sin(phi);
+            for (int s = 0; s < segments; s++)
+            {
+                float theta = 2f * MathF.PI * s / segments;
+                var dir = new Vector3(MathF.Cos(theta) * ringR, y, MathF.Sin(theta) * ringR);
+                Emit(v, center + dir * radius, ColorAt(dir), brightness);
+            }
+        }
+        Emit(v, center - Vector3.UnitY * radius, ColorAt(-Vector3.UnitY), brightness);
+
+        for (int s = 0; s < segments; s++)
+        {
+            idx.Add(baseIdx);
+            idx.Add(baseIdx + 1 + (uint)s);
+            idx.Add(baseIdx + 1 + (uint)((s + 1) % segments));
+        }
+        for (int r = 0; r < rings - 2; r++)
+        {
+            uint row0 = baseIdx + 1 + (uint)(r * segments);
+            uint row1 = baseIdx + 1 + (uint)((r + 1) * segments);
+            for (int s = 0; s < segments; s++)
+            {
+                uint s0 = (uint)s, s1 = (uint)((s + 1) % segments);
+                idx.Add(row0 + s0); idx.Add(row1 + s0); idx.Add(row1 + s1);
+                idx.Add(row0 + s0); idx.Add(row1 + s1); idx.Add(row0 + s1);
+            }
+        }
+        uint bottom = baseIdx + 1 + (uint)((rings - 1) * segments);
+        uint lastRow = baseIdx + 1 + (uint)((rings - 2) * segments);
+        for (int s = 0; s < segments; s++)
+        {
+            idx.Add(bottom);
+            idx.Add(lastRow + (uint)((s + 1) % segments));
+            idx.Add(lastRow + (uint)s);
+        }
+    }
+
     private static void EmitOrbitRing(List<float> v, Vector3 center, float radius, int segments)
     {
         for (int i = 0; i < segments; i++)
@@ -240,19 +303,21 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
             _gpu.RenderAdditional(_linePipeline, _orbitVbo, _orbitIbo, _lineBindGroup, _orbitVertCount);
     }
 
-    // Planets are static — no orbital animation needed in the editor view
+    // Camera focus can be lerped toward a planet for zoom-in transition
+    private Vector3 _focusTarget = Vector3.Zero;
+    public void SetFocusTarget(Vector3 target) => _focusTarget = target;
 
     public float[] BuildMvpFloats(float aspect)
     {
-        float cx = _distance * MathF.Cos(_elevation) * MathF.Cos(_azimuth);
-        float cy = _distance * MathF.Sin(_elevation);
-        float cz = _distance * MathF.Cos(_elevation) * MathF.Sin(_azimuth);
+        float cx = _focusTarget.X + _distance * MathF.Cos(_elevation) * MathF.Cos(_azimuth);
+        float cy = _focusTarget.Y + _distance * MathF.Sin(_elevation);
+        float cz = _focusTarget.Z + _distance * MathF.Cos(_elevation) * MathF.Sin(_azimuth);
         var view = Matrix4X4.CreateLookAt(
             new Vector3D<float>(cx, cy, cz),
-            new Vector3D<float>(0, 0, 0),
+            new Vector3D<float>(_focusTarget.X, _focusTarget.Y, _focusTarget.Z),
             new Vector3D<float>(0, 1, 0));
         var proj = Matrix4X4.CreatePerspectiveFieldOfView(
-            Scalar.DegreesToRadians(50.0f), aspect, 1f, 500.0f);
+            Scalar.DegreesToRadians(50.0f), aspect, 0.5f, 500.0f);
         return MatrixHelper.ToRawFloats(Matrix4X4.Multiply(view, proj));
     }
 

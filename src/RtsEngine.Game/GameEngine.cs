@@ -19,11 +19,13 @@ public class GameEngine
 
     private const float PixelsToRadians = 0.005f;
 
-    // Camera transition
+    // Camera transition (solar system ↔ planet)
     private bool _transitioning;
     private float _transitionStart;
-    private float _transitionDuration = 1.2f;
+    private const float TransitionDuration = 1.5f;
     private EditorMode _transitionTarget;
+    private Vector3 _transitionPlanetPos; // where the planet is in solar system space
+    private bool _planetReady; // set when LoadPlanetAsync completes
 
     private bool _running;
     public EditorMode Mode { get; set; } = EditorMode.SolarSystem;
@@ -32,13 +34,18 @@ public class GameEngine
 
     public void SetPlanetRenderer(PlanetRenderer p) => _planet = p;
 
+    /// <summary>Called by Home.razor after the planet renderer is ready.</summary>
     public void SwitchToPlanetEdit()
     {
-        // Start zoom-in transition
-        _transitioning = true;
-        _transitionStart = Elapsed();
-        _transitionTarget = EditorMode.PlanetEdit;
-        _hoveredCell = -1;
+        _planetReady = true;
+        // If already transitioning (zoom started on click), the transition
+        // tick will switch mode when both animation and loading are done.
+        // If not transitioning (instant switch), start now.
+        if (!_transitioning)
+        {
+            Mode = EditorMode.PlanetEdit;
+            _hoveredCell = -1;
+        }
     }
 
     public void SwitchToSolarSystem()
@@ -46,6 +53,13 @@ public class GameEngine
         Mode = EditorMode.SolarSystem;
         SelectedPlanetConfig = null;
         _transitioning = false;
+        _planetReady = false;
+        if (_solarSystem != null)
+        {
+            _solarSystem.SetFocusTarget(Vector3.Zero);
+            // Reset zoom to default
+            _solarSystem.Zoom(-(_solarSystem.Distance - 80f) * 100f);
+        }
     }
 
     public GameEngine(IRenderBackend app, IGPU gpu, PlanetRenderer planet,
@@ -147,9 +161,16 @@ public class GameEngine
         }
         else if (Mode == EditorMode.SolarSystem && _solarSystem != null && button == 0)
         {
-            var planet = _solarSystem.PickPlanet(cx, cy, _app.CanvasWidth, _app.CanvasHeight);
-            if (planet != null)
-                SelectedPlanetConfig = planet;
+            var (config, pos) = _solarSystem.PickPlanet(cx, cy, _app.CanvasWidth, _app.CanvasHeight);
+            if (config != null)
+            {
+                SelectedPlanetConfig = config;
+                _transitionPlanetPos = pos;
+                _planetReady = false;
+                _transitioning = true;
+                _transitionStart = Elapsed();
+                _transitionTarget = EditorMode.PlanetEdit;
+            }
         }
     }
 
@@ -196,33 +217,41 @@ public class GameEngine
     {
         float elapsed = Elapsed();
 
-        // Handle zoom transition
-        if (_transitioning)
+        // Handle zoom transition: solar system camera zooms toward target planet
+        if (_transitioning && _solarSystem != null)
         {
-            float t = Math.Clamp((elapsed - _transitionStart) / _transitionDuration, 0f, 1f);
+            float t = Math.Clamp((elapsed - _transitionStart) / TransitionDuration, 0f, 1f);
             float smooth = t * t * (3f - 2f * t); // smoothstep
 
             if (_transitionTarget == EditorMode.PlanetEdit)
             {
-                // Lerp camera distance from current to planet-edit distance
-                _distance = 3.0f; // target planet distance
-                float scale = 1f - smooth;
+                // Zoom solar system camera toward the planet
+                float zoomDist = 80f * (1f - smooth) + 2f * smooth;
+                _solarSystem.Zoom(-(_solarSystem.Distance - zoomDist) * 100f);
+                // Focus center lerps toward the planet position
+                var focus = _transitionPlanetPos * smooth;
+                _solarSystem.SetFocusTarget(focus);
 
-                // Render planet with a pull-back during transition
-                var cam = CameraPosition();
-                float transitionDist = 3.0f + (80f - 3.0f) * (1f - smooth);
-                var transPos = Vector3.Normalize(cam) * transitionDist;
-                _planet.SetCameraPosition(transPos.X, transPos.Y, transPos.Z);
-                _planet.SetTime(elapsed);
-                _planet.Draw(BuildPlanetMvpAt(transPos, _app.AspectRatio));
+                var mvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
+                _solarSystem.Draw(mvp);
             }
 
-            if (t >= 1f)
+            // Switch when animation is done AND planet is loaded
+            if (t >= 1f && _planetReady)
             {
                 _transitioning = false;
-                Mode = _transitionTarget;
+                Mode = EditorMode.PlanetEdit;
+                _hoveredCell = -1;
+                _solarSystem.SetFocusTarget(Vector3.Zero);
+            }
+            // If animation is done but planet isn't ready, keep showing solar system zoomed in
+            else if (t >= 1f && !_planetReady)
+            {
+                var mvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
+                _solarSystem.Draw(mvp);
             }
 
+            _app.ShowUIButton("back_solar", false);
             OnFrameRendered?.Invoke();
             return;
         }
