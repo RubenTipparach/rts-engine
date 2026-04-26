@@ -61,7 +61,7 @@ public sealed class EngineUI
         var shader = await _gpu.CreateShaderModule(shaderCode);
         _ubo = await _gpu.CreateUniformBuffer(64);
 
-        _pipeline = await _gpu.CreateRenderPipelineAlphaBlend(shader, new object[]
+        _pipeline = await _gpu.CreateRenderPipelineUI(shader, new object[]
         {
             new {
                 arrayStride = 24, // pos2 + color4 = 6 floats

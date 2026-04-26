@@ -110,9 +110,9 @@ public class GameEngine
         _ui = new EngineUI(_gpu);
         await _ui.Setup(uiShaderCode);
 
-        var btn = _ui.AddButton("back_solar", "Solar System", 10, 60, 150, 40);
+        var btn = _ui.AddButton("back_solar", "Back", 20, 20, 200, 60);
         btn.HasArrow = true;
-        btn.BgColor = new Vector4(0.05f, 0.15f, 0.25f, 0.9f);
+        btn.BgColor = new Vector4(0.08f, 0.20f, 0.35f, 0.92f);
         btn.FgColor = new Vector4(0f, 1f, 1f, 1f);
         btn.Visible = false;
     }

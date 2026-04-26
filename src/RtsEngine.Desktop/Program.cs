@@ -301,6 +301,7 @@ void main() {
     public Task<int> CreateSampler(string filter = "linear", string wrap = "repeat") => Task.FromResult(0);
     public Task<int> CreateRenderPipelineLines(int shaderModuleId, object[] vertexBufferLayouts) => Task.FromResult(0);
     public Task<int> CreateRenderPipelineAlphaBlend(int shaderModuleId, object[] vertexBufferLayouts) => Task.FromResult(0);
+    public Task<int> CreateRenderPipelineUI(int shaderModuleId, object[] vertexBufferLayouts) => Task.FromResult(0);
 
     public void Dispose()
     {

@@ -27,6 +27,9 @@ public interface IGPU
     /// <summary>Same as CreateRenderPipeline but with alpha blend + depth write off. For transparent overlays.</summary>
     Task<int> CreateRenderPipelineAlphaBlend(int shaderModuleId, object[] vertexBufferLayouts);
 
+    /// <summary>Screen-space UI: alpha blend, no depth test, no culling.</summary>
+    Task<int> CreateRenderPipelineUI(int shaderModuleId, object[] vertexBufferLayouts);
+
     /// <summary>Creates a line-list pipeline. For wireframe overlays (cell outlines, debug lines).</summary>
     Task<int> CreateRenderPipelineLines(int shaderModuleId, object[] vertexBufferLayouts);
 }

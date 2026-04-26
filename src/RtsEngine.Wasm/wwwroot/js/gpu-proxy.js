@@ -317,6 +317,36 @@
             if (buffers[id]) { buffers[id].destroy(); buffers[id] = null; }
         },
 
+        createRenderPipelineUI(shaderModuleId, vertexBufferLayouts) {
+            const pipeline = device.createRenderPipeline({
+                layout: 'auto',
+                vertex: {
+                    module: shaderModules[shaderModuleId],
+                    entryPoint: 'vs_main',
+                    buffers: vertexBufferLayouts.map(l => ({
+                        arrayStride: l.arrayStride,
+                        attributes: l.attributes.map(a => ({
+                            format: a.format, offset: a.offset, shaderLocation: a.shaderLocation,
+                        })),
+                    })),
+                },
+                fragment: {
+                    module: shaderModules[shaderModuleId],
+                    entryPoint: 'fs_main',
+                    targets: [{
+                        format: canvasFormat,
+                        blend: {
+                            color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                        },
+                    }],
+                },
+                primitive: { topology: 'triangle-list', cullMode: 'none' },
+                depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'always' },
+            });
+            return register(pipelines, pipeline);
+        },
+
         // ── Textures / Samplers ─────────────────────────────────
 
         async createTextureFromUrl(url) {
