@@ -59,6 +59,15 @@ public sealed class WebGLRenderBackend : IRenderBackend
     [JSInvokable] public void OnScroll(float deltaY) => Scroll?.Invoke(deltaY);
     [JSInvokable] public void OnPointerMove(float x, float y) => PointerMove?.Invoke(x, y);
     [JSInvokable] public void OnKeyDown(string key) => KeyDown?.Invoke(key);
+    [JSInvokable] public void OnUIButtonClick(string id) => UIButtonClick?.Invoke(id);
+
+    public event Action<string>? UIButtonClick;
+
+    public void CreateUIButton(string id, string text, string cssJson)
+        => _js.InvokeVoidAsync("AppShell.createButton", id, text, cssJson);
+
+    public void ShowUIButton(string id, bool visible)
+        => _js.InvokeVoidAsync("AppShell.showButton", id, visible);
 
     public void Dispose()
     {

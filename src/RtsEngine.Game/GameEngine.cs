@@ -11,7 +11,6 @@ public class GameEngine
     private readonly StarMapRenderer? _starMap;
     private readonly SolarSystemRenderer? _solarSystem;
     private readonly IGPU _gpu;
-    private EngineUI? _ui;
 
     private float _azimuth, _elevation = 0.4f, _distance = 3.0f;
     private bool _dragging;
@@ -105,16 +104,23 @@ public class GameEngine
         _app.KeyDown += OnKey;
     }
 
-    public async Task SetupUI(string uiShaderCode)
+    public void SetupUI()
     {
-        _ui = new EngineUI(_gpu);
-        await _ui.Setup(uiShaderCode);
+        var css = @"{
+            ""top"":""10px"",""left"":""10px"",
+            ""padding"":""10px 20px"",""fontSize"":""16px"",
+            ""background"":""rgba(10,40,60,0.9)"",""color"":""#0ff"",
+            ""border"":""1px solid #0ff"",""borderRadius"":""6px"",
+            ""cursor"":""pointer"",""display"":""none"",
+            ""fontFamily"":""monospace""
+        }";
+        _app.CreateUIButton("back_solar", "⬅ Solar System", css);
+        _app.UIButtonClick += OnUIButton;
+    }
 
-        var btn = _ui.AddButton("back_solar", "Back", 20, 20, 200, 60);
-        btn.HasArrow = true;
-        btn.BgColor = new Vector4(0.08f, 0.20f, 0.35f, 0.92f);
-        btn.FgColor = new Vector4(0f, 1f, 1f, 1f);
-        btn.Visible = false;
+    private void OnUIButton(string id)
+    {
+        if (id == "back_solar") SwitchToSolarSystem();
     }
 
     private void OnClick(float cx, float cy, int button)
@@ -237,22 +243,17 @@ public class GameEngine
             _planet.SetHighlightCell(_hoveredCell);
             await _planet.SyncOutline();
             _planet.Draw(BuildPlanetMvp(_app.AspectRatio));
-
-            // UI buttons
-            _ui?.SetButtonVisible("back_solar", true);
-            _ui?.SetCanvasSize(_app.CanvasWidth, _app.CanvasHeight);
-            if (_ui != null) await _ui.SyncBuffers();
-            _ui?.Draw();
+            _app.ShowUIButton("back_solar", true);
         }
         else if (Mode == EditorMode.SolarSystem && _solarSystem != null)
         {
-            _ui?.SetButtonVisible("back_solar", false);
+            _app.ShowUIButton("back_solar", false);
             var mvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
             _solarSystem.Draw(mvp);
         }
         else if (Mode == EditorMode.StarMap && _starMap != null)
         {
-            _ui?.SetButtonVisible("back_solar", false);
+            _app.ShowUIButton("back_solar", false);
             var mvp = _starMap.BuildMvpFloats(_app.AspectRatio);
             _starMap.Draw(mvp);
         }

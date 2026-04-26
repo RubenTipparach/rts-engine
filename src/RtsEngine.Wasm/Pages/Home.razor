@@ -50,8 +50,7 @@
             _engine = new GameEngine(_app, gpu, _planet, _starMap, _solarSystem);
             _engine.Mode = EditorMode.SolarSystem;
 
-            var uiShader = await Http.GetStringAsync("shaders/ui.wgsl");
-            await _engine.SetupUI(uiShader);
+            _engine.SetupUI();
 
             // Planet hot-swap callback
             _engine.OnFrameRendered += () =>

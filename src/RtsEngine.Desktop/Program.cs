@@ -359,6 +359,9 @@ internal sealed class DesktopAppBackend : IRenderBackend
     public event Action<float>? Scroll;
     public event Action<float, float>? PointerMove;
     public event Action<string>? KeyDown;
+    public event Action<string>? UIButtonClick;
+    public void CreateUIButton(string id, string text, string cssJson) { }
+    public void ShowUIButton(string id, bool visible) { }
 
     private bool _dragging;
     private Vector2 _lastMouse;

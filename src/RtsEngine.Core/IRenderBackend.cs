@@ -26,6 +26,13 @@ public interface IRenderBackend : IDisposable
     /// <summary>Fired on pointer move. Args: (canvasX, canvasY) in device pixels.</summary>
     event Action<float, float>? PointerMove;
 
-    /// <summary>Fired on key press. Args: key name (e.g. "Tab", "Backspace", "Escape").</summary>
+    /// <summary>Fired on key press. Args: key name.</summary>
     event Action<string>? KeyDown;
+
+    /// <summary>Fired when an engine-managed UI button is clicked. Args: button ID.</summary>
+    event Action<string>? UIButtonClick;
+
+    /// <summary>Create or update a platform-native UI button overlay.</summary>
+    void CreateUIButton(string id, string text, string cssJson);
+    void ShowUIButton(string id, bool visible);
 }
