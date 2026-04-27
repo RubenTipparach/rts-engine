@@ -190,6 +190,9 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
 
     // ── Draw ────────────────────────────────────────────────────────
 
+    /// <summary>IRenderer.Draw — full detail, clears framebuffer.</summary>
+    public void Draw(float[] mvpRawFloats) => Draw(mvpRawFloats, 3f, true);
+
     /// <summary>
     /// Draw the planet. LOD is controlled by cameraDistance:
     ///   close (≤5): full detail — all patches + atmosphere + outline
