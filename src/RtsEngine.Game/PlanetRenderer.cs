@@ -190,13 +190,21 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
 
     // ── Draw ────────────────────────────────────────────────────────
 
-    public void Draw(float[] mvpRawFloats)
+    /// <summary>
+    /// Draw the planet. LOD is controlled by cameraDistance:
+    ///   close (≤5): full detail — all patches + atmosphere + outline
+    ///   medium (5-20): terrain patches + atmosphere, skip outline
+    ///   far (20-50): terrain patches only, skip atmosphere
+    ///   very far (>50): skip entirely (use solar system noise sphere instead)
+    /// </summary>
+    public void Draw(float[] mvpRawFloats, float cameraDistance = 3f, bool clearFirst = true)
     {
+        if (cameraDistance > 50f) return; // too far, let solar system handle it
+
         Array.Copy(mvpRawFloats, 0, _tUni, 0, 16);
         _gpu.WriteBuffer(_tUbo, _tUni);
 
-        // Draw first patch with Render (clears), rest with RenderAdditional (loads)
-        bool first = true;
+        bool first = clearFirst;
         for (int p = 0; p < PlanetMesh.PatchCount; p++)
         {
             if (_patchIdxCount[p] == 0) continue;
@@ -211,16 +219,16 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
             }
         }
 
-        // Atmosphere pass (alpha-blended on top)
-        if (_atmoReady)
+        // Atmosphere — skip when far (saves ~32 ray-sphere intersections/pixel)
+        if (_atmoReady && cameraDistance < 20f)
         {
             Array.Copy(mvpRawFloats, 0, _aUni, 0, 16);
             _gpu.WriteBuffer(_aUbo, _aUni);
             _gpu.RenderAdditional(_aPipeline, _aVbo, _aIbo, _aBindGroup, _aIndexCount);
         }
 
-        // Outline pass — yellow line-list around hovered cell
-        if (_oReady && _oVbo > 0 && _oVertCount > 0)
+        // Outline — only when close enough to see individual cells
+        if (_oReady && _oVbo > 0 && _oVertCount > 0 && cameraDistance < 5f)
         {
             Array.Copy(mvpRawFloats, 0, _oUni, 0, 16);
             _gpu.WriteBuffer(_oUbo, _oUni);

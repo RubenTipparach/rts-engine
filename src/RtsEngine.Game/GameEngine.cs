@@ -234,10 +234,6 @@ public class GameEngine
                 // but in planet-local space (planet at origin, camera offset by planet pos)
                 if (_planetReady && smooth > 0.2f)
                 {
-                    // Camera in solar system space = focusTarget + orbit offset
-                    // Camera in planet space = ssCamPos - planetPos
-                    // This makes the planet appear at the same screen position as the
-                    // solar system sphere, but with full textures/atmosphere
                     float camDist = ssDist;
                     var camDir = new Vector3(
                         MathF.Cos(_solarSystem.Elevation) * MathF.Cos(_solarSystem.Azimuth),
@@ -248,11 +244,8 @@ public class GameEngine
                     _planet.SetCameraPosition(planetCamPos.X, planetCamPos.Y, planetCamPos.Z);
                     _planet.SetTime(elapsed);
 
-                    // Scale factor: solar system display radius → actual planet radius
-                    // Not needed if we just render normally — the planet at origin with
-                    // the solar-system-derived camera distance will appear at the right size
                     var planetMvp = BuildPlanetMvpAt(planetCamPos, _app.AspectRatio);
-                    _planet.Draw(planetMvp);
+                    _planet.Draw(planetMvp, camDist, clearFirst: false);
                 }
 
                 // Switch when animation done AND planet ready
@@ -276,28 +269,24 @@ public class GameEngine
                 _solarSystem.SetFocusTarget(_transitionPlanetPos * (1f - smooth));
 
                 // Early in zoom-out, render planet on top of solar system
-                if (smooth < 0.8f)
                 {
-                    float camDist = ssDist;
-                    var camDir = new Vector3(
-                        MathF.Cos(_solarSystem.Elevation) * MathF.Cos(_solarSystem.Azimuth),
-                        MathF.Sin(_solarSystem.Elevation),
-                        MathF.Cos(_solarSystem.Elevation) * MathF.Sin(_solarSystem.Azimuth));
-                    var planetCamPos = camDir * camDist;
-
-                    // Render solar system first, then planet on top
                     var ssMvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
                     _solarSystem.Draw(ssMvp);
 
-                    _planet.SetCameraPosition(planetCamPos.X, planetCamPos.Y, planetCamPos.Z);
-                    _planet.SetTime(elapsed);
-                    _planet.Draw(BuildPlanetMvpAt(planetCamPos, _app.AspectRatio));
-                }
-                else
-                {
-                    // Far enough — just solar system
-                    var ssMvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
-                    _solarSystem.Draw(ssMvp);
+                    // Render planet on top while still close enough to see detail
+                    if (ssDist < 50f)
+                    {
+                        float camDist = ssDist;
+                        var camDir = new Vector3(
+                            MathF.Cos(_solarSystem.Elevation) * MathF.Cos(_solarSystem.Azimuth),
+                            MathF.Sin(_solarSystem.Elevation),
+                            MathF.Cos(_solarSystem.Elevation) * MathF.Sin(_solarSystem.Azimuth));
+                        var planetCamPos = camDir * camDist;
+
+                        _planet.SetCameraPosition(planetCamPos.X, planetCamPos.Y, planetCamPos.Z);
+                        _planet.SetTime(elapsed);
+                        _planet.Draw(BuildPlanetMvpAt(planetCamPos, _app.AspectRatio), camDist, clearFirst: false);
+                    }
                 }
 
                 if (t >= 1f)
@@ -322,7 +311,7 @@ public class GameEngine
             _planet.SetTime(elapsed);
             _planet.SetHighlightCell(_hoveredCell);
             await _planet.SyncOutline();
-            _planet.Draw(BuildPlanetMvp(_app.AspectRatio));
+            _planet.Draw(BuildPlanetMvp(_app.AspectRatio), _distance);
             _app.ShowUIButton("back_solar", true);
         }
         else if (Mode == EditorMode.SolarSystem && _solarSystem != null)
