@@ -213,46 +213,102 @@ public class GameEngine
     {
         float elapsed = Elapsed();
 
-        // Handle zoom transition: solar system camera zooms toward/away from planet
+        // Handle zoom transition: renders actual planet during zoom for seamless switch
         if (_transitioning && _solarSystem != null)
         {
             float t = Math.Clamp((elapsed - _transitionStart) / TransitionDuration, 0f, 1f);
-            float smooth = t * t * (3f - 2f * t); // smoothstep
+            float smooth = t * t * (3f - 2f * t);
 
             if (_transitionTarget == EditorMode.PlanetEdit)
             {
-                // Zoom IN: distance 80→2, focus origin→planet
-                _solarSystem.Distance = 80f * (1f - smooth) + 2f * smooth;
+                // Solar system camera zooms toward planet
+                float ssDist = 80f * (1f - smooth) + 3f * smooth;
+                _solarSystem.Distance = ssDist;
                 _solarSystem.SetFocusTarget(_transitionPlanetPos * smooth);
+
+                // Render solar system as background (fades as we zoom in)
+                var ssMvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
+                _solarSystem.Draw(ssMvp);
+
+                // Once planet is loaded, render it on top using the same camera
+                // but in planet-local space (planet at origin, camera offset by planet pos)
+                if (_planetReady && smooth > 0.2f)
+                {
+                    // Camera in solar system space = focusTarget + orbit offset
+                    // Camera in planet space = ssCamPos - planetPos
+                    // This makes the planet appear at the same screen position as the
+                    // solar system sphere, but with full textures/atmosphere
+                    float camDist = ssDist;
+                    var camDir = new Vector3(
+                        MathF.Cos(_solarSystem.Elevation) * MathF.Cos(_solarSystem.Azimuth),
+                        MathF.Sin(_solarSystem.Elevation),
+                        MathF.Cos(_solarSystem.Elevation) * MathF.Sin(_solarSystem.Azimuth));
+                    var planetCamPos = camDir * camDist;
+
+                    _planet.SetCameraPosition(planetCamPos.X, planetCamPos.Y, planetCamPos.Z);
+                    _planet.SetTime(elapsed);
+
+                    // Scale factor: solar system display radius → actual planet radius
+                    // Not needed if we just render normally — the planet at origin with
+                    // the solar-system-derived camera distance will appear at the right size
+                    var planetMvp = BuildPlanetMvpAt(planetCamPos, _app.AspectRatio);
+                    _planet.Draw(planetMvp);
+                }
+
+                // Switch when animation done AND planet ready
+                if (t >= 1f && _planetReady)
+                {
+                    _transitioning = false;
+                    Mode = EditorMode.PlanetEdit;
+                    _distance = 3f;
+                    _azimuth = _solarSystem.Azimuth;
+                    _elevation = _solarSystem.Elevation;
+                    _hoveredCell = -1;
+                    _solarSystem.Distance = 80f;
+                    _solarSystem.SetFocusTarget(Vector3.Zero);
+                }
             }
-            else
+            else // Zoom OUT
             {
-                // Zoom OUT: distance 2→80, focus planet→origin
-                _solarSystem.Distance = 2f * (1f - smooth) + 80f * smooth;
+                // Reverse: camera pulls away from planet back to solar system
+                float ssDist = 3f * (1f - smooth) + 80f * smooth;
+                _solarSystem.Distance = ssDist;
                 _solarSystem.SetFocusTarget(_transitionPlanetPos * (1f - smooth));
+
+                // Early in zoom-out, render planet on top of solar system
+                if (smooth < 0.8f)
+                {
+                    float camDist = ssDist;
+                    var camDir = new Vector3(
+                        MathF.Cos(_solarSystem.Elevation) * MathF.Cos(_solarSystem.Azimuth),
+                        MathF.Sin(_solarSystem.Elevation),
+                        MathF.Cos(_solarSystem.Elevation) * MathF.Sin(_solarSystem.Azimuth));
+                    var planetCamPos = camDir * camDist;
+
+                    // Render solar system first, then planet on top
+                    var ssMvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
+                    _solarSystem.Draw(ssMvp);
+
+                    _planet.SetCameraPosition(planetCamPos.X, planetCamPos.Y, planetCamPos.Z);
+                    _planet.SetTime(elapsed);
+                    _planet.Draw(BuildPlanetMvpAt(planetCamPos, _app.AspectRatio));
+                }
+                else
+                {
+                    // Far enough — just solar system
+                    var ssMvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
+                    _solarSystem.Draw(ssMvp);
+                }
+
+                if (t >= 1f)
+                {
+                    _transitioning = false;
+                    _solarSystem.Distance = 80f;
+                    _solarSystem.SetFocusTarget(Vector3.Zero);
+                }
             }
 
-            var mvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
-            _solarSystem.Draw(mvp);
             _app.ShowUIButton("back_solar", false);
-
-            // Zoom-in: switch when animation done AND planet loaded
-            if (_transitionTarget == EditorMode.PlanetEdit && t >= 1f && _planetReady)
-            {
-                _transitioning = false;
-                Mode = EditorMode.PlanetEdit;
-                _hoveredCell = -1;
-                _solarSystem.Distance = 80f;
-                _solarSystem.SetFocusTarget(Vector3.Zero);
-            }
-            // Zoom-out: done when animation completes
-            else if (_transitionTarget == EditorMode.SolarSystem && t >= 1f)
-            {
-                _transitioning = false;
-                _solarSystem.Distance = 80f;
-                _solarSystem.SetFocusTarget(Vector3.Zero);
-            }
-
             OnFrameRendered?.Invoke();
             return;
         }
