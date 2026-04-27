@@ -149,13 +149,13 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         foreach (var planet in _system.Planets)
         {
             var pos = planet.GetPosition(time);
-            EmitNoiseSphere(bv, bi, pos, planet.DisplayRadius, planet.Color, 1.0f, 10, planet.NoiseSeed);
+            EmitNoiseSphere(bv, bi, pos, planet.DisplayRadius, 1.0f, 10, planet);
             EmitOrbitRing(ov, Vector3.Zero, planet.OrbitRadius, 64);
 
             foreach (var moon in planet.Moons)
             {
                 var moonPos = pos + moon.GetPosition(time);
-                EmitNoiseSphere(bv, bi, moonPos, moon.DisplayRadius, moon.Color, 0.8f, 8, moon.NoiseSeed);
+                EmitNoiseSphere(bv, bi, moonPos, moon.DisplayRadius, 0.8f, 8, moon);
                 EmitOrbitRing(ov, pos, moon.OrbitRadius, 32);
             }
         }
@@ -227,22 +227,23 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
     }
 
     private static void EmitNoiseSphere(List<float> v, List<uint> idx,
-        Vector3 center, float radius, Vector3 baseColor, float brightness, int segments, int seed)
+        Vector3 center, float radius, float brightness, int segments, OrbitalBody body)
     {
         uint baseIdx = (uint)(v.Count / VertexFloats);
         int rings = segments / 2;
+        var th = body.NoiseThresholds;
+        var cols = body.LevelColors;
 
         Vector3 ColorAt(Vector3 dir)
         {
-            float n = Noise3D.Octaves(dir.X * 2.5f, dir.Y * 2.5f, dir.Z * 2.5f, 3, 0.5f, seed);
+            float n = Noise3D.Octaves(dir.X * body.NoiseFrequency, dir.Y * body.NoiseFrequency,
+                dir.Z * body.NoiseFrequency, 3, 0.5f, body.NoiseSeed);
             float t = (n + 1f) * 0.5f;
-            // Blend between darker and lighter versions of the base color
-            var dark = baseColor * 0.4f;
-            var mid = baseColor;
-            var light = baseColor * 1.3f;
-            if (t < 0.3f) return Vector3.Lerp(dark, mid, t / 0.3f);
-            if (t < 0.7f) return mid;
-            return Vector3.Lerp(mid, light, (t - 0.7f) / 0.3f);
+            // Same quantization as PlanetMesh.GenerateFromNoise
+            int lvl = cols.Length - 1;
+            for (int k = 0; k < th.Length && k < cols.Length - 1; k++)
+                if (t < th[k]) { lvl = k; break; }
+            return lvl < cols.Length ? cols[lvl] : body.Color;
         }
 
         var topDir = Vector3.UnitY;

@@ -56,10 +56,17 @@
             _engine.OnFrameRendered += () =>
             {
                 var wanted = _engine.SelectedPlanetConfig;
-                if (wanted != null && wanted != _currentConfig && !_loading)
+                if (wanted != null && !_loading)
                 {
-                    _loading = true;
-                    _ = LoadPlanetAsync(wanted);
+                    if (wanted == _currentConfig)
+                    {
+                        _engine.SwitchToPlanetEdit();
+                    }
+                    else
+                    {
+                        _loading = true;
+                        _ = LoadPlanetAsync(wanted);
+                    }
                 }
             };
 
