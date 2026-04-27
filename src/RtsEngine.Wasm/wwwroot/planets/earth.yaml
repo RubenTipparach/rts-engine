@@ -1,0 +1,43 @@
+# Earth-like planet
+# To create a new planet: copy this file, tweak any fields, reference it in the host.
+name: Earth
+radius: 1.0
+subdivisions: 4    # 10 * 4^n + 2 cells:  1→42, 2→162, 3→642, 4→2562, 5→10242
+stepHeight: 0.04
+
+terrain:
+  atlasUrl: textures/terrain_atlas.png
+  # Ordered by elevation. Index = cliff level in the mesh.
+  # Color is the fallback shown if the atlas fails to load.
+  levels:
+    - name: water
+      color: [0.15, 0.35, 0.75]
+    - name: sand
+      color: [0.90, 0.80, 0.55]
+    - name: grass
+      color: [0.30, 0.65, 0.25]
+    - name: rock
+      color: [0.55, 0.55, 0.55]
+    - name: snow
+      color: [0.95, 0.97, 1.00]
+
+water:
+  dudvUrl:  textures/water_dudv.png
+  normalUrl: textures/water_normal.png
+
+generation:
+  seed: 42
+  frequency: 2.5
+  # Four thresholds separating the five levels (applied to normalized noise ∈ [0,1]):
+  #   n < t0 → water      (ocean)
+  #   n < t1 → sand       (beach)
+  #   n < t2 → grass      (lowland)
+  #   n < t3 → rock       (highland)
+  #   else   → snow       (peak)
+  thresholds: [0.30, 0.45, 0.65, 0.82]
+
+atmosphere:
+  innerRadiusMul: 0.92   # below ground so glow starts at surface
+  outerRadiusMul: 1.5    # 50% thicker than the planet surface
+  sunIntensity: 30.0
+  sunDirection: [0.5, 0.7, 0.5]

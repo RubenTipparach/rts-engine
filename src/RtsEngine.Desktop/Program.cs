@@ -28,13 +28,33 @@ public static class Program
             var gl = window.CreateOpenGL();
 
             gpu = new OpenGLGPU(gl);
-            var mesh = new PlanetMesh(subdivisions: 4, radius: 1.0f, stepHeight: 0.04f);
-            mesh.GenerateFromNoise(seed: 42);
+
+            // Desktop: load YAML from the published wwwroot copy next to the exe,
+            // or fall back to defaults if the file isn't there.
+            PlanetConfig config = new();
+            try
+            {
+                var yamlPath = Path.Combine(AppContext.BaseDirectory, "planets", "earth.yaml");
+                if (File.Exists(yamlPath))
+                    config = PlanetConfig.FromYaml(File.ReadAllText(yamlPath));
+            }
+            catch { /* use defaults */ }
+
+            var mesh = new PlanetMesh(
+                subdivisions: config.Subdivisions,
+                radius: config.Radius,
+                stepHeight: config.StepHeight);
+            mesh.GenerateFromNoise(
+                seed: config.Generation.Seed,
+                frequency: config.Generation.Frequency,
+                thresholds: config.Generation.Thresholds.ToArray());
+
             renderer = new PlanetRenderer(gpu, mesh);
+            renderer.ApplyConfig(config);
             await renderer.Setup(OpenGLGPU.TerrainShaderGLSL);
 
             backend = new DesktopAppBackend(window);
-            engine = new GameEngine(backend, renderer);
+            engine = new GameEngine(backend, gpu, renderer);
             engine.Run();
         };
 
@@ -279,7 +299,10 @@ void main() {
     public void RenderAdditional(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount) { }
     public Task<int> CreateTextureFromUrl(string url) => Task.FromResult(0);
     public Task<int> CreateSampler(string filter = "linear", string wrap = "repeat") => Task.FromResult(0);
+    public Task<int> CreateRenderPipelineLines(int shaderModuleId, object[] vertexBufferLayouts) => Task.FromResult(0);
     public Task<int> CreateRenderPipelineAlphaBlend(int shaderModuleId, object[] vertexBufferLayouts) => Task.FromResult(0);
+    public Task<int> CreateRenderPipelineUI(int shaderModuleId, object[] vertexBufferLayouts) => Task.FromResult(0);
+    public void RenderNoBind(int pipelineId, int vertexBufferId, int indexBufferId, int indexCount) { }
 
     public void Dispose()
     {
@@ -335,6 +358,10 @@ internal sealed class DesktopAppBackend : IRenderBackend
     public event Action<float, float, int>? PointerClick;
     public event Action<float>? Scroll;
     public event Action<float, float>? PointerMove;
+    public event Action<string>? KeyDown;
+    public event Action<string>? UIButtonClick;
+    public void CreateUIButton(string id, string text, string cssJson) { }
+    public void ShowUIButton(string id, bool visible) { }
 
     private bool _dragging;
     private Vector2 _lastMouse;

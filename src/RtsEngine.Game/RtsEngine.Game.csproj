@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\RtsEngine.Core\RtsEngine.Core.csproj" />
+    <PackageReference Include="YamlDotNet" Version="15.1.6" />
   </ItemGroup>
 
   <PropertyGroup>

@@ -7,74 +7,197 @@ namespace RtsEngine.Game;
 public class GameEngine
 {
     private readonly IRenderBackend _app;
-    private readonly IRenderer _renderer;
-    private readonly PlanetRenderer? _planet;
+    private PlanetRenderer _planet;
+    private readonly StarMapRenderer? _starMap;
+    private readonly SolarSystemRenderer? _solarSystem;
+    private readonly IGPU _gpu;
 
-    private float _azimuth;
-    private float _elevation = 0.4f;
-    private float _distance = 3.0f;
+    private float _azimuth, _elevation = 0.4f, _distance = 3.0f;
     private bool _dragging;
-
-    private const float PixelsToRadians = 0.005f;
-    private const float MinDist = 2.0f;
-    private const float MaxDist = 8.0f;
-    private const float MinElev = -1.4f;
-    private const float MaxElev = 1.4f;
-
-    private bool _running;
-    private bool _meshDirty;
+    private int _hoveredCell = -1;
     private DateTime _startTime = DateTime.UtcNow;
 
-    private int _hoveredCell = -1;
-    private float _lastMvpAspect;
-    private float[]? _lastMvp;
+    private const float PixelsToRadians = 0.005f;
 
+    // Camera transition (solar system ↔ planet)
+    private bool _transitioning;
+    private float _transitionStart;
+    private const float TransitionDuration = 1.5f;
+    private EditorMode _transitionTarget;
+    private Vector3 _transitionPlanetPos; // where the planet is in solar system space
+    private bool _planetReady; // set when LoadPlanetAsync completes
+
+    private bool _running;
+    public EditorMode Mode { get; set; } = EditorMode.SolarSystem;
+    public string? SelectedPlanetConfig { get; private set; }
     public event Action? OnFrameRendered;
 
-    public GameEngine(IRenderBackend app, IRenderer renderer)
+    public void SetPlanetRenderer(PlanetRenderer p) => _planet = p;
+
+    /// <summary>Called by Home.razor after the planet renderer is ready.</summary>
+    public void SwitchToPlanetEdit()
+    {
+        _planetReady = true;
+        if (!_transitioning)
+        {
+            Mode = EditorMode.PlanetEdit;
+            _hoveredCell = -1;
+        }
+    }
+
+    public void SwitchToSolarSystem()
+    {
+        if (_solarSystem == null) { Mode = EditorMode.SolarSystem; return; }
+
+        // Start zoom-out transition from current planet position
+        _transitioning = true;
+        _transitionStart = Elapsed();
+        _transitionTarget = EditorMode.SolarSystem;
+        _planetReady = false;
+        SelectedPlanetConfig = null;
+        Mode = EditorMode.SolarSystem; // switch mode immediately so solar system renders
+    }
+
+    public GameEngine(IRenderBackend app, IGPU gpu, PlanetRenderer planet,
+        StarMapRenderer? starMap = null, SolarSystemRenderer? solarSystem = null)
     {
         _app = app;
-        _renderer = renderer;
-        _planet = renderer as PlanetRenderer;
+        _gpu = gpu;
+        _planet = planet;
+        _starMap = starMap;
+        _solarSystem = solarSystem;
 
-        _app.PointerDown += () => _dragging = true;
-        _app.PointerUp += () => _dragging = false;
+        _app.PointerDown += () =>
+        {
+            _dragging = true;
+            if (Mode == EditorMode.StarMap) _starMap?.SetDragging(true);
+            if (Mode == EditorMode.SolarSystem) _solarSystem?.SetDragging(true);
+        };
+        _app.PointerUp += () =>
+        {
+            _dragging = false;
+            if (Mode == EditorMode.StarMap) _starMap?.SetDragging(false);
+            if (Mode == EditorMode.SolarSystem) _solarSystem?.SetDragging(false);
+        };
 
         _app.PointerDrag += (dx, dy) =>
         {
-            if (!_dragging) return;
-            _azimuth += dx * PixelsToRadians;
-            _elevation += dy * PixelsToRadians;
-            _elevation = Math.Clamp(_elevation, MinElev, MaxElev);
+            if (!_dragging || _transitioning) return;
+            if (Mode == EditorMode.PlanetEdit)
+            {
+                _azimuth += dx * PixelsToRadians;
+                _elevation += dy * PixelsToRadians;
+                _elevation = Math.Clamp(_elevation, -1.4f, 1.4f);
+            }
+            else if (Mode == EditorMode.StarMap)
+                _starMap?.Orbit(dx, dy);
+            else if (Mode == EditorMode.SolarSystem)
+                _solarSystem?.Orbit(dx, dy);
         };
 
         _app.Scroll += delta =>
         {
-            _distance -= delta * 0.002f;
-            _distance = Math.Clamp(_distance, MinDist, MaxDist);
+            if (_transitioning) return;
+            if (Mode == EditorMode.PlanetEdit)
+            {
+                _distance -= delta * 0.002f;
+                _distance = Math.Clamp(_distance, 2.0f, 8.0f);
+            }
+            else if (Mode == EditorMode.StarMap)
+                _starMap?.Zoom(delta);
+            else if (Mode == EditorMode.SolarSystem)
+                _solarSystem?.Zoom(delta);
         };
 
         _app.PointerClick += OnClick;
         _app.PointerMove += OnMove;
+        _app.KeyDown += OnKey;
+    }
+
+    public void SetupUI()
+    {
+        var css = @"{
+            ""top"":""10px"",""left"":""10px"",
+            ""padding"":""10px 20px"",""fontSize"":""16px"",
+            ""background"":""rgba(10,40,60,0.9)"",""color"":""#0ff"",
+            ""border"":""1px solid #0ff"",""borderRadius"":""6px"",
+            ""cursor"":""pointer"",""display"":""none"",
+            ""fontFamily"":""monospace""
+        }";
+        _app.CreateUIButton("back_solar", "⬅ Solar System", css);
+        _app.UIButtonClick += OnUIButton;
+    }
+
+    private void OnUIButton(string id)
+    {
+        if (id == "back_solar") SwitchToSolarSystem();
     }
 
     private void OnClick(float cx, float cy, int button)
     {
-        if (_planet == null) return;
-        var hit = RayPick(cx, cy);
-        if (hit == null) return;
+        if (_transitioning) return;
 
-        if (button == 0)
-            _planet.Mesh.ChangeLevel(hit.Value, +1);
-        else if (button == 2)
-            _planet.Mesh.ChangeLevel(hit.Value, -1);
-        _meshDirty = true;
+        // UI buttons consume clicks first
+        if (Mode == EditorMode.PlanetEdit)
+        {
+            var cell = PickCell(cx, cy);
+            if (cell == null) return;
+            if (button == 0) _planet.Mesh.ChangeLevel(cell.Value, +1);
+            else if (button == 2) _planet.Mesh.ChangeLevel(cell.Value, -1);
+            _planet.MarkDirty(cell.Value);
+        }
+        else if (Mode == EditorMode.StarMap && _starMap != null && button == 0)
+        {
+            int child = _starMap.PickChild(cx, cy, _app.CanvasWidth, _app.CanvasHeight);
+            if (child >= 0)
+            {
+                _starMap.DrillDown(child);
+                _ = _starMap.RebuildMesh();
+            }
+        }
+        else if (Mode == EditorMode.SolarSystem && _solarSystem != null && button == 0)
+        {
+            var (config, pos) = _solarSystem.PickPlanet(cx, cy, _app.CanvasWidth, _app.CanvasHeight);
+            if (config != null)
+            {
+                SelectedPlanetConfig = config;
+                _transitionPlanetPos = pos;
+                _planetReady = false;
+                _transitioning = true;
+                _transitionStart = Elapsed();
+                _transitionTarget = EditorMode.PlanetEdit;
+            }
+        }
     }
 
     private void OnMove(float cx, float cy)
     {
-        if (_planet == null) return;
-        _hoveredCell = RayPick(cx, cy) ?? -1;
+        if (Mode == EditorMode.PlanetEdit && !_transitioning)
+            _hoveredCell = PickCell(cx, cy) ?? -1;
+    }
+
+    private void OnKey(string key)
+    {
+        if (_transitioning) return;
+        if (key == "Tab")
+        {
+            if (Mode == EditorMode.PlanetEdit) SwitchToSolarSystem();
+            else if (Mode == EditorMode.SolarSystem) Mode = EditorMode.StarMap;
+            else SwitchToSolarSystem();
+        }
+        else if (key == "Backspace")
+        {
+            if (Mode == EditorMode.PlanetEdit) SwitchToSolarSystem();
+            else if (Mode == EditorMode.StarMap && _starMap != null)
+            {
+                _starMap.ZoomOut();
+                _ = _starMap.RebuildMesh();
+            }
+        }
+        else if (key == "Escape")
+        {
+            if (Mode == EditorMode.PlanetEdit) SwitchToSolarSystem();
+        }
     }
 
     public void Run()
@@ -84,37 +207,130 @@ public class GameEngine
         _app.StartLoop(Tick);
     }
 
+    private float Elapsed() => (float)(DateTime.UtcNow - _startTime).TotalSeconds;
+
     private async Task Tick()
     {
-        if (_meshDirty && _planet != null)
+        float elapsed = Elapsed();
+
+        // Handle zoom transition: renders actual planet during zoom for seamless switch
+        if (_transitioning && _solarSystem != null)
         {
-            _meshDirty = false;
-            await _planet.RebuildMesh();
+            float t = Math.Clamp((elapsed - _transitionStart) / TransitionDuration, 0f, 1f);
+            float smooth = t * t * (3f - 2f * t);
+
+            if (_transitionTarget == EditorMode.PlanetEdit)
+            {
+                // Solar system camera zooms toward planet
+                float ssDist = 80f * (1f - smooth) + 3f * smooth;
+                _solarSystem.Distance = ssDist;
+                _solarSystem.SetFocusTarget(_transitionPlanetPos * smooth);
+
+                // Render solar system as background (fades as we zoom in)
+                var ssMvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
+                _solarSystem.Draw(ssMvp);
+
+                // Once planet is loaded, render it on top using the same camera
+                // but in planet-local space (planet at origin, camera offset by planet pos)
+                if (_planetReady && smooth > 0.2f)
+                {
+                    float camDist = ssDist;
+                    var camDir = new Vector3(
+                        MathF.Cos(_solarSystem.Elevation) * MathF.Cos(_solarSystem.Azimuth),
+                        MathF.Sin(_solarSystem.Elevation),
+                        MathF.Cos(_solarSystem.Elevation) * MathF.Sin(_solarSystem.Azimuth));
+                    var planetCamPos = camDir * camDist;
+
+                    _planet.SetCameraPosition(planetCamPos.X, planetCamPos.Y, planetCamPos.Z);
+                    _planet.SetTime(elapsed);
+
+                    var planetMvp = BuildPlanetMvpAt(planetCamPos, _app.AspectRatio);
+                    _planet.Draw(planetMvp, camDist, clearFirst: false);
+                }
+
+                // Switch when animation done AND planet ready
+                if (t >= 1f && _planetReady)
+                {
+                    _transitioning = false;
+                    Mode = EditorMode.PlanetEdit;
+                    _distance = 3f;
+                    _azimuth = _solarSystem.Azimuth;
+                    _elevation = _solarSystem.Elevation;
+                    _hoveredCell = -1;
+                    _solarSystem.Distance = 80f;
+                    _solarSystem.SetFocusTarget(Vector3.Zero);
+                }
+            }
+            else // Zoom OUT
+            {
+                // Reverse: camera pulls away from planet back to solar system
+                float ssDist = 3f * (1f - smooth) + 80f * smooth;
+                _solarSystem.Distance = ssDist;
+                _solarSystem.SetFocusTarget(_transitionPlanetPos * (1f - smooth));
+
+                // Early in zoom-out, render planet on top of solar system
+                {
+                    var ssMvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
+                    _solarSystem.Draw(ssMvp);
+
+                    // Render planet on top while still close enough to see detail
+                    if (ssDist < 50f)
+                    {
+                        float camDist = ssDist;
+                        var camDir = new Vector3(
+                            MathF.Cos(_solarSystem.Elevation) * MathF.Cos(_solarSystem.Azimuth),
+                            MathF.Sin(_solarSystem.Elevation),
+                            MathF.Cos(_solarSystem.Elevation) * MathF.Sin(_solarSystem.Azimuth));
+                        var planetCamPos = camDir * camDist;
+
+                        _planet.SetCameraPosition(planetCamPos.X, planetCamPos.Y, planetCamPos.Z);
+                        _planet.SetTime(elapsed);
+                        _planet.Draw(BuildPlanetMvpAt(planetCamPos, _app.AspectRatio), camDist, clearFirst: false);
+                    }
+                }
+
+                if (t >= 1f)
+                {
+                    _transitioning = false;
+                    _solarSystem.Distance = 80f;
+                    _solarSystem.SetFocusTarget(Vector3.Zero);
+                }
+            }
+
+            _app.ShowUIButton("back_solar", false);
+            OnFrameRendered?.Invoke();
+            return;
         }
 
-        if (_planet != null)
+        // Normal tick
+        if (Mode == EditorMode.PlanetEdit)
         {
+            await _planet.RebuildDirtyPatches();
             var cam = CameraPosition();
             _planet.SetCameraPosition(cam.X, cam.Y, cam.Z);
-            _planet.SetTime((float)(DateTime.UtcNow - _startTime).TotalSeconds);
-
-            if (_hoveredCell >= 0)
-            {
-                var dir = _planet.Mesh.GetCellCenter(_hoveredCell);
-                _planet.SetHighlight(dir.X, dir.Y, dir.Z);
-            }
-            else
-            {
-                _planet.SetHighlight(0, 0, 0);
-            }
+            _planet.SetTime(elapsed);
+            _planet.SetHighlightCell(_hoveredCell);
+            await _planet.SyncOutline();
+            _planet.Draw(BuildPlanetMvp(_app.AspectRatio), _distance);
+            _app.ShowUIButton("back_solar", true);
+        }
+        else if (Mode == EditorMode.SolarSystem && _solarSystem != null)
+        {
+            _app.ShowUIButton("back_solar", false);
+            var mvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
+            _solarSystem.Draw(mvp);
+        }
+        else if (Mode == EditorMode.StarMap && _starMap != null)
+        {
+            _app.ShowUIButton("back_solar", false);
+            var mvp = _starMap.BuildMvpFloats(_app.AspectRatio);
+            _starMap.Draw(mvp);
         }
 
-        _lastMvp = BuildMvp(_app.AspectRatio);
-        _renderer.Draw(_lastMvp);
         OnFrameRendered?.Invoke();
     }
 
-    // ── Camera ──────────────────────────────────────────────────────
+    // ── Camera ───────────────────────────────────────────────────────
 
     private Vector3 CameraPosition()
     {
@@ -124,70 +340,54 @@ public class GameEngine
         return new Vector3(cx, cy, cz);
     }
 
-    public float[] BuildMvp(float aspectRatio)
+    private float[] BuildPlanetMvp(float aspectRatio)
+        => BuildPlanetMvpAt(CameraPosition(), aspectRatio);
+
+    private float[] BuildPlanetMvpAt(Vector3 camPos, float aspectRatio)
     {
-        var pos = CameraPosition();
         var view = Matrix4X4.CreateLookAt(
-            new Vector3D<float>(pos.X, pos.Y, pos.Z),
+            new Vector3D<float>(camPos.X, camPos.Y, camPos.Z),
             new Vector3D<float>(0, 0, 0),
             new Vector3D<float>(0, 1, 0));
         var proj = Matrix4X4.CreatePerspectiveFieldOfView(
             Scalar.DegreesToRadians(45.0f), aspectRatio, 0.1f, 100.0f);
-        var mvp = Matrix4X4.Multiply(view, proj);
-        return MatrixHelper.ToRawFloats(mvp);
+        return MatrixHelper.ToRawFloats(Matrix4X4.Multiply(view, proj));
     }
 
-    // ── Ray picking — uses actual MVP matrix for exact match ────────
+    public float[] BuildMvp(float aspectRatio) => BuildPlanetMvp(aspectRatio);
 
-    private int? RayPick(float canvasX, float canvasY)
+    // ── Picking ─────────────────────────────────────────────────────
+
+    private int? PickCell(float canvasX, float canvasY)
     {
-        if (_planet == null) return null;
         float w = _app.CanvasWidth, h = _app.CanvasHeight;
         if (w < 1 || h < 1) return null;
 
-        float ndcX = 2f * canvasX / w - 1f;
-        float ndcY = 1f - 2f * canvasY / h;
-
-        // Build the same MVP used for rendering, convert to System.Numerics for inversion
-        var m = BuildMvp(w / h);
+        var m = BuildPlanetMvp(w / h);
         var mvp = new Matrix4x4(
-            m[0], m[1], m[2], m[3],
-            m[4], m[5], m[6], m[7],
-            m[8], m[9], m[10], m[11],
-            m[12], m[13], m[14], m[15]);
+            m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7],
+            m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
 
-        if (!Matrix4x4.Invert(mvp, out var inv))
-            return null;
+        var mesh = _planet.Mesh;
+        float bestDist = float.MaxValue;
+        int bestCell = -1;
+        var camDir = Vector3.Normalize(CameraPosition());
 
-        var nearPt = Unproj(inv, ndcX, ndcY, 0f);
-        var farPt  = Unproj(inv, ndcX, ndcY, 1f);
-        var rayDir = Vector3.Normalize(farPt - nearPt);
+        for (int i = 0; i < mesh.CellCount; i++)
+        {
+            if (Vector3.Dot(mesh.GetCellCenter(i), camDir) < -0.05f) continue;
 
-        float r = _planet.Mesh.Radius + PlanetMesh.MaxLevel * _planet.Mesh.StepHeight + 0.01f;
-        float? t = RaySphere(nearPt, rayDir, r);
-        if (t == null) return null;
+            float cellH = mesh.Radius + mesh.GetLevel(i) * mesh.StepHeight;
+            var center = mesh.GetCellCenter(i) * cellH;
+            var clip = Vector4.Transform(new Vector4(center, 1f), mvp);
+            if (clip.W <= 0.001f) continue;
 
-        return _planet.Mesh.DirectionToCell(nearPt + rayDir * t.Value);
-    }
+            float sx = (clip.X / clip.W * 0.5f + 0.5f) * w;
+            float sy = (0.5f - clip.Y / clip.W * 0.5f) * h;
+            float d = (sx - canvasX) * (sx - canvasX) + (sy - canvasY) * (sy - canvasY);
+            if (d < bestDist) { bestDist = d; bestCell = i; }
+        }
 
-    private static Vector3 Unproj(Matrix4x4 inv, float nx, float ny, float nz)
-    {
-        var c = Vector4.Transform(new Vector4(nx, ny, nz, 1f), inv);
-        if (MathF.Abs(c.W) < 1e-10f) return default;
-        return new Vector3(c.X / c.W, c.Y / c.W, c.Z / c.W);
-    }
-
-    private static float? RaySphere(Vector3 origin, Vector3 dir, float radius)
-    {
-        float b = 2f * Vector3.Dot(origin, dir);
-        float c = Vector3.Dot(origin, origin) - radius * radius;
-        float disc = b * b - 4f * c;
-        if (disc < 0) return null;
-        float sq = MathF.Sqrt(disc);
-        float t0 = (-b - sq) * 0.5f;
-        float t1 = (-b + sq) * 0.5f;
-        if (t0 > 0) return t0;
-        if (t1 > 0) return t1;
-        return null;
+        return bestCell >= 0 ? bestCell : null;
     }
 }

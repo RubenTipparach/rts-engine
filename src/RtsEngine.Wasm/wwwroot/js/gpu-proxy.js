@@ -55,7 +55,13 @@
                 }
                 device = await adapter.requestDevice();
                 device.lost.then(info => console.error('GPU device lost:', info));
-                device.onuncapturederror = (e) => console.error('GPU error:', e.error.message);
+                device.onuncapturederror = (e) => {
+                    const msg = e.error?.message || e.error || 'unknown GPU error';
+                    console.error('GPU error:', msg);
+                    // Show on screen for mobile debugging
+                    const el = document.getElementById('gpu-errors');
+                    if (el) el.textContent = msg;
+                };
                 canvas = document.getElementById(canvasId);
                 if (!canvas) return false;
                 context = canvas.getContext('webgpu');
@@ -115,7 +121,8 @@
 
         createIndexBuffer(ushortData) {
             const u16 = new Uint16Array(ushortData);
-            const padded = u16.byteLength % 4 === 0 ? u16.byteLength : u16.byteLength + 2;
+            const rawSize = u16.byteLength > 0 ? u16.byteLength : 4; // min 4 bytes
+            const padded = rawSize % 4 === 0 ? rawSize : rawSize + 2;
             const buf = device.createBuffer({
                 size: padded,
                 usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
@@ -276,14 +283,92 @@
                         },
                     }],
                 },
-                primitive: { topology: 'triangle-list', cullMode: 'back' },
-                depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'always' },
+                primitive: { topology: 'triangle-list', cullMode: 'front' },
+                depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less' },
             });
             return register(pipelines, pipeline);
         },
 
+        createRenderPipelineLines(shaderModuleId, vertexBufferLayouts) {
+            const pipeline = device.createRenderPipeline({
+                layout: 'auto',
+                vertex: {
+                    module: shaderModules[shaderModuleId],
+                    entryPoint: 'vs_main',
+                    buffers: vertexBufferLayouts.map(l => ({
+                        arrayStride: l.arrayStride,
+                        attributes: l.attributes.map(a => ({
+                            format: a.format, offset: a.offset, shaderLocation: a.shaderLocation,
+                        })),
+                    })),
+                },
+                fragment: {
+                    module: shaderModules[shaderModuleId],
+                    entryPoint: 'fs_main',
+                    targets: [{ format: canvasFormat }],
+                },
+                primitive: { topology: 'line-list' },
+                depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less-equal' },
+            });
+            return register(pipelines, pipeline);
+        },
+
+        renderNoBind(pipelineId, vertexBufferId, indexBufferId, indexCount) {
+            if (!device || !context) return;
+            const depthTex = ensureDepthTexture();
+            const encoder = device.createCommandEncoder();
+            const pass = encoder.beginRenderPass({
+                colorAttachments: [{
+                    view: context.getCurrentTexture().createView(),
+                    loadOp: 'load',
+                    storeOp: 'store',
+                }],
+                depthStencilAttachment: {
+                    view: depthTex.createView(),
+                    depthLoadOp: 'load',
+                    depthStoreOp: 'store',
+                },
+            });
+            pass.setPipeline(pipelines[pipelineId]);
+            pass.setVertexBuffer(0, buffers[vertexBufferId]);
+            pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
+            pass.drawIndexed(indexCount);
+            pass.end();
+            device.queue.submit([encoder.finish()]);
+        },
+
         destroyBuffer(id) {
             if (buffers[id]) { buffers[id].destroy(); buffers[id] = null; }
+        },
+
+        createRenderPipelineUI(shaderModuleId, vertexBufferLayouts) {
+            const pipeline = device.createRenderPipeline({
+                layout: 'auto',
+                vertex: {
+                    module: shaderModules[shaderModuleId],
+                    entryPoint: 'vs_main',
+                    buffers: vertexBufferLayouts.map(l => ({
+                        arrayStride: l.arrayStride,
+                        attributes: l.attributes.map(a => ({
+                            format: a.format, offset: a.offset, shaderLocation: a.shaderLocation,
+                        })),
+                    })),
+                },
+                fragment: {
+                    module: shaderModules[shaderModuleId],
+                    entryPoint: 'fs_main',
+                    targets: [{
+                        format: canvasFormat,
+                        blend: {
+                            color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                        },
+                    }],
+                },
+                primitive: { topology: 'triangle-list', cullMode: 'none' },
+                depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'always' },
+            });
+            return register(pipelines, pipeline);
         },
 
         // ── Textures / Samplers ─────────────────────────────────

@@ -8,24 +8,16 @@
 
 <div id="game-container">
     <canvas id="gpuCanvas"></canvas>
-    <div id="hud">
-        <div class="hud-title">Planet Editor (WebGPU)</div>
-        <div class="hud-stat">Goldberg sphere (2562 cells) &nbsp; 0 water · 1 sand · 2 grass · 3 rock · 4 snow</div>
-        <div class="hud-hint">Drag to orbit &bull; Scroll to zoom &bull; Left-click raise &bull; Right-click lower</div>
-        @if (!string.IsNullOrEmpty(_errorMessage))
-        {
-            <div class="hud-error" style="margin-top:8px; color:#ff9090; background:#30000080; padding:6px; border-radius:4px;">
-                <b>Render error:</b> @_errorMessage
-            </div>
-        }
-    </div>
+    <div id="gpu-errors" style="position:absolute;top:4px;left:4px;color:#ff9090;font-size:11px;max-height:60px;overflow:auto;pointer-events:none;z-index:10;"></div>
 </div>
 
 @code {
     private GameEngine? _engine;
     private WebGLRenderBackend? _app;
     private PlanetRenderer? _planet;
-    private string? _errorMessage;
+    private StarMapRenderer? _starMap;
+    private SolarSystemRenderer? _solarSystem;
+    private IGPU? _gpu;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -33,41 +25,110 @@
         try
         {
             var gpu = new WebGPU(JS);
-            if (!await gpu.Init("gpuCanvas"))
-            {
-                _errorMessage = await JS.InvokeAsync<string>("GPUProxy.getInitError")
-                    ?? "WebGPU initialization failed. This demo requires Chrome 121+, Edge 121+, or Safari 18+.";
-                StateHasChanged();
-                return;
-            }
+            if (!await gpu.Init("gpuCanvas")) return;
+            _gpu = gpu;
 
             _app = new WebGLRenderBackend(JS);
             await _app.InitializeAsync("gpuCanvas");
 
-            var shaderCode = await Http.GetStringAsync("shaders/terrain.wgsl");
-            var mesh = new PlanetMesh(subdivisions: 4, radius: 1.0f, stepHeight: 0.04f);
-            mesh.GenerateFromNoise(seed: 42);
+            // Solar system
+            var solarData = SolarSystemData.CreateDefault();
+            var starmapShader = await Http.GetStringAsync("shaders/starmap.wgsl");
+            var outlineShader = await Http.GetStringAsync("shaders/outline.wgsl");
+            _solarSystem = new SolarSystemRenderer(gpu, solarData);
+            await _solarSystem.Setup(starmapShader, outlineShader);
 
-            _planet = new PlanetRenderer(gpu, mesh);
-            await _planet.Setup(shaderCode);
+            // Star map
+            var galaxy = GalaxyData.Generate(seed: 42);
+            _starMap = new StarMapRenderer(gpu, galaxy);
+            await _starMap.Setup(starmapShader);
 
-            var atmoShader = await Http.GetStringAsync("shaders/atmosphere.wgsl");
-            await _planet.SetupAtmosphere(atmoShader);
+            // Planet (default Earth)
+            _planet = await CreatePlanetRenderer("planets/earth.yaml");
 
-            _engine = new GameEngine(_app, _planet);
-            _engine.OnFrameRendered += () => InvokeAsync(StateHasChanged);
+            // Engine
+            _engine = new GameEngine(_app, gpu, _planet, _starMap, _solarSystem);
+            _engine.Mode = EditorMode.SolarSystem;
+
+            _engine.SetupUI();
+
+            // Planet hot-swap callback
+            _engine.OnFrameRendered += () =>
+            {
+                var wanted = _engine.SelectedPlanetConfig;
+                if (wanted != null && wanted != _currentConfig && !_loading)
+                {
+                    _loading = true;
+                    _ = LoadPlanetAsync(wanted);
+                }
+            };
+
             _engine.Run();
         }
         catch (Exception e)
         {
-            _errorMessage = e.Message;
-            await InvokeAsync(StateHasChanged);
+            await JS.InvokeVoidAsync("eval",
+                $"document.getElementById('gpu-errors').textContent = {System.Text.Json.JsonSerializer.Serialize(e.Message)}");
         }
+    }
+
+    private string _currentConfig = "planets/earth.yaml";
+    private bool _loading;
+
+    private async Task LoadPlanetAsync(string configPath)
+    {
+        try
+        {
+            var newPlanet = await CreatePlanetRenderer(configPath);
+            var old = _planet;
+            _planet = newPlanet;
+            _engine?.SetPlanetRenderer(newPlanet);
+            _engine?.SwitchToPlanetEdit();
+            old?.Dispose();
+        }
+        catch (Exception e)
+        {
+            await JS.InvokeVoidAsync("eval",
+                $"document.getElementById('gpu-errors').textContent = 'Load: ' + {System.Text.Json.JsonSerializer.Serialize(e.Message)}");
+        }
+        finally { _loading = false; }
+    }
+
+    private async Task<PlanetRenderer> CreatePlanetRenderer(string configPath)
+    {
+        if (_gpu == null) throw new InvalidOperationException("GPU not initialized");
+        var yaml = await Http.GetStringAsync(configPath);
+        var config = PlanetConfig.FromYaml(yaml);
+        var shader = await Http.GetStringAsync("shaders/terrain.wgsl");
+
+        var mesh = new PlanetMesh(
+            subdivisions: config.Subdivisions,
+            radius: config.Radius,
+            stepHeight: config.StepHeight);
+        mesh.GenerateFromNoise(
+            seed: config.Generation.Seed,
+            frequency: config.Generation.Frequency,
+            thresholds: config.Generation.Thresholds.ToArray());
+
+        var renderer = new PlanetRenderer(_gpu, mesh);
+        renderer.ApplyConfig(config);
+        await renderer.Setup(shader);
+
+        var atmoShader = await Http.GetStringAsync("shaders/atmosphere.wgsl");
+        await renderer.SetupAtmosphere(atmoShader);
+
+        var outlineShader = await Http.GetStringAsync("shaders/outline.wgsl");
+        await renderer.SetupOutline(outlineShader);
+
+        _currentConfig = configPath;
+        return renderer;
     }
 
     public void Dispose()
     {
         _planet?.Dispose();
+        _starMap?.Dispose();
+        _solarSystem?.Dispose();
         _app?.Dispose();
     }
 }

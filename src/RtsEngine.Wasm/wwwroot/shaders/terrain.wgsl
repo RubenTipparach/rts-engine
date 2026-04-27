@@ -7,8 +7,6 @@ struct Uniforms {
     sunDir: vec4f,
     cameraPos: vec4f,
     time: f32,
-    _pad0: f32, _pad1: f32, _pad2: f32,
-    highlightDir: vec4f, // xyz = cell center direction, w = 1 if active
 }
 
 @binding(0) @group(0) var<uniform> u: Uniforms;
@@ -164,19 +162,6 @@ fn fs_main(
     let rim = pow(1.0 - max(dot(N, V), 0.0), 3.5);
     let dayFactor = smoothstep(-0.1, 0.3, NdotL);
     lit = lit + vec3f(0.35, 0.55, 0.95) * rim * 0.35 * dayFactor;
-
-    // Cell highlight — wireframe-style edge glow on hovered cell
-    if (u.highlightDir.w > 0.5) {
-        let hDir = normalize(u.highlightDir.xyz);
-        let fragDir = normalize(worldPos);
-        let cellDot = dot(fragDir, hDir);
-        // Tight ring at cell boundary (~0.985 for sub-4 cells)
-        let edgeDist = smoothstep(0.982, 0.990, cellDot);
-        let ringGlow = edgeDist * (1.0 - smoothstep(0.990, 0.998, cellDot));
-        lit = lit + vec3f(1.0, 0.9, 0.3) * ringGlow * 2.0;
-        // Subtle fill on the whole cell
-        lit = lit + vec3f(0.2, 0.18, 0.05) * edgeDist * 0.5;
-    }
 
     return vec4f(lit, 1.0);
 }

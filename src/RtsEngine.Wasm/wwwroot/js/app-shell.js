@@ -78,6 +78,11 @@
                 dotnetRef.invokeMethodAsync('OnScroll', -e.deltaY);
             }, { passive: false });
 
+            // Keyboard
+            document.addEventListener('keydown', e => {
+                dotnetRef.invokeMethodAsync('OnKeyDown', e.key);
+            });
+
             // Touch
             let touchActive = false, lastTX = 0, lastTY = 0;
             let touchDownX = 0, touchDownY = 0, touchDragDist = 0;
@@ -129,6 +134,37 @@
         dispose() {
             this.stopLoop();
             dotnetRef = null;
-        }
+        },
+
+        // ── Engine-managed UI buttons (HTML overlay, controlled by game code) ──
+        createButton(id, text, cssJson) {
+            let btn = document.getElementById('engine-btn-' + id);
+            if (!btn) {
+                btn = document.createElement('button');
+                btn.id = 'engine-btn-' + id;
+                btn.style.position = 'absolute';
+                btn.style.zIndex = '100';
+                btn.style.pointerEvents = 'auto';
+                const container = document.getElementById('game-container');
+                if (container) container.appendChild(btn);
+                else document.body.appendChild(btn);
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (dotnetRef) dotnetRef.invokeMethodAsync('OnUIButtonClick', id);
+                });
+            }
+            btn.textContent = text;
+            try { Object.assign(btn.style, JSON.parse(cssJson)); } catch {}
+        },
+
+        showButton(id, visible) {
+            const btn = document.getElementById('engine-btn-' + id);
+            if (btn) btn.style.display = visible ? 'block' : 'none';
+        },
+
+        removeButton(id) {
+            const el = document.getElementById('engine-btn-' + id);
+            if (el) el.remove();
+        },
     };
 })();
