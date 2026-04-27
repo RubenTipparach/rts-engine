@@ -232,24 +232,30 @@ public class GameEngine
                 var ssMvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
                 _solarSystem.Draw(ssMvp);
 
-                // Once planet is loaded, render it on top. The planet mesh is at
-                // origin, so we position the camera as if we're looking at the
-                // planet from the solar system camera: cam_planet = cam_ss - planetPos
-                if (_planetReady && smooth > 0.15f)
+                // Render textured planet on top, aligned exactly with the noise sphere.
+                // Derive planet MVP from solar system MVP + translation so FOV/near/far match.
+                if (_planetReady && smooth > 0.1f)
                 {
+                    // planetMVP = translate(-planetPos) * solarSystemMVP
+                    // This transforms planet-at-origin to the same clip position as
+                    // the solar system transforms planetPos. Exact alignment, no FOV mismatch.
+                    var pp = _transitionPlanetPos;
+                    var trans = Matrix4X4.CreateTranslation(
+                        new Vector3D<float>(-pp.X, -pp.Y, -pp.Z));
+                    var ssMvpMat = RawToSilkMat(ssMvp);
+                    var planetMvpMat = Matrix4X4.Multiply(trans, ssMvpMat);
+                    var planetMvp = MatrixHelper.ToRawFloats(planetMvpMat);
+
+                    // Camera distance for LOD
                     var camDir = new Vector3(
                         MathF.Cos(_solarSystem.Elevation) * MathF.Cos(_solarSystem.Azimuth),
                         MathF.Sin(_solarSystem.Elevation),
                         MathF.Cos(_solarSystem.Elevation) * MathF.Sin(_solarSystem.Azimuth));
-                    var focus = _transitionPlanetPos * smooth;
-                    var ssCamPos = focus + camDir * ssDist;
-                    var planetCamPos = ssCamPos - _transitionPlanetPos;
+                    var ssCamPos = _transitionPlanetPos * smooth + camDir * ssDist;
+                    float planetDist = (ssCamPos - _transitionPlanetPos).Length();
 
-                    _planet.SetCameraPosition(planetCamPos.X, planetCamPos.Y, planetCamPos.Z);
+                    _planet.SetCameraPosition(ssCamPos.X - pp.X, ssCamPos.Y - pp.Y, ssCamPos.Z - pp.Z);
                     _planet.SetTime(elapsed);
-
-                    float planetDist = planetCamPos.Length();
-                    var planetMvp = BuildPlanetMvpAt(planetCamPos, _app.AspectRatio);
                     _planet.Draw(planetMvp, planetDist, clearFirst: false);
                 }
 
@@ -280,21 +286,26 @@ public class GameEngine
                     var ssMvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
                     _solarSystem.Draw(ssMvp);
 
-                    // Render planet on top — offset camera by planet position
+                    // Render planet aligned with noise sphere using same derivation
+                    var ssMvpOut = _solarSystem.BuildMvpFloats(_app.AspectRatio);
+                    var pp2 = _transitionPlanetPos;
+                    var trans2 = Matrix4X4.CreateTranslation(
+                        new Vector3D<float>(-pp2.X, -pp2.Y, -pp2.Z));
+                    var planetMvpMat2 = Matrix4X4.Multiply(trans2, RawToSilkMat(ssMvpOut));
+                    var planetMvpOut = MatrixHelper.ToRawFloats(planetMvpMat2);
+
                     var camDir2 = new Vector3(
                         MathF.Cos(_solarSystem.Elevation) * MathF.Cos(_solarSystem.Azimuth),
                         MathF.Sin(_solarSystem.Elevation),
                         MathF.Cos(_solarSystem.Elevation) * MathF.Sin(_solarSystem.Azimuth));
-                    var focus2 = _transitionPlanetPos * (1f - smooth);
-                    var ssCamPos2 = focus2 + camDir2 * ssDist;
-                    var planetCamPos2 = ssCamPos2 - _transitionPlanetPos;
-                    float planetDist2 = planetCamPos2.Length();
+                    var ssCamPos2 = _transitionPlanetPos * (1f - smooth) + camDir2 * ssDist;
+                    float planetDist2 = (ssCamPos2 - _transitionPlanetPos).Length();
 
                     if (planetDist2 < 50f)
                     {
-                        _planet.SetCameraPosition(planetCamPos2.X, planetCamPos2.Y, planetCamPos2.Z);
+                        _planet.SetCameraPosition(ssCamPos2.X - pp2.X, ssCamPos2.Y - pp2.Y, ssCamPos2.Z - pp2.Z);
                         _planet.SetTime(elapsed);
-                        _planet.Draw(BuildPlanetMvpAt(planetCamPos2, _app.AspectRatio), planetDist2, clearFirst: false);
+                        _planet.Draw(planetMvpOut, planetDist2, clearFirst: false);
                     }
                 }
 
@@ -364,6 +375,10 @@ public class GameEngine
     }
 
     public float[] BuildMvp(float aspectRatio) => BuildPlanetMvp(aspectRatio);
+
+    private static Matrix4X4<float> RawToSilkMat(float[] m) => new(
+        m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7],
+        m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
 
     // ── Picking ─────────────────────────────────────────────────────
 

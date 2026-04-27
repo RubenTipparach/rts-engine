@@ -319,8 +319,10 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
             _gpu.RenderAdditional(_linePipeline, _orbitVbo, _orbitIbo, _lineBindGroup, _orbitVertCount);
     }
 
-    // Camera focus can be lerped toward a planet for zoom-in transition
-    private Vector3 _focusTarget = Vector3.Zero;
+    private string? _hiddenPlanetConfig;
+
+    /// <summary>Hide the noise sphere for this planet (during transition, the real PlanetRenderer replaces it).</summary>
+    public void HidePlanet(string? configFile) => _hiddenPlanetConfig = configFile;
     public void SetFocusTarget(Vector3 target) => _focusTarget = target;
 
     public float[] BuildMvpFloats(float aspect)
