@@ -24,8 +24,9 @@ public class GameEngine
     private float _transitionStart;
     private const float TransitionDuration = 1.5f;
     private EditorMode _transitionTarget;
-    private Vector3 _transitionPlanetPos; // where the planet is in solar system space
-    private bool _planetReady; // set when LoadPlanetAsync completes
+    private Vector3 _transitionPlanetPos;
+    private float _transitionDisplayRadius = 1f;
+    private bool _planetReady;
 
     private bool _running;
     public EditorMode Mode { get; set; } = EditorMode.SolarSystem;
@@ -157,11 +158,12 @@ public class GameEngine
         }
         else if (Mode == EditorMode.SolarSystem && _solarSystem != null && button == 0)
         {
-            var (config, pos) = _solarSystem.PickPlanet(cx, cy, _app.CanvasWidth, _app.CanvasHeight);
+            var (config, pos, dispR) = _solarSystem.PickPlanet(cx, cy, _app.CanvasWidth, _app.CanvasHeight);
             if (config != null)
             {
                 SelectedPlanetConfig = config;
                 _transitionPlanetPos = pos;
+                _transitionDisplayRadius = dispR;
                 _planetReady = false;
                 _transitioning = true;
                 _transitionStart = Elapsed();
@@ -230,22 +232,25 @@ public class GameEngine
                 var ssMvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
                 _solarSystem.Draw(ssMvp);
 
-                // Once planet is loaded, render it on top using the same camera
-                // but in planet-local space (planet at origin, camera offset by planet pos)
-                if (_planetReady && smooth > 0.2f)
+                // Once planet is loaded, render it on top. The planet mesh is at
+                // origin, so we position the camera as if we're looking at the
+                // planet from the solar system camera: cam_planet = cam_ss - planetPos
+                if (_planetReady && smooth > 0.15f)
                 {
-                    float camDist = ssDist;
                     var camDir = new Vector3(
                         MathF.Cos(_solarSystem.Elevation) * MathF.Cos(_solarSystem.Azimuth),
                         MathF.Sin(_solarSystem.Elevation),
                         MathF.Cos(_solarSystem.Elevation) * MathF.Sin(_solarSystem.Azimuth));
-                    var planetCamPos = camDir * camDist;
+                    var focus = _transitionPlanetPos * smooth;
+                    var ssCamPos = focus + camDir * ssDist;
+                    var planetCamPos = ssCamPos - _transitionPlanetPos;
 
                     _planet.SetCameraPosition(planetCamPos.X, planetCamPos.Y, planetCamPos.Z);
                     _planet.SetTime(elapsed);
 
+                    float planetDist = planetCamPos.Length();
                     var planetMvp = BuildPlanetMvpAt(planetCamPos, _app.AspectRatio);
-                    _planet.Draw(planetMvp, camDist, clearFirst: false);
+                    _planet.Draw(planetMvp, planetDist, clearFirst: false);
                 }
 
                 // Switch when animation done AND planet ready
@@ -253,6 +258,8 @@ public class GameEngine
                 {
                     _transitioning = false;
                     Mode = EditorMode.PlanetEdit;
+                    // Camera at end of transition: ssCamPos - planetPos with focus=planetPos
+                    // = planetPos + camDir*3 - planetPos = camDir*3
                     _distance = 3f;
                     _azimuth = _solarSystem.Azimuth;
                     _elevation = _solarSystem.Elevation;
@@ -273,19 +280,21 @@ public class GameEngine
                     var ssMvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
                     _solarSystem.Draw(ssMvp);
 
-                    // Render planet on top while still close enough to see detail
-                    if (ssDist < 50f)
-                    {
-                        float camDist = ssDist;
-                        var camDir = new Vector3(
-                            MathF.Cos(_solarSystem.Elevation) * MathF.Cos(_solarSystem.Azimuth),
-                            MathF.Sin(_solarSystem.Elevation),
-                            MathF.Cos(_solarSystem.Elevation) * MathF.Sin(_solarSystem.Azimuth));
-                        var planetCamPos = camDir * camDist;
+                    // Render planet on top — offset camera by planet position
+                    var camDir2 = new Vector3(
+                        MathF.Cos(_solarSystem.Elevation) * MathF.Cos(_solarSystem.Azimuth),
+                        MathF.Sin(_solarSystem.Elevation),
+                        MathF.Cos(_solarSystem.Elevation) * MathF.Sin(_solarSystem.Azimuth));
+                    var focus2 = _transitionPlanetPos * (1f - smooth);
+                    var ssCamPos2 = focus2 + camDir2 * ssDist;
+                    var planetCamPos2 = ssCamPos2 - _transitionPlanetPos;
+                    float planetDist2 = planetCamPos2.Length();
 
-                        _planet.SetCameraPosition(planetCamPos.X, planetCamPos.Y, planetCamPos.Z);
+                    if (planetDist2 < 50f)
+                    {
+                        _planet.SetCameraPosition(planetCamPos2.X, planetCamPos2.Y, planetCamPos2.Z);
                         _planet.SetTime(elapsed);
-                        _planet.Draw(BuildPlanetMvpAt(planetCamPos, _app.AspectRatio), camDist, clearFirst: false);
+                        _planet.Draw(BuildPlanetMvpAt(planetCamPos2, _app.AspectRatio), planetDist2, clearFirst: false);
                     }
                 }
 

@@ -93,12 +93,13 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
     public void SetDragging(bool d) => _dragging = d;
     public bool IsDragging => _dragging;
 
-    public (string? config, Vector3 position) PickPlanet(float cx, float cy, float w, float h)
+    public (string? config, Vector3 position, float displayRadius) PickPlanet(float cx, float cy, float w, float h)
     {
         var mvp = FloatsToMatrix(BuildMvpFloats(w / h));
         float bestScore = float.MaxValue;
         string? best = null;
         Vector3 bestPos = Vector3.Zero;
+        float bestDisplayR = 1f;
 
         void CheckBody(OrbitalBody body, Vector3 parentPos)
         {
@@ -119,13 +120,13 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
 
             // Score: distance relative to screen radius. <1 means inside the sphere.
             float score = dist / screenRadius;
-            if (score < bestScore) { bestScore = score; best = body.ConfigFile; bestPos = pos; }
+            if (score < bestScore) { bestScore = score; best = body.ConfigFile; bestPos = pos; bestDisplayR = body.DisplayRadius; }
 
             foreach (var moon in body.Moons) CheckBody(moon, pos);
         }
 
         foreach (var p in _system.Planets) CheckBody(p, Vector3.Zero);
-        return bestScore < 3f ? (best, bestPos) : (null, Vector3.Zero);
+        return bestScore < 3f ? (best, bestPos, bestDisplayR) : (null, Vector3.Zero, 1f);
     }
 
     // ── Mesh ────────────────────────────────────────────────────────
