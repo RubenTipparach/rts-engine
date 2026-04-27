@@ -45,6 +45,9 @@ public sealed class WebGPU : IGPU
     public void RenderAdditional(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount)
         => _js.InvokeVoidAsync("GPUProxy.renderAdditional", pipelineId, vertexBufferId, indexBufferId, bindGroupId, indexCount);
 
+    public void RenderOverlay(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount)
+        => _js.InvokeVoidAsync("GPUProxy.renderOverlay", pipelineId, vertexBufferId, indexBufferId, bindGroupId, indexCount);
+
     public void DestroyBuffer(int bufferId)
         => _js.InvokeVoidAsync("GPUProxy.destroyBuffer", bufferId);
 

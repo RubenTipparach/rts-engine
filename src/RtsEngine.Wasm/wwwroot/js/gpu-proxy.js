@@ -313,6 +313,32 @@
             return register(pipelines, pipeline);
         },
 
+        renderOverlay(pipelineId, vertexBufferId, indexBufferId, bindGroupId, indexCount) {
+            if (!device || !context) return;
+            const depthTex = ensureDepthTexture();
+            const encoder = device.createCommandEncoder();
+            const pass = encoder.beginRenderPass({
+                colorAttachments: [{
+                    view: context.getCurrentTexture().createView(),
+                    loadOp: 'load',
+                    storeOp: 'store',
+                }],
+                depthStencilAttachment: {
+                    view: depthTex.createView(),
+                    depthClearValue: 1.0,
+                    depthLoadOp: 'clear',
+                    depthStoreOp: 'store',
+                },
+            });
+            pass.setPipeline(pipelines[pipelineId]);
+            pass.setVertexBuffer(0, buffers[vertexBufferId]);
+            pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
+            pass.setBindGroup(0, bindGroups[bindGroupId]);
+            pass.drawIndexed(indexCount);
+            pass.end();
+            device.queue.submit([encoder.finish()]);
+        },
+
         renderNoBind(pipelineId, vertexBufferId, indexBufferId, indexCount) {
             if (!device || !context) return;
             const depthTex = ensureDepthTexture();

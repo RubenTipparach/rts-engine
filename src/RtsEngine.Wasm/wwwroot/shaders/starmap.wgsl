@@ -1,10 +1,7 @@
-// Star map / solar system shader — colored vertices with MVP transform.
-// Per-vertex: pos(3f) + color(3f) + brightness(1f), stride 28.
+// Star map shader — flat-colored vertices, no lighting.
+// Per-vertex: pos(3f) + color(3f) + brightness(1f) = 7 floats, stride 28.
 
-struct Uniforms {
-    mvp: mat4x4f,
-}
-
+struct Uniforms { mvp: mat4x4f, }
 @binding(0) @group(0) var<uniform> u: Uniforms;
 
 struct VSOutput {

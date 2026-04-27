@@ -297,6 +297,7 @@ void main() {
     }
 
     public void RenderAdditional(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount) { }
+    public void RenderOverlay(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount) { }
     public Task<int> CreateTextureFromUrl(string url) => Task.FromResult(0);
     public Task<int> CreateSampler(string filter = "linear", string wrap = "repeat") => Task.FromResult(0);
     public Task<int> CreateRenderPipelineLines(int shaderModuleId, object[] vertexBufferLayouts) => Task.FromResult(0);

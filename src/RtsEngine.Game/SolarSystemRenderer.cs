@@ -10,8 +10,8 @@ namespace RtsEngine.Game;
 /// </summary>
 public sealed class SolarSystemRenderer : IRenderer, IDisposable
 {
-    public const int VertexFloats = 7; // pos3 + color3 + brightness1
-    public const int VertexStride = 28;
+    public const int VertexFloats = 10; // pos3 + normal3 + color3 + brightness1
+    public const int VertexStride = 40;
     public const int UniformSize = 64; // just MVP
 
     private readonly IGPU _gpu;
@@ -47,9 +47,10 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
                 arrayStride = VertexStride,
                 attributes = new object[]
                 {
-                    new { format = "float32x3", offset = 0,  shaderLocation = 0 },
-                    new { format = "float32x3", offset = 12, shaderLocation = 1 },
-                    new { format = "float32",   offset = 24, shaderLocation = 2 },
+                    new { format = "float32x3", offset = 0,  shaderLocation = 0 }, // pos
+                    new { format = "float32x3", offset = 12, shaderLocation = 1 }, // normal
+                    new { format = "float32x3", offset = 24, shaderLocation = 2 }, // color
+                    new { format = "float32",   offset = 36, shaderLocation = 3 }, // brightness
                 }
             }
         });
@@ -143,19 +144,18 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         var ov = new List<float>(); // orbit line verts (pos3 only)
 
         // Sun (bright, single color)
-        EmitSphere(bv, bi, Vector3.Zero, _system.SunRadius, _system.SunColor, 1.5f, 12);
+        EmitSphere(bv, bi, Vector3.Zero, _system.SunRadius, _system.SunColor, 2.0f, 48);
 
-        // Planets — noise-colored for visual variety
         foreach (var planet in _system.Planets)
         {
             var pos = planet.GetPosition(time);
-            EmitNoiseSphere(bv, bi, pos, planet.DisplayRadius, 1.0f, 10, planet);
+            EmitNoiseSphere(bv, bi, pos, planet.DisplayRadius, 1.0f, 40, planet);
             EmitOrbitRing(ov, Vector3.Zero, planet.OrbitRadius, 64);
 
             foreach (var moon in planet.Moons)
             {
                 var moonPos = pos + moon.GetPosition(time);
-                EmitNoiseSphere(bv, bi, moonPos, moon.DisplayRadius, 0.8f, 8, moon);
+                EmitNoiseSphere(bv, bi, moonPos, moon.DisplayRadius, 0.8f, 24, moon);
                 EmitOrbitRing(ov, pos, moon.OrbitRadius, 32);
             }
         }
@@ -175,26 +175,22 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
     private static void EmitSphere(List<float> v, List<uint> idx,
         Vector3 center, float radius, Vector3 color, float brightness, int segments)
     {
-        // Simple lat-long sphere
         uint baseIdx = (uint)(v.Count / VertexFloats);
-
-        // Top vertex
-        Emit(v, center + new Vector3(0, radius, 0), color, brightness);
         int rings = segments / 2;
+
+        Emit(v, center + new Vector3(0, radius, 0), Vector3.UnitY, color, brightness);
         for (int r = 1; r < rings; r++)
         {
             float phi = MathF.PI * r / rings;
-            float y = MathF.Cos(phi) * radius;
-            float ringR = MathF.Sin(phi) * radius;
+            float y = MathF.Cos(phi); float ringR = MathF.Sin(phi);
             for (int s = 0; s < segments; s++)
             {
                 float theta = 2f * MathF.PI * s / segments;
-                var pos = center + new Vector3(MathF.Cos(theta) * ringR, y, MathF.Sin(theta) * ringR);
-                Emit(v, pos, color, brightness);
+                var dir = new Vector3(MathF.Cos(theta) * ringR, y, MathF.Sin(theta) * ringR);
+                Emit(v, center + dir * radius, dir, color, brightness);
             }
         }
-        // Bottom vertex
-        Emit(v, center + new Vector3(0, -radius, 0), color, brightness);
+        Emit(v, center + new Vector3(0, -radius, 0), -Vector3.UnitY, color, brightness);
 
         // Triangles: top cap
         for (int s = 0; s < segments; s++)
@@ -247,7 +243,7 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         }
 
         var topDir = Vector3.UnitY;
-        Emit(v, center + topDir * radius, ColorAt(topDir), brightness);
+        Emit(v, center + topDir * radius, topDir, ColorAt(topDir), brightness);
         for (int r = 1; r < rings; r++)
         {
             float phi = MathF.PI * r / rings;
@@ -256,10 +252,10 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
             {
                 float theta = 2f * MathF.PI * s / segments;
                 var dir = new Vector3(MathF.Cos(theta) * ringR, y, MathF.Sin(theta) * ringR);
-                Emit(v, center + dir * radius, ColorAt(dir), brightness);
+                Emit(v, center + dir * radius, dir, ColorAt(dir), brightness);
             }
         }
-        Emit(v, center - Vector3.UnitY * radius, ColorAt(-Vector3.UnitY), brightness);
+        Emit(v, center - Vector3.UnitY * radius, -Vector3.UnitY, ColorAt(-Vector3.UnitY), brightness);
 
         for (int s = 0; s < segments; s++)
         {
@@ -301,9 +297,10 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         }
     }
 
-    private static void Emit(List<float> v, Vector3 pos, Vector3 color, float brightness)
+    private static void Emit(List<float> v, Vector3 pos, Vector3 normal, Vector3 color, float brightness)
     {
         v.Add(pos.X); v.Add(pos.Y); v.Add(pos.Z);
+        v.Add(normal.X); v.Add(normal.Y); v.Add(normal.Z);
         v.Add(color.X); v.Add(color.Y); v.Add(color.Z);
         v.Add(brightness);
     }

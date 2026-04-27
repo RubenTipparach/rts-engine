@@ -207,13 +207,16 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         Array.Copy(mvpRawFloats, 0, _tUni, 0, 16);
         _gpu.WriteBuffer(_tUbo, _tUni);
 
-        bool first = clearFirst;
+        bool first = true;
         for (int p = 0; p < PlanetMesh.PatchCount; p++)
         {
             if (_patchIdxCount[p] == 0) continue;
             if (first)
             {
-                _gpu.Render(_tPipeline, _patchVbo[p], _patchIbo[p], _tBindGroup, _patchIdxCount[p]);
+                if (clearFirst)
+                    _gpu.Render(_tPipeline, _patchVbo[p], _patchIbo[p], _tBindGroup, _patchIdxCount[p]);
+                else
+                    _gpu.RenderOverlay(_tPipeline, _patchVbo[p], _patchIbo[p], _tBindGroup, _patchIdxCount[p]);
                 first = false;
             }
             else

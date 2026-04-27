@@ -19,6 +19,9 @@ public interface IGPU
     /// <summary>Same as Render but preserves previous content (loadOp: load). For multi-pass.</summary>
     void RenderAdditional(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount);
 
+    /// <summary>Load color, clear depth. For overlaying 3D content on existing background.</summary>
+    void RenderOverlay(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount);
+
     void DestroyBuffer(int bufferId);
 
     Task<int> CreateTextureFromUrl(string url);
