@@ -94,7 +94,7 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
     public (string? config, Vector3 position) PickPlanet(float cx, float cy, float w, float h)
     {
         var mvp = FloatsToMatrix(BuildMvpFloats(w / h));
-        float bestDist = float.MaxValue;
+        float bestScore = float.MaxValue;
         string? best = null;
         Vector3 bestPos = Vector3.Zero;
 
@@ -103,15 +103,27 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
             var pos = parentPos + body.GetPosition(_time);
             var clip = Vector4.Transform(new Vector4(pos, 1f), mvp);
             if (clip.W <= 0.01f) return;
+
             float sx = (clip.X / clip.W * 0.5f + 0.5f) * w;
             float sy = (0.5f - clip.Y / clip.W * 0.5f) * h;
-            float d = (sx - cx) * (sx - cx) + (sy - cy) * (sy - cy);
-            if (d < bestDist) { bestDist = d; best = body.ConfigFile; bestPos = pos; }
+
+            // Project the sphere edge to get screen-space radius
+            var edge = Vector4.Transform(new Vector4(pos + new Vector3(body.DisplayRadius, 0, 0), 1f), mvp);
+            float ex = (edge.X / edge.W * 0.5f + 0.5f) * w;
+            float screenRadius = MathF.Max(MathF.Abs(ex - sx), 15f); // minimum 15px hit area
+
+            float dx = sx - cx, dy = sy - cy;
+            float dist = MathF.Sqrt(dx * dx + dy * dy);
+
+            // Score: distance relative to screen radius. <1 means inside the sphere.
+            float score = dist / screenRadius;
+            if (score < bestScore) { bestScore = score; best = body.ConfigFile; bestPos = pos; }
+
             foreach (var moon in body.Moons) CheckBody(moon, pos);
         }
 
         foreach (var p in _system.Planets) CheckBody(p, Vector3.Zero);
-        return bestDist < 50 * 50 ? (best, bestPos) : (null, Vector3.Zero);
+        return bestScore < 3f ? (best, bestPos) : (null, Vector3.Zero);
     }
 
     // ── Mesh ────────────────────────────────────────────────────────
