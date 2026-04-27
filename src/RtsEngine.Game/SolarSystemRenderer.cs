@@ -87,7 +87,7 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         _distance -= delta * _distance * 0.001f;
         _distance = Math.Clamp(_distance, 20f, 200f);
     }
-    public float Distance => _distance;
+    public float Distance { get => _distance; set => _distance = value; }
     public void SetDragging(bool d) => _dragging = d;
     public bool IsDragging => _dragging;
 

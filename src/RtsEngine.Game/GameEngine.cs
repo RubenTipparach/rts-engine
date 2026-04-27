@@ -38,9 +38,6 @@ public class GameEngine
     public void SwitchToPlanetEdit()
     {
         _planetReady = true;
-        // If already transitioning (zoom started on click), the transition
-        // tick will switch mode when both animation and loading are done.
-        // If not transitioning (instant switch), start now.
         if (!_transitioning)
         {
             Mode = EditorMode.PlanetEdit;
@@ -50,16 +47,15 @@ public class GameEngine
 
     public void SwitchToSolarSystem()
     {
-        Mode = EditorMode.SolarSystem;
-        SelectedPlanetConfig = null;
-        _transitioning = false;
+        if (_solarSystem == null) { Mode = EditorMode.SolarSystem; return; }
+
+        // Start zoom-out transition from current planet position
+        _transitioning = true;
+        _transitionStart = Elapsed();
+        _transitionTarget = EditorMode.SolarSystem;
         _planetReady = false;
-        if (_solarSystem != null)
-        {
-            _solarSystem.SetFocusTarget(Vector3.Zero);
-            // Reset zoom to default
-            _solarSystem.Zoom(-(_solarSystem.Distance - 80f) * 100f);
-        }
+        SelectedPlanetConfig = null;
+        Mode = EditorMode.SolarSystem; // switch mode immediately so solar system renders
     }
 
     public GameEngine(IRenderBackend app, IGPU gpu, PlanetRenderer planet,
@@ -217,7 +213,7 @@ public class GameEngine
     {
         float elapsed = Elapsed();
 
-        // Handle zoom transition: solar system camera zooms toward target planet
+        // Handle zoom transition: solar system camera zooms toward/away from planet
         if (_transitioning && _solarSystem != null)
         {
             float t = Math.Clamp((elapsed - _transitionStart) / TransitionDuration, 0f, 1f);
@@ -225,33 +221,38 @@ public class GameEngine
 
             if (_transitionTarget == EditorMode.PlanetEdit)
             {
-                // Zoom solar system camera toward the planet
-                float zoomDist = 80f * (1f - smooth) + 2f * smooth;
-                _solarSystem.Zoom(-(_solarSystem.Distance - zoomDist) * 100f);
-                // Focus center lerps toward the planet position
-                var focus = _transitionPlanetPos * smooth;
-                _solarSystem.SetFocusTarget(focus);
-
-                var mvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
-                _solarSystem.Draw(mvp);
+                // Zoom IN: distance 80→2, focus origin→planet
+                _solarSystem.Distance = 80f * (1f - smooth) + 2f * smooth;
+                _solarSystem.SetFocusTarget(_transitionPlanetPos * smooth);
+            }
+            else
+            {
+                // Zoom OUT: distance 2→80, focus planet→origin
+                _solarSystem.Distance = 2f * (1f - smooth) + 80f * smooth;
+                _solarSystem.SetFocusTarget(_transitionPlanetPos * (1f - smooth));
             }
 
-            // Switch when animation is done AND planet is loaded
-            if (t >= 1f && _planetReady)
+            var mvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
+            _solarSystem.Draw(mvp);
+            _app.ShowUIButton("back_solar", false);
+
+            // Zoom-in: switch when animation done AND planet loaded
+            if (_transitionTarget == EditorMode.PlanetEdit && t >= 1f && _planetReady)
             {
                 _transitioning = false;
                 Mode = EditorMode.PlanetEdit;
                 _hoveredCell = -1;
+                _solarSystem.Distance = 80f;
                 _solarSystem.SetFocusTarget(Vector3.Zero);
             }
-            // If animation is done but planet isn't ready, keep showing solar system zoomed in
-            else if (t >= 1f && !_planetReady)
+            // Zoom-out: done when animation completes
+            else if (_transitionTarget == EditorMode.SolarSystem && t >= 1f)
             {
-                var mvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
-                _solarSystem.Draw(mvp);
+                _transitioning = false;
+                _solarSystem.Distance = 80f;
+                _solarSystem.SetFocusTarget(Vector3.Zero);
             }
 
-            _app.ShowUIButton("back_solar", false);
             OnFrameRendered?.Invoke();
             return;
         }
