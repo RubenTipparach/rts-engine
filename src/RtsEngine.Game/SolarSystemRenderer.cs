@@ -320,6 +320,7 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
     }
 
     private string? _hiddenPlanetConfig;
+    private Vector3 _focusTarget = Vector3.Zero;
 
     /// <summary>Hide the noise sphere for this planet (during transition, the real PlanetRenderer replaces it).</summary>
     public void HidePlanet(string? configFile) => _hiddenPlanetConfig = configFile;
