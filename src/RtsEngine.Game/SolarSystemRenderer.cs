@@ -21,10 +21,26 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
     private readonly SolarSystemData _system;
 
     private int _pipeline, _linePipeline, _sunPipeline;
-    private int _bodyVbo, _bodyIbo, _orbitVbo, _orbitIbo, _sunVbo, _sunIbo;
-    private int _ubo, _sunUbo, _bindGroup, _lineBindGroup, _sunBindGroup;
-    private int _bodyIndexCount, _orbitVertCount, _sunIndexCount;
+    private int _sunVbo, _sunIbo;
+    private int _sunUbo, _sunBindGroup;
+    private int _sunIndexCount;
     private bool _ready;
+
+    /// <summary>
+    /// One per planet/moon. Mesh is baked at origin; the per-body UBO holds
+    /// translate(currentWorldPos) * mvp, updated each frame so picking and
+    /// rendering both see live orbital positions.
+    /// </summary>
+    private struct BodyRender
+    {
+        public OrbitalBody Body;
+        public OrbitalBody? Parent;       // null for top-level planets
+        public int Vbo, Ibo, IndexCount;
+        public int Ubo, BindGroup;
+        public int RingVbo, RingIbo, RingVertCount;
+        public int RingUbo, RingBindGroup;
+    }
+    private readonly List<BodyRender> _bodies = new();
 
     // Camera
     private float _azimuth, _elevation = 0.6f, _distance = 80f;
@@ -42,10 +58,9 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         var shader = await _gpu.CreateShaderModule(shaderCode);
         var lineShader = await _gpu.CreateShaderModule(outlineShaderCode);
         var sunShader = await _gpu.CreateShaderModule(sunShaderCode);
-        _ubo = await _gpu.CreateUniformBuffer(UniformSize);
         _sunUbo = await _gpu.CreateUniformBuffer(80); // mvp(64) + params(16)
 
-        // Body pipeline (triangles)
+        // Body pipeline (triangles) — bind groups created per-body in BuildBody.
         _pipeline = await _gpu.CreateRenderPipeline(shader, new object[]
         {
             new {
@@ -59,22 +74,14 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
                 }
             }
         });
-        _bindGroup = await _gpu.CreateBindGroup(_pipeline, 0, new object[]
-        {
-            new { binding = 0, bufferId = _ubo },
-        });
 
-        // Orbit line pipeline
+        // Orbit line pipeline — bind groups created per-body.
         _linePipeline = await _gpu.CreateRenderPipelineLines(lineShader, new object[]
         {
             new {
                 arrayStride = 12,
                 attributes = new object[] { new { format = "float32x3", offset = 0, shaderLocation = 0 } }
             }
-        });
-        _lineBindGroup = await _gpu.CreateBindGroup(_linePipeline, 0, new object[]
-        {
-            new { binding = 0, bufferId = _ubo },
         });
 
         // Sun pipeline (pos3 only, stride 12 — sun shader does its own coloring)
@@ -96,8 +103,55 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         _sunIbo = await _gpu.CreateIndexBuffer(si);
         _sunIndexCount = si.Length;
 
-        await RebuildMeshAsync(0f);
+        // One mesh per body, baked at origin. Per-frame translation lives in the UBO.
+        foreach (var planet in _system.Planets)
+        {
+            _bodies.Add(await BuildBody(planet, null));
+            foreach (var moon in planet.Moons)
+                _bodies.Add(await BuildBody(moon, planet));
+        }
+
         _ready = true;
+    }
+
+    private async Task<BodyRender> BuildBody(OrbitalBody body, OrbitalBody? parent)
+    {
+        int segs = parent == null ? 40 : 24;
+        float brightness = parent == null ? 1.0f : 0.8f;
+
+        var bv = new List<float>();
+        var bi = new List<uint>();
+        EmitNoiseSphere(bv, bi, Vector3.Zero, body.DisplayRadius, brightness, segs, body);
+
+        var rv = new List<float>();
+        EmitOrbitRing(rv, Vector3.Zero, body.OrbitRadius, parent == null ? 64 : 32);
+        var ringIdx = new ushort[rv.Count / 3];
+        for (int i = 0; i < ringIdx.Length; i++) ringIdx[i] = (ushort)i;
+
+        int vbo = await _gpu.CreateVertexBuffer(bv.ToArray());
+        int ibo = await _gpu.CreateIndexBuffer32(bi.ToArray());
+        int ubo = await _gpu.CreateUniformBuffer(UniformSize);
+        int bg = await _gpu.CreateBindGroup(_pipeline, 0, new object[]
+        {
+            new { binding = 0, bufferId = ubo },
+        });
+
+        int rvbo = await _gpu.CreateVertexBuffer(rv.ToArray());
+        int ribo = await _gpu.CreateIndexBuffer(ringIdx);
+        int rubo = await _gpu.CreateUniformBuffer(UniformSize);
+        int rbg = await _gpu.CreateBindGroup(_linePipeline, 0, new object[]
+        {
+            new { binding = 0, bufferId = rubo },
+        });
+
+        return new BodyRender
+        {
+            Body = body, Parent = parent,
+            Vbo = vbo, Ibo = ibo, IndexCount = bi.Count,
+            Ubo = ubo, BindGroup = bg,
+            RingVbo = rvbo, RingIbo = ribo, RingVertCount = ringIdx.Length,
+            RingUbo = rubo, RingBindGroup = rbg,
+        };
     }
 
     public void SetTime(float t) => _time = t;
@@ -128,9 +182,7 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
 
         void CheckBody(OrbitalBody body, Vector3 parentPos)
         {
-            // Mesh is baked at t=0 in Setup and never rebuilt, so picking must
-            // use the same time the geometry was rendered with.
-            var pos = parentPos + body.GetPosition(0f);
+            var pos = parentPos + body.GetPosition(_time);
             var clip = Vector4.Transform(new Vector4(pos, 1f), mvp);
             if (clip.W <= 0.01f) return;
 
@@ -158,46 +210,6 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
     }
 
     // ── Mesh ────────────────────────────────────────────────────────
-
-    private async Task RebuildMeshAsync(float time)
-    {
-        if (_bodyVbo > 0) _gpu.DestroyBuffer(_bodyVbo);
-        if (_bodyIbo > 0) _gpu.DestroyBuffer(_bodyIbo);
-        if (_orbitVbo > 0) _gpu.DestroyBuffer(_orbitVbo);
-        if (_orbitIbo > 0) _gpu.DestroyBuffer(_orbitIbo);
-
-        var bv = new List<float>();
-        var bi = new List<uint>();
-        var ov = new List<float>(); // orbit line verts (pos3 only)
-
-        // Sun (bright, single color)
-        // Sun is rendered separately with sun shader — skip here
-
-        foreach (var planet in _system.Planets)
-        {
-            var pos = planet.GetPosition(time);
-            EmitNoiseSphere(bv, bi, pos, planet.DisplayRadius, 1.0f, 40, planet);
-            EmitOrbitRing(ov, Vector3.Zero, planet.OrbitRadius, 64);
-
-            foreach (var moon in planet.Moons)
-            {
-                var moonPos = pos + moon.GetPosition(time);
-                EmitNoiseSphere(bv, bi, moonPos, moon.DisplayRadius, 0.8f, 24, moon);
-                EmitOrbitRing(ov, pos, moon.OrbitRadius, 32);
-            }
-        }
-
-        _bodyVbo = await _gpu.CreateVertexBuffer(bv.ToArray());
-        _bodyIbo = await _gpu.CreateIndexBuffer32(bi.ToArray());
-        _bodyIndexCount = bi.Count;
-
-        // Orbit lines — need a sequential IBO for the line pipeline
-        var oiArr = new ushort[ov.Count / 3];
-        for (int i = 0; i < oiArr.Length; i++) oiArr[i] = (ushort)i;
-        _orbitVbo = await _gpu.CreateVertexBuffer(ov.ToArray());
-        _orbitIbo = await _gpu.CreateIndexBuffer(oiArr);
-        _orbitVertCount = oiArr.Length;
-    }
 
     private static (float[] verts, ushort[] indices) BuildSunMesh(float radius, int segments)
     {
@@ -394,17 +406,38 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         _gpu.WriteBuffer(_sunUbo, sunUni);
         _gpu.Render(_sunPipeline, _sunVbo, _sunIbo, _sunBindGroup, _sunIndexCount);
 
-        // Planets (Lambert-lit)
-        if (_bodyIndexCount > 0)
-        {
-            _gpu.WriteBuffer(_ubo, mvpRawFloats);
-            _gpu.RenderAdditional(_pipeline, _bodyVbo, _bodyIbo, _bindGroup, _bodyIndexCount);
-        }
+        // Bodies + orbit rings: each body's mesh is at the origin, so we
+        // upload a translated MVP per body, per frame. This gives live orbit
+        // animation without rebuilding any geometry.
+        var mvpMat = RawToSilkMat(mvpRawFloats);
 
-        // Orbit lines
-        if (_orbitVertCount > 0)
-            _gpu.RenderAdditional(_linePipeline, _orbitVbo, _orbitIbo, _lineBindGroup, _orbitVertCount);
+        foreach (var br in _bodies)
+        {
+            if (br.Body.ConfigFile == _hiddenPlanetConfig) continue;
+
+            var parentPos = br.Parent != null ? br.Parent.GetPosition(_time) : Vector3.Zero;
+            var bodyPos = parentPos + br.Body.GetPosition(_time);
+
+            var bodyMvp = MatrixHelper.ToRawFloats(Matrix4X4.Multiply(
+                Matrix4X4.CreateTranslation(new Vector3D<float>(bodyPos.X, bodyPos.Y, bodyPos.Z)),
+                mvpMat));
+            _gpu.WriteBuffer(br.Ubo, bodyMvp);
+            _gpu.RenderAdditional(_pipeline, br.Vbo, br.Ibo, br.BindGroup, br.IndexCount);
+
+            // Orbit ring is centered on the body's parent (origin for top-level planets).
+            var ringMvp = parentPos == Vector3.Zero
+                ? mvpRawFloats
+                : MatrixHelper.ToRawFloats(Matrix4X4.Multiply(
+                    Matrix4X4.CreateTranslation(new Vector3D<float>(parentPos.X, parentPos.Y, parentPos.Z)),
+                    mvpMat));
+            _gpu.WriteBuffer(br.RingUbo, ringMvp);
+            _gpu.RenderAdditional(_linePipeline, br.RingVbo, br.RingIbo, br.RingBindGroup, br.RingVertCount);
+        }
     }
+
+    private static Matrix4X4<float> RawToSilkMat(float[] m) => new(
+        m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7],
+        m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
 
     private string? _hiddenPlanetConfig;
     private Vector3 _focusTarget = Vector3.Zero;
@@ -433,10 +466,18 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
 
     public void Dispose()
     {
-        if (_bodyVbo > 0) _gpu.DestroyBuffer(_bodyVbo);
-        if (_bodyIbo > 0) _gpu.DestroyBuffer(_bodyIbo);
-        if (_orbitVbo > 0) _gpu.DestroyBuffer(_orbitVbo);
-        if (_orbitIbo > 0) _gpu.DestroyBuffer(_orbitIbo);
-        _gpu.DestroyBuffer(_ubo);
+        foreach (var br in _bodies)
+        {
+            _gpu.DestroyBuffer(br.Vbo);
+            _gpu.DestroyBuffer(br.Ibo);
+            _gpu.DestroyBuffer(br.Ubo);
+            _gpu.DestroyBuffer(br.RingVbo);
+            _gpu.DestroyBuffer(br.RingIbo);
+            _gpu.DestroyBuffer(br.RingUbo);
+        }
+        _bodies.Clear();
+        if (_sunVbo > 0) _gpu.DestroyBuffer(_sunVbo);
+        if (_sunIbo > 0) _gpu.DestroyBuffer(_sunIbo);
+        if (_sunUbo > 0) _gpu.DestroyBuffer(_sunUbo);
     }
 }
