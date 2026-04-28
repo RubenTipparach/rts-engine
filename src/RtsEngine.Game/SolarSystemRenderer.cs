@@ -14,6 +14,9 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
     public const int VertexStride = 40;
     public const int UniformSize = 64; // just MVP
 
+    private const float FovYDegrees = 50f;
+    private static readonly float FocalY = 1f / MathF.Tan(FovYDegrees * MathF.PI / 360f);
+
     private readonly IGPU _gpu;
     private readonly SolarSystemData _system;
 
@@ -132,10 +135,11 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
             float sx = (clip.X / clip.W * 0.5f + 0.5f) * w;
             float sy = (0.5f - clip.Y / clip.W * 0.5f) * h;
 
-            // Project the sphere edge to get screen-space radius
-            var edge = Vector4.Transform(new Vector4(pos + new Vector3(body.DisplayRadius, 0, 0), 1f), mvp);
-            float ex = (edge.X / edge.W * 0.5f + 0.5f) * w;
-            float screenRadius = MathF.Max(MathF.Abs(ex - sx), 15f); // minimum 15px hit area
+            // Perspective-correct screen radius: at view-space depth clip.W, a sphere
+            // of radius r projects to (r * focalY / clip.W) in NDC, or that times h/2
+            // in pixels. Using world-axis offsets (as before) gave 0 when the offset
+            // was along the view direction — making most clicks miss.
+            float screenRadius = MathF.Max(body.DisplayRadius * FocalY * h * 0.5f / clip.W, 25f);
 
             float dx = sx - cx, dy = sy - cy;
             float dist = MathF.Sqrt(dx * dx + dy * dy);
@@ -417,7 +421,7 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
             new Vector3D<float>(_focusTarget.X, _focusTarget.Y, _focusTarget.Z),
             new Vector3D<float>(0, 1, 0));
         var proj = Matrix4X4.CreatePerspectiveFieldOfView(
-            Scalar.DegreesToRadians(50.0f), aspect, 0.5f, 500.0f);
+            Scalar.DegreesToRadians(FovYDegrees), aspect, 0.5f, 500.0f);
         return MatrixHelper.ToRawFloats(Matrix4X4.Multiply(view, proj));
     }
 
