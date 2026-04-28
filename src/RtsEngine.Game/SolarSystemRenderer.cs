@@ -128,7 +128,9 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
 
         void CheckBody(OrbitalBody body, Vector3 parentPos)
         {
-            var pos = parentPos + body.GetPosition(_time);
+            // Mesh is baked at t=0 in Setup and never rebuilt, so picking must
+            // use the same time the geometry was rendered with.
+            var pos = parentPos + body.GetPosition(0f);
             var clip = Vector4.Transform(new Vector4(pos, 1f), mvp);
             if (clip.W <= 0.01f) return;
 
