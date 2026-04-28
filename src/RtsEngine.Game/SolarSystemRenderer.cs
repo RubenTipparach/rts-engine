@@ -216,8 +216,8 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         for (int s = 0; s < segments; s++)
         {
             idx.Add(0);
-            idx.Add((ushort)(1 + s));
             idx.Add((ushort)(1 + (s + 1) % segments));
+            idx.Add((ushort)(1 + s));
         }
         for (int r = 0; r < rings - 2; r++)
         {
@@ -226,8 +226,8 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
             for (int s = 0; s < segments; s++)
             {
                 ushort s0 = (ushort)s, s1 = (ushort)((s + 1) % segments);
-                idx.Add((ushort)(row0 + s0)); idx.Add((ushort)(row1 + s0)); idx.Add((ushort)(row1 + s1));
-                idx.Add((ushort)(row0 + s0)); idx.Add((ushort)(row1 + s1)); idx.Add((ushort)(row0 + s1));
+                idx.Add((ushort)(row0 + s0)); idx.Add((ushort)(row1 + s1)); idx.Add((ushort)(row1 + s0));
+                idx.Add((ushort)(row0 + s0)); idx.Add((ushort)(row0 + s1)); idx.Add((ushort)(row1 + s1));
             }
         }
         ushort bot = (ushort)(1 + (rings - 1) * segments);
@@ -235,8 +235,8 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         for (int s = 0; s < segments; s++)
         {
             idx.Add(bot);
-            idx.Add((ushort)(lastR + (s + 1) % segments));
             idx.Add((ushort)(lastR + s));
+            idx.Add((ushort)(lastR + (s + 1) % segments));
         }
 
         return (v.ToArray(), idx.ToArray());
@@ -266,8 +266,8 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         for (int s = 0; s < segments; s++)
         {
             idx.Add(baseIdx);
-            idx.Add(baseIdx + 1 + (uint)s);
             idx.Add(baseIdx + 1 + (uint)((s + 1) % segments));
+            idx.Add(baseIdx + 1 + (uint)s);
         }
         // Middle strips
         for (int r = 0; r < rings - 2; r++)
@@ -277,8 +277,8 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
             for (int s = 0; s < segments; s++)
             {
                 uint s0 = (uint)s, s1 = (uint)((s + 1) % segments);
-                idx.Add(row0 + s0); idx.Add(row1 + s0); idx.Add(row1 + s1);
-                idx.Add(row0 + s0); idx.Add(row1 + s1); idx.Add(row0 + s1);
+                idx.Add(row0 + s0); idx.Add(row1 + s1); idx.Add(row1 + s0);
+                idx.Add(row0 + s0); idx.Add(row0 + s1); idx.Add(row1 + s1);
             }
         }
         // Bottom cap
@@ -287,8 +287,8 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         for (int s = 0; s < segments; s++)
         {
             idx.Add(bottom);
-            idx.Add(lastRow + (uint)((s + 1) % segments));
             idx.Add(lastRow + (uint)s);
+            idx.Add(lastRow + (uint)((s + 1) % segments));
         }
     }
 
@@ -330,8 +330,8 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         for (int s = 0; s < segments; s++)
         {
             idx.Add(baseIdx);
-            idx.Add(baseIdx + 1 + (uint)s);
             idx.Add(baseIdx + 1 + (uint)((s + 1) % segments));
+            idx.Add(baseIdx + 1 + (uint)s);
         }
         for (int r = 0; r < rings - 2; r++)
         {
@@ -340,8 +340,8 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
             for (int s = 0; s < segments; s++)
             {
                 uint s0 = (uint)s, s1 = (uint)((s + 1) % segments);
-                idx.Add(row0 + s0); idx.Add(row1 + s0); idx.Add(row1 + s1);
-                idx.Add(row0 + s0); idx.Add(row1 + s1); idx.Add(row0 + s1);
+                idx.Add(row0 + s0); idx.Add(row1 + s1); idx.Add(row1 + s0);
+                idx.Add(row0 + s0); idx.Add(row0 + s1); idx.Add(row1 + s1);
             }
         }
         uint bottom = baseIdx + 1 + (uint)((rings - 1) * segments);
@@ -349,8 +349,8 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         for (int s = 0; s < segments; s++)
         {
             idx.Add(bottom);
-            idx.Add(lastRow + (uint)((s + 1) % segments));
             idx.Add(lastRow + (uint)s);
+            idx.Add(lastRow + (uint)((s + 1) % segments));
         }
     }
 
