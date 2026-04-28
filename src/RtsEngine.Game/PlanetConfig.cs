@@ -19,6 +19,7 @@ public sealed class PlanetConfig
     public WaterConfig Water { get; set; } = new();
     public GenerationConfig Generation { get; set; } = new();
     public AtmosphereConfig Atmosphere { get; set; } = new();
+    public CameraConfig Camera { get; set; } = new();
 
     public static PlanetConfig FromYaml(string yamlText)
     {
@@ -62,4 +63,11 @@ public sealed class AtmosphereConfig
     public float OuterRadiusMul { get; set; } = 1.5f;
     public float SunIntensity { get; set; } = 30.0f;
     public List<float> SunDirection { get; set; } = new() { 0.5f, 0.7f, 0.5f };
+}
+
+public sealed class CameraConfig
+{
+    public float ZoomMin { get; set; } = 2.0f;
+    public float ZoomMax { get; set; } = 8.0f;
+    public float DefaultDistance { get; set; } = 3.0f;
 }

@@ -37,7 +37,12 @@ generation:
   thresholds: [0.30, 0.45, 0.65, 0.82]
 
 atmosphere:
-  innerRadiusMul: 0.92   # below ground so glow starts at surface
-  outerRadiusMul: 1.5    # 50% thicker than the planet surface
+  innerRadiusMul: 0.92
+  outerRadiusMul: 1.5
   sunIntensity: 30.0
   sunDirection: [0.5, 0.7, 0.5]
+
+camera:
+  zoomMin: 2.0
+  zoomMax: 8.0
+  defaultDistance: 3.0

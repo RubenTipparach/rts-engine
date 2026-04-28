@@ -80,6 +80,18 @@ RtsEngine.Desktop (Silk.NET OpenGL host)
 - **Planet config:** YAML files in wwwroot/planets/ drive all planet parameters (radius, subdivisions, textures, atmosphere, noise). New planet = new YAML + texture set, no code changes.
 - **20-patch chunked rebuild:** Planet mesh is split into 20 icosahedron patches with independent VBO/IBO. Edits only rebuild affected patches (~5-15% of mesh).
 
+## Config-Driven Design (NO HARDCODED MAGIC NUMBERS)
+
+**Every game-design or visual parameter that a user would want to tweak MUST live in a YAML config file.** Never hardcode values like camera distances, LOD thresholds, transition speeds, sphere segment counts, lighting intensities, or color values directly in C# code. Instead:
+
+1. **Planet config** (`wwwroot/planets/<name>.yaml`): radius, subdivisions, stepHeight, terrain levels, atmosphere, noise, textures, zoom min/max
+2. **Solar system config** (`wwwroot/config/solarsystem.yaml`): sun properties, orbital bodies, display radii, orbit distances/speeds
+3. **Engine config** (`wwwroot/config/engine.yaml`): camera defaults, transition speed, LOD distance thresholds, lighting params, sphere segment counts
+
+Config files are loaded at startup via `HttpClient.GetStringAsync` (WASM) or `File.ReadAllText` (Desktop), parsed by `YamlDotNet`. All config classes live in `RtsEngine.Game` with `FromYaml()` static factory methods.
+
+**When adding new features:** if a value affects visuals, gameplay feel, or anything a designer would tweak — put it in config, not code. The code should read config values and apply them. The only constants allowed in code are mathematical ones (π, conversion factors) and structural ones (patch count = 20, vertex stride).
+
 ## Editor Modes
 
 - **SolarSystem:** Sun + planets + orbit rings. Click planet → load + zoom to planet edit.

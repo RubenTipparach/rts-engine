@@ -31,3 +31,8 @@ atmosphere:
   outerRadiusMul: 1.02    # barely any atmosphere
   sunIntensity: 2.0
   sunDirection: [0.5, 0.7, 0.5]
+
+camera:
+  zoomMin: 1.2
+  zoomMax: 4.0
+  defaultDistance: 2.0
