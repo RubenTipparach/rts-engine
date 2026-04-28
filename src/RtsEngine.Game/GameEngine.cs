@@ -241,7 +241,7 @@ public class GameEngine
                     // the solar system transforms planetPos. Exact alignment, no FOV mismatch.
                     var pp = _transitionPlanetPos;
                     var trans = Matrix4X4.CreateTranslation(
-                        new Vector3D<float>(-pp.X, -pp.Y, -pp.Z));
+                        new Vector3D<float>(pp.X, pp.Y, pp.Z));
                     var ssMvpMat = RawToSilkMat(ssMvp);
                     var planetMvpMat = Matrix4X4.Multiply(trans, ssMvpMat);
                     var planetMvp = MatrixHelper.ToRawFloats(planetMvpMat);
@@ -290,7 +290,7 @@ public class GameEngine
                     var ssMvpOut = _solarSystem.BuildMvpFloats(_app.AspectRatio);
                     var pp2 = _transitionPlanetPos;
                     var trans2 = Matrix4X4.CreateTranslation(
-                        new Vector3D<float>(-pp2.X, -pp2.Y, -pp2.Z));
+                        new Vector3D<float>(pp2.X, pp2.Y, pp2.Z));
                     var planetMvpMat2 = Matrix4X4.Multiply(trans2, RawToSilkMat(ssMvpOut));
                     var planetMvpOut = MatrixHelper.ToRawFloats(planetMvpMat2);
 
@@ -337,6 +337,7 @@ public class GameEngine
         else if (Mode == EditorMode.SolarSystem && _solarSystem != null)
         {
             _app.ShowUIButton("back_solar", false);
+            _solarSystem.SetTime(elapsed);
             var mvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
             _solarSystem.Draw(mvp);
         }

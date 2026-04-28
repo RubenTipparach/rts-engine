@@ -35,8 +35,9 @@
             var solarData = SolarSystemData.CreateDefault();
             var solarShader = await Http.GetStringAsync("shaders/solarsystem.wgsl");
             var outlineShader = await Http.GetStringAsync("shaders/outline.wgsl");
+            var sunShader = await Http.GetStringAsync("shaders/sun.wgsl");
             _solarSystem = new SolarSystemRenderer(gpu, solarData);
-            await _solarSystem.Setup(solarShader, outlineShader);
+            await _solarSystem.Setup(solarShader, outlineShader, sunShader);
 
             // Star map
             var galaxy = GalaxyData.Generate(seed: 42);

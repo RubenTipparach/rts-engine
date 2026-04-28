@@ -17,10 +17,10 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
     private readonly IGPU _gpu;
     private readonly SolarSystemData _system;
 
-    private int _pipeline, _linePipeline;
-    private int _bodyVbo, _bodyIbo, _orbitVbo, _orbitIbo;
-    private int _ubo, _bindGroup, _lineBindGroup;
-    private int _bodyIndexCount, _orbitVertCount;
+    private int _pipeline, _linePipeline, _sunPipeline;
+    private int _bodyVbo, _bodyIbo, _orbitVbo, _orbitIbo, _sunVbo, _sunIbo;
+    private int _ubo, _sunUbo, _bindGroup, _lineBindGroup, _sunBindGroup;
+    private int _bodyIndexCount, _orbitVertCount, _sunIndexCount;
     private bool _ready;
 
     // Camera
@@ -34,11 +34,13 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         _system = system;
     }
 
-    public async Task Setup(string shaderCode, string outlineShaderCode)
+    public async Task Setup(string shaderCode, string outlineShaderCode, string sunShaderCode)
     {
         var shader = await _gpu.CreateShaderModule(shaderCode);
         var lineShader = await _gpu.CreateShaderModule(outlineShaderCode);
+        var sunShader = await _gpu.CreateShaderModule(sunShaderCode);
         _ubo = await _gpu.CreateUniformBuffer(UniformSize);
+        _sunUbo = await _gpu.CreateUniformBuffer(80); // mvp(64) + params(16)
 
         // Body pipeline (triangles)
         _pipeline = await _gpu.CreateRenderPipeline(shader, new object[]
@@ -71,6 +73,25 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         {
             new { binding = 0, bufferId = _ubo },
         });
+
+        // Sun pipeline (pos3 only, stride 12 — sun shader does its own coloring)
+        _sunPipeline = await _gpu.CreateRenderPipeline(sunShader, new object[]
+        {
+            new {
+                arrayStride = 12,
+                attributes = new object[] { new { format = "float32x3", offset = 0, shaderLocation = 0 } }
+            }
+        });
+        _sunBindGroup = await _gpu.CreateBindGroup(_sunPipeline, 0, new object[]
+        {
+            new { binding = 0, bufferId = _sunUbo },
+        });
+
+        // Build sun mesh (pos3 only)
+        var (sv, si) = BuildSunMesh(_system.SunRadius, 48);
+        _sunVbo = await _gpu.CreateVertexBuffer(sv);
+        _sunIbo = await _gpu.CreateIndexBuffer(si);
+        _sunIndexCount = si.Length;
 
         await RebuildMeshAsync(0f);
         _ready = true;
@@ -144,7 +165,7 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         var ov = new List<float>(); // orbit line verts (pos3 only)
 
         // Sun (bright, single color)
-        EmitSphere(bv, bi, Vector3.Zero, _system.SunRadius, _system.SunColor, 2.0f, 48);
+        // Sun is rendered separately with sun shader — skip here
 
         foreach (var planet in _system.Planets)
         {
@@ -170,6 +191,55 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         _orbitVbo = await _gpu.CreateVertexBuffer(ov.ToArray());
         _orbitIbo = await _gpu.CreateIndexBuffer(oiArr);
         _orbitVertCount = oiArr.Length;
+    }
+
+    private static (float[] verts, ushort[] indices) BuildSunMesh(float radius, int segments)
+    {
+        var v = new List<float>();
+        var idx = new List<ushort>();
+        int rings = segments / 2;
+
+        v.Add(0); v.Add(radius); v.Add(0); // top
+        for (int r = 1; r < rings; r++)
+        {
+            float phi = MathF.PI * r / rings;
+            float y = MathF.Cos(phi) * radius;
+            float ringR = MathF.Sin(phi) * radius;
+            for (int s = 0; s < segments; s++)
+            {
+                float th = 2f * MathF.PI * s / segments;
+                v.Add(MathF.Cos(th) * ringR); v.Add(y); v.Add(MathF.Sin(th) * ringR);
+            }
+        }
+        v.Add(0); v.Add(-radius); v.Add(0); // bottom
+
+        for (int s = 0; s < segments; s++)
+        {
+            idx.Add(0);
+            idx.Add((ushort)(1 + s));
+            idx.Add((ushort)(1 + (s + 1) % segments));
+        }
+        for (int r = 0; r < rings - 2; r++)
+        {
+            ushort row0 = (ushort)(1 + r * segments);
+            ushort row1 = (ushort)(1 + (r + 1) * segments);
+            for (int s = 0; s < segments; s++)
+            {
+                ushort s0 = (ushort)s, s1 = (ushort)((s + 1) % segments);
+                idx.Add((ushort)(row0 + s0)); idx.Add((ushort)(row1 + s0)); idx.Add((ushort)(row1 + s1));
+                idx.Add((ushort)(row0 + s0)); idx.Add((ushort)(row1 + s1)); idx.Add((ushort)(row0 + s1));
+            }
+        }
+        ushort bot = (ushort)(1 + (rings - 1) * segments);
+        ushort lastR = (ushort)(1 + (rings - 2) * segments);
+        for (int s = 0; s < segments; s++)
+        {
+            idx.Add(bot);
+            idx.Add((ushort)(lastR + (s + 1) % segments));
+            idx.Add((ushort)(lastR + s));
+        }
+
+        return (v.ToArray(), idx.ToArray());
     }
 
     private static void EmitSphere(List<float> v, List<uint> idx,
@@ -310,8 +380,22 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
     public void Draw(float[] mvpRawFloats)
     {
         if (!_ready) return;
-        _gpu.WriteBuffer(_ubo, mvpRawFloats);
-        _gpu.Render(_pipeline, _bodyVbo, _bodyIbo, _bindGroup, _bodyIndexCount);
+
+        // Sun (procedural shader, own pipeline)
+        var sunUni = new float[20]; // mvp(16) + params(4)
+        Array.Copy(mvpRawFloats, 0, sunUni, 0, 16);
+        sunUni[16] = _time;
+        _gpu.WriteBuffer(_sunUbo, sunUni);
+        _gpu.Render(_sunPipeline, _sunVbo, _sunIbo, _sunBindGroup, _sunIndexCount);
+
+        // Planets (Lambert-lit)
+        if (_bodyIndexCount > 0)
+        {
+            _gpu.WriteBuffer(_ubo, mvpRawFloats);
+            _gpu.RenderAdditional(_pipeline, _bodyVbo, _bodyIbo, _bindGroup, _bodyIndexCount);
+        }
+
+        // Orbit lines
         if (_orbitVertCount > 0)
             _gpu.RenderAdditional(_linePipeline, _orbitVbo, _orbitIbo, _lineBindGroup, _orbitVertCount);
     }
