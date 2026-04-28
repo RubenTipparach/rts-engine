@@ -25,10 +25,15 @@ public sealed class PlanetMesh
     public float StepHeight { get; }
     public int CellCount => _centers.Length;
 
-    private readonly Vector3[] _centers;     // unit-sphere position per cell
-    private readonly int[][] _neighbors;     // ordered neighbor indices per cell (5 or 6)
-    private readonly Vector3[][] _polyVerts; // ordered dual polygon boundary on unit sphere
+    private readonly Vector3[] _centers;
+    private readonly int[][] _neighbors;
+    private readonly Vector3[][] _polyVerts;
     private readonly byte[] _levels;
+
+    // Patch system: 20 base icosahedron triangles → 20 patches
+    public const int PatchCount = 20;
+    private readonly int[] _patchId;         // cell → patch (0..19)
+    private readonly List<int>[] _patchCells; // patch → list of cell indices
 
     public PlanetMesh(int subdivisions = 4, float radius = 1.0f, float stepHeight = 0.04f)
     {
@@ -81,6 +86,33 @@ public sealed class PlanetMesh
         }
 
         _levels = new byte[V];
+
+        // Assign cells to patches: compute 20 base triangle centers from the
+        // un-subdivided icosahedron, then assign each cell to the nearest center.
+        var (baseV, baseTris) = BuildIcosphere(0);
+        var baseCenters = new Vector3[PatchCount];
+        for (int t = 0; t < baseTris.Count && t < PatchCount; t++)
+        {
+            var (a, b, c) = baseTris[t];
+            baseCenters[t] = Vector3.Normalize((baseV[a] + baseV[b] + baseV[c]) / 3f);
+        }
+
+        _patchId = new int[V];
+        _patchCells = new List<int>[PatchCount];
+        for (int p = 0; p < PatchCount; p++) _patchCells[p] = new List<int>();
+
+        for (int v = 0; v < V; v++)
+        {
+            float bestDot = -2f;
+            int bestPatch = 0;
+            for (int p = 0; p < PatchCount; p++)
+            {
+                float d = Vector3.Dot(_centers[v], baseCenters[p]);
+                if (d > bestDot) { bestDot = d; bestPatch = p; }
+            }
+            _patchId[v] = bestPatch;
+            _patchCells[bestPatch].Add(v);
+        }
     }
 
     // ── Cell access ─────────────────────────────────────────────────
@@ -103,9 +135,46 @@ public sealed class PlanetMesh
         _levels[cell] = (byte)next;
     }
 
+    public int GetPatchId(int cell) => _patchId[cell];
+
+    /// <summary>
+    /// Returns the set of patch IDs that need rebuilding after editing the given cell.
+    /// Includes the cell's own patch + any neighbor patches (for cliff side geometry).
+    /// </summary>
+    public HashSet<int> GetAffectedPatches(int cell)
+    {
+        var patches = new HashSet<int> { _patchId[cell] };
+        foreach (int nbr in _neighbors[cell])
+            patches.Add(_patchId[nbr]);
+        return patches;
+    }
+
     // ── Picking ─────────────────────────────────────────────────────
 
     public Vector3 GetCellCenter(int cell) => _centers[cell];
+
+    /// <summary>
+    /// Build a line-list mesh (pos3f per vertex) outlining the hex/pentagon
+    /// boundary of the given cell, slightly above the cell's top surface.
+    /// Returns N line segments = 2N vertices for an N-sided polygon.
+    /// </summary>
+    public float[] BuildCellOutline(int cell)
+    {
+        byte level = _levels[cell];
+        float h = Radius + level * StepHeight + 0.003f; // slightly above to avoid z-fighting
+        var poly = _polyVerts[cell];
+        int n = poly.Length;
+        var data = new float[n * 2 * 3];
+        for (int i = 0; i < n; i++)
+        {
+            int j = (i + 1) % n;
+            var a = poly[i] * h;
+            var b = poly[j] * h;
+            data[i * 6 + 0] = a.X; data[i * 6 + 1] = a.Y; data[i * 6 + 2] = a.Z;
+            data[i * 6 + 3] = b.X; data[i * 6 + 4] = b.Y; data[i * 6 + 5] = b.Z;
+        }
+        return data;
+    }
 
     public int? DirectionToCell(Vector3 dir)
     {
@@ -123,8 +192,9 @@ public sealed class PlanetMesh
 
     // ── Noise terrain generation ────────────────────────────────────
 
-    public void GenerateFromNoise(int seed = 42, float frequency = 2.5f)
+    public void GenerateFromNoise(int seed = 42, float frequency = 2.5f, float[]? thresholds = null)
     {
+        var th = thresholds ?? new[] { 0.30f, 0.45f, 0.65f, 0.82f };
         for (int i = 0; i < CellCount; i++)
         {
             Vector3 p = _centers[i];
@@ -132,10 +202,10 @@ public sealed class PlanetMesh
                 p.X * frequency, p.Y * frequency, p.Z * frequency,
                 4, 0.5f, seed);
             float t = (n + 1f) * 0.5f;
-            _levels[i] = t < 0.30f ? (byte)0 :
-                         t < 0.45f ? (byte)1 :
-                         t < 0.65f ? (byte)2 :
-                         t < 0.82f ? (byte)3 : (byte)4;
+            byte lvl = 4;
+            for (int k = 0; k < th.Length && k < 4; k++)
+                if (t < th[k]) { lvl = (byte)k; break; }
+            _levels[i] = lvl;
         }
     }
 
@@ -208,6 +278,75 @@ public sealed class PlanetMesh
         }
 
         return (verts.ToArray(), idx.ToArray());
+    }
+
+    /// <summary>
+    /// Build mesh for a single patch (one of 20 base icosahedron regions).
+    /// Same vertex layout as BuildMesh; includes cliff sides to neighbors
+    /// even if those neighbors are in a different patch.
+    /// </summary>
+    public (float[] vertices, uint[] indices) BuildPatchMesh(int patchId)
+    {
+        var cells = _patchCells[patchId];
+        var verts = new List<float>(cells.Count * 40 * VertexFloats);
+        var idx = new List<uint>(cells.Count * 120);
+
+        foreach (int cell in cells)
+            EmitCellGeometry(verts, idx, cell);
+
+        return (verts.ToArray(), idx.ToArray());
+    }
+
+    private void EmitCellGeometry(List<float> verts, List<uint> idx, int cell)
+    {
+        byte level = _levels[cell];
+        float h = Radius + level * StepHeight;
+        Vector3 cellNormal = _centers[cell];
+        int n = _polyVerts[cell].Length;
+
+        if (level == 0)
+        {
+            float sandH = Radius - StepHeight;
+            EmitCellFan(verts, idx, cell, sandH, cellNormal, 1);
+            EmitCellFan(verts, idx, cell, h, cellNormal, 0);
+        }
+        else
+        {
+            EmitCellFan(verts, idx, cell, h, cellNormal, level);
+        }
+
+        var nbrs = _neighbors[cell];
+        for (int k = 0; k < nbrs.Length; k++)
+        {
+            byte nLevel = _levels[nbrs[k]];
+            if (nLevel >= level) continue;
+
+            float nh = Radius + nLevel * StepHeight;
+            int pA = ((k - 1) + n) % n;
+            int pB = k;
+
+            Vector3 topA = _polyVerts[cell][pA] * h;
+            Vector3 topB = _polyVerts[cell][pB] * h;
+            Vector3 botA = _polyVerts[cell][pA] * nh;
+            Vector3 botB = _polyVerts[cell][pB] * nh;
+
+            Vector3 cliffMid = Vector3.Normalize((topA + topB) * 0.5f);
+            Vector3 cliffNormal = Vector3.Normalize(cliffMid - cellNormal * Vector3.Dot(cliffMid, cellNormal));
+            if (cliffNormal.LengthSquared() < 1e-6f) cliffNormal = cellNormal;
+
+            byte cliffLevel = 3;
+
+            uint b = (uint)(verts.Count / VertexFloats);
+            EmitVert(verts, topA, cliffNormal, cliffLevel);
+            EmitVert(verts, topB, cliffNormal, cliffLevel);
+            EmitVert(verts, botB, cliffNormal, cliffLevel);
+            EmitVert(verts, botA, cliffNormal, cliffLevel);
+
+            idx.Add(b); idx.Add(b + 2); idx.Add(b + 1);
+            idx.Add(b); idx.Add(b + 3); idx.Add(b + 2);
+            idx.Add(b); idx.Add(b + 1); idx.Add(b + 2);
+            idx.Add(b); idx.Add(b + 2); idx.Add(b + 3);
+        }
     }
 
     private void EmitCellFan(List<float> verts, List<uint> idx, int cell, float h, Vector3 normal, byte level)

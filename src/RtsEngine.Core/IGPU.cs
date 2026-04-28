@@ -19,6 +19,9 @@ public interface IGPU
     /// <summary>Same as Render but preserves previous content (loadOp: load). For multi-pass.</summary>
     void RenderAdditional(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount);
 
+    /// <summary>Load color, clear depth. For overlaying 3D content on existing background.</summary>
+    void RenderOverlay(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount);
+
     void DestroyBuffer(int bufferId);
 
     Task<int> CreateTextureFromUrl(string url);
@@ -26,4 +29,13 @@ public interface IGPU
 
     /// <summary>Same as CreateRenderPipeline but with alpha blend + depth write off. For transparent overlays.</summary>
     Task<int> CreateRenderPipelineAlphaBlend(int shaderModuleId, object[] vertexBufferLayouts);
+
+    /// <summary>Screen-space UI: alpha blend, no depth test, no culling.</summary>
+    Task<int> CreateRenderPipelineUI(int shaderModuleId, object[] vertexBufferLayouts);
+
+    /// <summary>Draw without bind group (for shaders with no uniforms/textures).</summary>
+    void RenderNoBind(int pipelineId, int vertexBufferId, int indexBufferId, int indexCount);
+
+    /// <summary>Creates a line-list pipeline. For wireframe overlays (cell outlines, debug lines).</summary>
+    Task<int> CreateRenderPipelineLines(int shaderModuleId, object[] vertexBufferLayouts);
 }

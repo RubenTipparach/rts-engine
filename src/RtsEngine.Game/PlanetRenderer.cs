@@ -5,22 +5,40 @@ namespace RtsEngine.Game;
 
 public sealed class PlanetRenderer : IRenderer, IDisposable
 {
-    // Terrain uniform: mvp(64) + sunDir(16) + camPos(16) + time+pad(16) + highlightDir(16) = 128
-    public const int TerrainUniformSize = 128;
-    private const int TerrainUniFloats = 32;
+    // Terrain uniform: mvp(64) + sunDir(16) + camPos(16) + time+pad(16) = 112
+    public const int TerrainUniformSize = 112;
+    private const int TerrainUniFloats = 28;
 
     // Atmosphere uniform: mat4 mvp (64) + vec4 sunDir (16) + vec4 camPos (16) + vec4 params (16) = 112
     public const int AtmoUniformSize = 112;
     private const int AtmoUniFloats = 28;
 
     private static readonly float[] DefaultSunDir = { 0.5f, 0.7f, 0.5f, 0f };
+    private PlanetConfig _config = new();
+
+    public void ApplyConfig(PlanetConfig config)
+    {
+        _config = config;
+        if (config.Atmosphere.SunDirection.Count >= 3)
+        {
+            _tUni[16] = config.Atmosphere.SunDirection[0];
+            _tUni[17] = config.Atmosphere.SunDirection[1];
+            _tUni[18] = config.Atmosphere.SunDirection[2];
+            _aUni[16] = config.Atmosphere.SunDirection[0];
+            _aUni[17] = config.Atmosphere.SunDirection[1];
+            _aUni[18] = config.Atmosphere.SunDirection[2];
+        }
+    }
 
     private readonly IGPU _gpu;
 
-    // Terrain
-    private int _tPipeline, _tVbo, _tIbo, _tUbo, _tBindGroup;
+    // Terrain (20 patches)
+    private int _tPipeline, _tUbo, _tBindGroup;
     private int _samplerId, _atlasTexId, _dudvTexId, _normalTexId;
-    private int _tIndexCount;
+    private readonly int[] _patchVbo = new int[PlanetMesh.PatchCount];
+    private readonly int[] _patchIbo = new int[PlanetMesh.PatchCount];
+    private readonly int[] _patchIdxCount = new int[PlanetMesh.PatchCount];
+    private readonly HashSet<int> _dirtyPatches = new();
     private readonly float[] _tUni = new float[TerrainUniFloats];
 
     // Atmosphere
@@ -28,6 +46,16 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
     private int _aIndexCount;
     private readonly float[] _aUni = new float[AtmoUniFloats];
     private bool _atmoReady;
+
+    // Outline (hovered cell highlight — line-list mesh)
+    private int _oPipeline, _oUbo, _oBindGroup;
+    private int _oVbo = 0;
+    private int _oIbo = 0; // sequential [0..11] for up to 12 verts
+    private int _oVertCount = 0;
+    private int _highlightedCell = -1;
+    private bool _oReady;
+    private bool _outlineDirty;
+    private readonly float[] _oUni = new float[16];
 
     public PlanetMesh Mesh { get; }
 
@@ -47,27 +75,32 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         _aUni[20] = x; _aUni[21] = y; _aUni[22] = z;
     }
 
-    public void SetHighlight(float dx, float dy, float dz)
+    public void SetHighlightCell(int cell)
     {
-        _tUni[28] = dx; _tUni[29] = dy; _tUni[30] = dz;
-        _tUni[31] = (dx * dx + dy * dy + dz * dz) > 0.001f ? 1.0f : 0.0f;
+        if (cell == _highlightedCell) return;
+        _highlightedCell = cell;
+        _outlineDirty = true;
     }
 
     // ── Setup ───────────────────────────────────────────────────────
 
-    public async Task Setup(string terrainShader, string atlasUrl = "textures/terrain_atlas.png")
+    public async Task Setup(string terrainShader, string? atlasUrl = null)
     {
         var tShader = await _gpu.CreateShaderModule(terrainShader);
         _tUbo = await _gpu.CreateUniformBuffer(TerrainUniformSize);
-        _atlasTexId = await _gpu.CreateTextureFromUrl(atlasUrl);
-        _dudvTexId = await _gpu.CreateTextureFromUrl("textures/water_dudv.png");
-        _normalTexId = await _gpu.CreateTextureFromUrl("textures/water_normal.png");
+        _atlasTexId = await _gpu.CreateTextureFromUrl(atlasUrl ?? _config.Terrain.AtlasUrl);
+        _dudvTexId = await _gpu.CreateTextureFromUrl(_config.Water.DuDvUrl);
+        _normalTexId = await _gpu.CreateTextureFromUrl(_config.Water.NormalUrl);
         _samplerId = await _gpu.CreateSampler("linear", "repeat");
 
-        var (tv, ti) = Mesh.BuildMesh();
-        _tVbo = await _gpu.CreateVertexBuffer(tv);
-        _tIbo = await _gpu.CreateIndexBuffer32(ti);
-        _tIndexCount = ti.Length;
+        // Build per-patch VBO/IBO (20 patches)
+        for (int p = 0; p < PlanetMesh.PatchCount; p++)
+        {
+            var (pv, pi) = Mesh.BuildPatchMesh(p);
+            _patchVbo[p] = await _gpu.CreateVertexBuffer(pv);
+            _patchIbo[p] = await _gpu.CreateIndexBuffer32(pi);
+            _patchIdxCount[p] = pi.Length;
+        }
 
         _tPipeline = await _gpu.CreateRenderPipeline(tShader, new object[]
         {
@@ -97,12 +130,11 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         var aShader = await _gpu.CreateShaderModule(atmosphereShader);
         _aUbo = await _gpu.CreateUniformBuffer(AtmoUniformSize);
 
-        // Atmosphere params: planetRadius, atmosphereRadius, sunIntensity
-        float pR = Mesh.Radius * 0.92f; // inner radius below ground so glow starts at surface
-        float aR = Mesh.Radius * 1.25f;
-        _aUni[24] = pR;   // params.x
-        _aUni[25] = aR;   // params.y
-        _aUni[26] = 15.0f; // params.z (sunIntensity)
+        float pR = Mesh.Radius * _config.Atmosphere.InnerRadiusMul;
+        float aR = Mesh.Radius * _config.Atmosphere.OuterRadiusMul;
+        _aUni[24] = pR;
+        _aUni[25] = aR;
+        _aUni[26] = _config.Atmosphere.SunIntensity;
 
         var (av, ai) = BuildAtmoSphere(aR, 3);
         _aVbo = await _gpu.CreateVertexBuffer(av);
@@ -128,39 +160,134 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         _atmoReady = true;
     }
 
+    public async Task SetupOutline(string outlineShader)
+    {
+        var oShader = await _gpu.CreateShaderModule(outlineShader);
+        _oUbo = await _gpu.CreateUniformBuffer(64);
+
+        _oPipeline = await _gpu.CreateRenderPipelineLines(oShader, new object[]
+        {
+            new {
+                arrayStride = 12,
+                attributes = new object[]
+                {
+                    new { format = "float32x3", offset = 0, shaderLocation = 0 },
+                }
+            }
+        });
+        _oBindGroup = await _gpu.CreateBindGroup(_oPipeline, 0, new object[]
+        {
+            new { binding = 0, bufferId = _oUbo },
+        });
+
+        // Sequential indices [0..11] — covers any cell (max 6 edges × 2 verts)
+        var seq = new ushort[12];
+        for (ushort i = 0; i < 12; i++) seq[i] = i;
+        _oIbo = await _gpu.CreateIndexBuffer(seq);
+
+        _oReady = true;
+    }
+
     // ── Draw ────────────────────────────────────────────────────────
 
-    public void Draw(float[] mvpRawFloats)
+    /// <summary>IRenderer.Draw — full detail, clears framebuffer.</summary>
+    public void Draw(float[] mvpRawFloats) => Draw(mvpRawFloats, 3f, true);
+
+    /// <summary>
+    /// Draw the planet. LOD is controlled by cameraDistance:
+    ///   close (≤5): full detail — all patches + atmosphere + outline
+    ///   medium (5-20): terrain patches + atmosphere, skip outline
+    ///   far (20-50): terrain patches only, skip atmosphere
+    ///   very far (>50): skip entirely (use solar system noise sphere instead)
+    /// </summary>
+    public void Draw(float[] mvpRawFloats, float cameraDistance = 3f, bool clearFirst = true)
     {
-        // Terrain pass (clears)
+        if (cameraDistance > 50f) return; // too far, let solar system handle it
+
         Array.Copy(mvpRawFloats, 0, _tUni, 0, 16);
         _gpu.WriteBuffer(_tUbo, _tUni);
-        _gpu.Render(_tPipeline, _tVbo, _tIbo, _tBindGroup, _tIndexCount);
 
-        // Atmosphere pass (alpha-blended on top)
-        if (_atmoReady)
+        bool first = true;
+        for (int p = 0; p < PlanetMesh.PatchCount; p++)
+        {
+            if (_patchIdxCount[p] == 0) continue;
+            if (first)
+            {
+                if (clearFirst)
+                    _gpu.Render(_tPipeline, _patchVbo[p], _patchIbo[p], _tBindGroup, _patchIdxCount[p]);
+                else
+                    _gpu.RenderOverlay(_tPipeline, _patchVbo[p], _patchIbo[p], _tBindGroup, _patchIdxCount[p]);
+                first = false;
+            }
+            else
+            {
+                _gpu.RenderAdditional(_tPipeline, _patchVbo[p], _patchIbo[p], _tBindGroup, _patchIdxCount[p]);
+            }
+        }
+
+        // Atmosphere — skip when far (saves ~32 ray-sphere intersections/pixel)
+        if (_atmoReady && cameraDistance < 20f)
         {
             Array.Copy(mvpRawFloats, 0, _aUni, 0, 16);
             _gpu.WriteBuffer(_aUbo, _aUni);
             _gpu.RenderAdditional(_aPipeline, _aVbo, _aIbo, _aBindGroup, _aIndexCount);
         }
+
+        // Outline — only when close enough to see individual cells
+        if (_oReady && _oVbo > 0 && _oVertCount > 0 && cameraDistance < 5f)
+        {
+            Array.Copy(mvpRawFloats, 0, _oUni, 0, 16);
+            _gpu.WriteBuffer(_oUbo, _oUni);
+            _gpu.RenderAdditional(_oPipeline, _oVbo, _oIbo, _oBindGroup, _oVertCount);
+        }
     }
 
-    public async Task RebuildMesh()
+    /// <summary>Rebuild the outline VBO if the highlighted cell changed. Call from the tick before Draw.</summary>
+    public async Task SyncOutline()
     {
-        _gpu.DestroyBuffer(_tVbo);
-        _gpu.DestroyBuffer(_tIbo);
+        if (!_outlineDirty) return;
+        _outlineDirty = false;
 
-        var (v, i) = Mesh.BuildMesh();
-        _tVbo = await _gpu.CreateVertexBuffer(v);
-        _tIbo = await _gpu.CreateIndexBuffer32(i);
-        _tIndexCount = i.Length;
+        if (_oVbo > 0) { _gpu.DestroyBuffer(_oVbo); _oVbo = 0; _oVertCount = 0; }
+        if (_highlightedCell < 0) return;
+
+        var data = Mesh.BuildCellOutline(_highlightedCell);
+        _oVbo = await _gpu.CreateVertexBuffer(data);
+        _oVertCount = data.Length / 3;
+    }
+
+    /// <summary>Mark patches dirty for the edited cell (+ its neighbor patches for cliff updates).</summary>
+    public void MarkDirty(int cell)
+    {
+        foreach (int p in Mesh.GetAffectedPatches(cell))
+            _dirtyPatches.Add(p);
+    }
+
+    /// <summary>Rebuild only dirty patches. Call once per frame before Draw.</summary>
+    public async Task RebuildDirtyPatches()
+    {
+        if (_dirtyPatches.Count == 0) return;
+
+        foreach (int p in _dirtyPatches)
+        {
+            _gpu.DestroyBuffer(_patchVbo[p]);
+            _gpu.DestroyBuffer(_patchIbo[p]);
+
+            var (v, i) = Mesh.BuildPatchMesh(p);
+            _patchVbo[p] = await _gpu.CreateVertexBuffer(v);
+            _patchIbo[p] = await _gpu.CreateIndexBuffer32(i);
+            _patchIdxCount[p] = i.Length;
+        }
+        _dirtyPatches.Clear();
     }
 
     public void Dispose()
     {
-        _gpu.DestroyBuffer(_tVbo);
-        _gpu.DestroyBuffer(_tIbo);
+        for (int p = 0; p < PlanetMesh.PatchCount; p++)
+        {
+            _gpu.DestroyBuffer(_patchVbo[p]);
+            _gpu.DestroyBuffer(_patchIbo[p]);
+        }
         _gpu.DestroyBuffer(_tUbo);
     }
 

@@ -1,0 +1,34 @@
+# Engine-wide visual and gameplay config. No hardcoded magic numbers.
+
+camera:
+  transitionDuration: 1.5       # seconds for solar system ↔ planet zoom
+  defaultElevation: 0.4         # radians
+  pixelsToRadians: 0.005        # orbit drag sensitivity
+
+lod:
+  outlineMaxDist: 5.0           # hide cell outline beyond this
+  atmosphereMaxDist: 20.0       # skip atmosphere ray-march beyond this
+  planetMaxDist: 50.0           # skip full planet render beyond this (use solar system sphere)
+  transitionBlendStart: 0.1     # smooth value where textured planet starts rendering
+  transitionBlendEnd: 0.8       # smooth value where planet fades on zoom-out
+
+lighting:
+  sunDirection: [0.5, 0.7, 0.5] # default for planet edit (overridden by solar system pos)
+  ambientIntensity: 0.15
+  diffuseIntensity: 0.85
+
+solarSystemView:
+  defaultDistance: 80.0
+  minDistance: 10.0
+  maxDistance: 200.0
+  sphereSegmentsPlanet: 40
+  sphereSegmentsSun: 48
+  sphereSegmentsMoon: 24
+  orbitRingSegments: 64
+  moonOrbitSegments: 32
+  pickRadiusMultiplier: 3.0     # pick threshold = screenRadius × this
+
+planetEditView:
+  defaultDistance: 3.0
+  minDistance: 2.0
+  maxDistance: 8.0

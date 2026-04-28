@@ -45,6 +45,9 @@ public sealed class WebGPU : IGPU
     public void RenderAdditional(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount)
         => _js.InvokeVoidAsync("GPUProxy.renderAdditional", pipelineId, vertexBufferId, indexBufferId, bindGroupId, indexCount);
 
+    public void RenderOverlay(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount)
+        => _js.InvokeVoidAsync("GPUProxy.renderOverlay", pipelineId, vertexBufferId, indexBufferId, bindGroupId, indexCount);
+
     public void DestroyBuffer(int bufferId)
         => _js.InvokeVoidAsync("GPUProxy.destroyBuffer", bufferId);
 
@@ -56,4 +59,13 @@ public sealed class WebGPU : IGPU
 
     public async Task<int> CreateRenderPipelineAlphaBlend(int shaderModuleId, object[] vertexBufferLayouts)
         => await _js.InvokeAsync<int>("GPUProxy.createRenderPipelineAlphaBlend", shaderModuleId, vertexBufferLayouts);
+
+    public async Task<int> CreateRenderPipelineUI(int shaderModuleId, object[] vertexBufferLayouts)
+        => await _js.InvokeAsync<int>("GPUProxy.createRenderPipelineUI", shaderModuleId, vertexBufferLayouts);
+
+    public async Task<int> CreateRenderPipelineLines(int shaderModuleId, object[] vertexBufferLayouts)
+        => await _js.InvokeAsync<int>("GPUProxy.createRenderPipelineLines", shaderModuleId, vertexBufferLayouts);
+
+    public void RenderNoBind(int pipelineId, int vertexBufferId, int indexBufferId, int indexCount)
+        => _js.InvokeVoidAsync("GPUProxy.renderNoBind", pipelineId, vertexBufferId, indexBufferId, indexCount);
 }
