@@ -128,7 +128,10 @@
                 usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
                 mappedAtCreation: true,
             });
-            new Uint16Array(buf.getMappedRange(0, u16.byteLength)).set(u16);
+            // getMappedRange's offset+size must be multiples of 4 — use the
+            // padded size, then write only the source indices (the trailing
+            // ushort, if any, is uninitialized but never indexed by a draw).
+            new Uint16Array(buf.getMappedRange(0, padded)).set(u16);
             buf.unmap();
             const id = register(buffers, buf);
             indexFormats.set(id, 'uint16');
