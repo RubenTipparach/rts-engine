@@ -25,12 +25,14 @@ struct VSOutput {
 }
 
 // Fullscreen triangle: VBO contains 3 verts at (-1,-1), (3,-1), (-1,3) which
-// cover the whole screen after clipping. We force z = 1 so the geometry sits
-// at the far plane and anything else rendered after writes over it.
+// cover the whole screen after clipping. NDC z is just shy of 1.0 — the
+// pipeline uses depthCompare='less' against a buffer cleared to 1.0, so a
+// strict 1.0 would be rejected and the starfield would never draw. 0.99999
+// passes the test and stays comfortably behind everything else.
 @vertex
 fn vs_main(@location(0) pos: vec3f) -> VSOutput {
     var out: VSOutput;
-    out.position = vec4f(pos.xy, 1.0, 1.0);
+    out.position = vec4f(pos.xy, 0.99999, 1.0);
     out.ndc = pos.xy;
     return out;
 }
