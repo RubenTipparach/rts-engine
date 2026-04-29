@@ -209,7 +209,9 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
     /// </summary>
     public void Draw(float[] mvpRawFloats, float cameraDistance = 3f, bool clearFirst = true)
     {
-        if (cameraDistance > 50f) return; // too far, let solar system handle it
+        // No LOD cutoff: the planet view now lets the camera zoom out to see
+        // the whole solar system, so the detailed mesh has to keep drawing
+        // (just smaller and without atmosphere/outline at far distances).
 
         Array.Copy(mvpRawFloats, 0, _tUni, 0, 16);
         _gpu.WriteBuffer(_tUbo, _tUni);

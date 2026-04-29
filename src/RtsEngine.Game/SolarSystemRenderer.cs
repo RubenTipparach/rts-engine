@@ -167,8 +167,8 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         _distance = Math.Clamp(_distance, 20f, 200f);
     }
     public float Distance { get => _distance; set => _distance = value; }
-    public float Azimuth => _azimuth;
-    public float Elevation => _elevation;
+    public float Azimuth { get => _azimuth; set => _azimuth = value; }
+    public float Elevation { get => _elevation; set => _elevation = Math.Clamp(value, 0.1f, 1.5f); }
     public void SetDragging(bool d) => _dragging = d;
     public bool IsDragging => _dragging;
 

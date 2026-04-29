@@ -26,6 +26,7 @@ public class GameEngine
     private EditorMode _transitionTarget;
     private Vector3 _transitionPlanetPos;
     private float _transitionDisplayRadius = 1f;
+    private float _zoomOutStartDist = 3f;       // captured _distance when zoom-out begins
     private bool _planetReady;
 
     private bool _running;
@@ -50,13 +51,24 @@ public class GameEngine
     {
         if (_solarSystem == null) { Mode = EditorMode.SolarSystem; return; }
 
-        // Start zoom-out transition from current planet position
+        // Snapshot the planet's current orbital position so the static mesh
+        // starts the zoom-out aligned with the live dynamic mesh. The transition
+        // tick keeps it updated each frame.
+        _solarSystem.SetTime(Elapsed());
+        _transitionPlanetPos = _solarSystem.GetBodyWorldPosition(SelectedPlanetConfig);
+
+        // Capture where the planet view's camera is right now so the zoom-out
+        // animation starts from the user's current distance, not a forced 3.0.
+        _zoomOutStartDist = _distance;
+
         _transitioning = true;
         _transitionStart = Elapsed();
         _transitionTarget = EditorMode.SolarSystem;
         _planetReady = false;
-        SelectedPlanetConfig = null;
-        Mode = EditorMode.SolarSystem; // switch mode immediately so solar system renders
+        // Keep SelectedPlanetConfig set during the transition so we can keep
+        // hiding the dynamic mesh and tracking its orbital position. Cleared
+        // when the transition finishes.
+        Mode = EditorMode.PlanetEdit; // stays in edit mode visually until transition completes
     }
 
     public GameEngine(IRenderBackend app, IGPU gpu, PlanetRenderer planet,
@@ -101,8 +113,11 @@ public class GameEngine
             if (_transitioning) return;
             if (Mode == EditorMode.PlanetEdit)
             {
-                _distance -= delta * 0.002f;
-                _distance = Math.Clamp(_distance, 2.0f, 8.0f);
+                // Multiplicative scale so far-out scrolls don't crawl. Range
+                // goes wide enough to see the sun and other planets behind the
+                // detailed mesh.
+                _distance -= delta * _distance * 0.001f;
+                _distance = Math.Clamp(_distance, 2.0f, 200f);
             }
             else if (Mode == EditorMode.StarMap)
                 _starMap?.Zoom(delta);
@@ -221,6 +236,26 @@ public class GameEngine
             float t = Math.Clamp((elapsed - _transitionStart) / TransitionDuration, 0f, 1f);
             float smooth = t * t * (3f - 2f * t);
 
+            // Track the focused planet's *live* orbital position so the static
+            // mesh stays glued to where the dynamic mesh actually is. Without
+            // this the static and dynamic copies drift apart during the ~1.5s
+            // transition (the body keeps orbiting) and the planet visibly pops.
+            _solarSystem.SetTime(elapsed);
+            _transitionPlanetPos = _solarSystem.GetBodyWorldPosition(SelectedPlanetConfig);
+
+            // Hide the focused body's dynamic mesh while the static one is
+            // standing in for it — otherwise both would overlap at the same
+            // world position once we sync them.
+            _solarSystem.HidePlanet(SelectedPlanetConfig);
+
+            // Lighting matches the planet's current orbital position so the
+            // detailed mesh is correctly lit from the moment it appears, not
+            // only after the transition completes.
+            var sunDir = _transitionPlanetPos.LengthSquared() > 1e-6f
+                ? -Vector3.Normalize(_transitionPlanetPos)
+                : new Vector3(0.5f, 0.7f, 0.5f);
+            _planet.SetSunDirection(sunDir.X, sunDir.Y, sunDir.Z);
+
             if (_transitionTarget == EditorMode.PlanetEdit)
             {
                 // Solar system camera zooms toward planet
@@ -236,7 +271,7 @@ public class GameEngine
                 // Derive planet MVP from solar system MVP + translation so FOV/near/far match.
                 if (_planetReady && smooth > 0.1f)
                 {
-                    // planetMVP = translate(-planetPos) * solarSystemMVP
+                    // planetMVP = translate(planetPos) * solarSystemMVP
                     // This transforms planet-at-origin to the same clip position as
                     // the solar system transforms planetPos. Exact alignment, no FOV mismatch.
                     var pp = _transitionPlanetPos;
@@ -264,56 +299,52 @@ public class GameEngine
                 {
                     _transitioning = false;
                     Mode = EditorMode.PlanetEdit;
-                    // Camera at end of transition: ssCamPos - planetPos with focus=planetPos
-                    // = planetPos + camDir*3 - planetPos = camDir*3
                     _distance = 3f;
                     _azimuth = _solarSystem.Azimuth;
                     _elevation = _solarSystem.Elevation;
                     _hoveredCell = -1;
                     _solarSystem.Distance = 80f;
                     _solarSystem.SetFocusTarget(Vector3.Zero);
+                    _solarSystem.HidePlanet(null);
                 }
             }
-            else // Zoom OUT
+            else // Zoom OUT — focused planet stays at origin, world moves around it
             {
-                // Reverse: camera pulls away from planet back to solar system
-                float ssDist = 3f * (1f - smooth) + 80f * smooth;
-                _solarSystem.Distance = ssDist;
-                _solarSystem.SetFocusTarget(_transitionPlanetPos * (1f - smooth));
+                // The detailed mesh stays at origin (in camera space). Camera
+                // pulls back; the rest of the solar system (sun + other planets)
+                // is rendered shifted by -planetPos so it visibly orbits past
+                // while we zoom away. This matches planet-edit mode rendering,
+                // which is also "planet at origin, backdrop shifted".
+                float zoomDist = _zoomOutStartDist * (1f - smooth) + 80f * smooth;
+                var camPos = new Vector3(
+                    zoomDist * MathF.Cos(_elevation) * MathF.Cos(_azimuth),
+                    zoomDist * MathF.Sin(_elevation),
+                    zoomDist * MathF.Cos(_elevation) * MathF.Sin(_azimuth));
+                var planetMvp = BuildPlanetMvpAt(camPos, _app.AspectRatio);
 
-                // Early in zoom-out, render planet on top of solar system
-                {
-                    var ssMvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
-                    _solarSystem.Draw(ssMvp);
+                // Detailed mesh at origin.
+                _planet.SetCameraPosition(camPos.X, camPos.Y, camPos.Z);
+                _planet.SetTime(elapsed);
+                _planet.Draw(planetMvp, zoomDist, clearFirst: true);
 
-                    // Render planet aligned with noise sphere using same derivation
-                    var ssMvpOut = _solarSystem.BuildMvpFloats(_app.AspectRatio);
-                    var pp2 = _transitionPlanetPos;
-                    var trans2 = Matrix4X4.CreateTranslation(
-                        new Vector3D<float>(pp2.X, pp2.Y, pp2.Z));
-                    var planetMvpMat2 = Matrix4X4.Multiply(trans2, RawToSilkMat(ssMvpOut));
-                    var planetMvpOut = MatrixHelper.ToRawFloats(planetMvpMat2);
-
-                    var camDir2 = new Vector3(
-                        MathF.Cos(_solarSystem.Elevation) * MathF.Cos(_solarSystem.Azimuth),
-                        MathF.Sin(_solarSystem.Elevation),
-                        MathF.Cos(_solarSystem.Elevation) * MathF.Sin(_solarSystem.Azimuth));
-                    var ssCamPos2 = _transitionPlanetPos * (1f - smooth) + camDir2 * ssDist;
-                    float planetDist2 = (ssCamPos2 - _transitionPlanetPos).Length();
-
-                    if (planetDist2 < 50f)
-                    {
-                        _planet.SetCameraPosition(ssCamPos2.X - pp2.X, ssCamPos2.Y - pp2.Y, ssCamPos2.Z - pp2.Z);
-                        _planet.SetTime(elapsed);
-                        _planet.Draw(planetMvpOut, planetDist2, clearFirst: false);
-                    }
-                }
+                // Backdrop: sun + other bodies, world translated by -planetPos.
+                _solarSystem.DrawBackdrop(planetMvp, SelectedPlanetConfig, _transitionPlanetPos);
 
                 if (t >= 1f)
                 {
                     _transitioning = false;
+                    Mode = EditorMode.SolarSystem;
+                    // The shifted-frame camera (origin = planet, distance = 80
+                    // along _azimuth/_elevation) is the same world position as
+                    // a solar-system camera at distance 80 focused on planetPos
+                    // along the same angles. Carry those angles over so the
+                    // viewing direction doesn't snap.
                     _solarSystem.Distance = 80f;
-                    _solarSystem.SetFocusTarget(Vector3.Zero);
+                    _solarSystem.Azimuth = _azimuth;
+                    _solarSystem.Elevation = _elevation;
+                    _solarSystem.SetFocusTarget(_transitionPlanetPos);
+                    _solarSystem.HidePlanet(null);
+                    SelectedPlanetConfig = null;
                 }
             }
 
