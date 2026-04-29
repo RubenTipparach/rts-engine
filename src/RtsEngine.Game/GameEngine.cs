@@ -27,6 +27,8 @@ public class GameEngine
     private const float AutoZoomOutThreshold = 100f;
     private const float RingFadeNear = 20f;   // start fading rings in here
     private const float RingFadeFar = 90f;    // fully visible by here (just below auto-trigger)
+    private const float PlanetViewFovYDegrees = 45f;
+    private static readonly float PlanetViewFocalY = 1f / MathF.Tan(PlanetViewFovYDegrees * MathF.PI / 360f);
 
     private static float Smoothstep(float lo, float hi, float x)
     {
@@ -43,6 +45,12 @@ public class GameEngine
     private float _transitionDisplayRadius = 1f;
     private float _zoomOutStartDist = 3f;       // captured _distance when zoom-out begins
     private bool _planetReady;
+    /// <summary>
+    /// If the player taps another planet from the planet edit backdrop, we
+    /// queue it here, kick off a zoom-out, and chain a zoom-in to the new
+    /// planet once the zoom-out completes.
+    /// </summary>
+    private string? _pendingPlanetSwitch;
 
     private bool _running;
     public EditorMode Mode { get; set; } = EditorMode.SolarSystem;
@@ -202,6 +210,28 @@ public class GameEngine
         // UI buttons consume clicks first
         if (Mode == EditorMode.PlanetEdit)
         {
+            // Once orbit rings are visible, the backdrop bodies (sun + other
+            // planets) are pickable too — tapping one chains a zoom-out then
+            // zoom-in into that body's edit view.
+            if (button == 0 && _solarSystem != null)
+            {
+                float ringAlpha = Smoothstep(RingFadeNear, RingFadeFar, _distance);
+                if (ringAlpha > 0.1f)
+                {
+                    var selfPos = _solarSystem.GetBodyWorldPosition(SelectedPlanetConfig);
+                    var planetMvp = BuildPlanetMvp(_app.AspectRatio);
+                    var (config, _) = _solarSystem.PickBackdrop(
+                        cx, cy, _app.CanvasWidth, _app.CanvasHeight,
+                        planetMvp, selfPos, SelectedPlanetConfig, PlanetViewFocalY);
+                    if (config != null && config != SelectedPlanetConfig)
+                    {
+                        _pendingPlanetSwitch = config;
+                        SwitchToSolarSystem();
+                        return;
+                    }
+                }
+            }
+
             // Cells only respond to taps when the player has turned editing on.
             if (!_editMode) return;
             var cell = PickCell(cx, cy);
@@ -315,7 +345,11 @@ public class GameEngine
                 _solarSystem.Distance = ssDist;
                 _solarSystem.SetFocusTarget(_transitionPlanetPos * smooth);
 
-                // Render solar system as background (fades as we zoom in)
+                // Starfield first (clears framebuffer), then solar system
+                // background which is already additive.
+                var (sFwd, sRight, sUp) = _solarSystem.GetCameraBasis();
+                _solarSystem.DrawStarfield(sFwd, sRight, sUp, _solarSystem.FovYDegreesPublic, _app.AspectRatio);
+
                 var ssMvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
                 _solarSystem.Draw(ssMvp);
 
@@ -374,10 +408,17 @@ public class GameEngine
                     zoomDist * MathF.Cos(_elevation) * MathF.Sin(_azimuth));
                 var planetMvp = BuildPlanetMvpAt(camPos, _app.AspectRatio);
 
+                // Starfield first (clears framebuffer); detailed mesh and
+                // backdrop are then additive on top.
+                var fwdOut = -Vector3.Normalize(camPos);
+                var rightOut = Vector3.Normalize(Vector3.Cross(fwdOut, new Vector3(0, 1, 0)));
+                var upOut = Vector3.Cross(rightOut, fwdOut);
+                _solarSystem.DrawStarfield(fwdOut, rightOut, upOut, PlanetViewFovYDegrees, _app.AspectRatio);
+
                 // Detailed mesh at origin.
                 _planet.SetCameraPosition(camPos.X, camPos.Y, camPos.Z);
                 _planet.SetTime(elapsed);
-                _planet.Draw(planetMvp, zoomDist, clearFirst: true);
+                _planet.Draw(planetMvp, zoomDist, clearFirst: false);
 
                 // Backdrop: sun + other bodies, world translated by -planetPos.
                 // Same fade curve as planet-edit normal tick so the ring alpha
@@ -402,6 +443,19 @@ public class GameEngine
                     _solarSystem.SetFocusTarget(_transitionPlanetPos);
                     _solarSystem.HidePlanet(null);
                     SelectedPlanetConfig = null;
+
+                    // If the player picked another planet from the backdrop,
+                    // immediately chain a zoom-in to it.
+                    if (_pendingPlanetSwitch != null)
+                    {
+                        SelectedPlanetConfig = _pendingPlanetSwitch;
+                        _pendingPlanetSwitch = null;
+                        _transitionPlanetPos = _solarSystem.GetBodyWorldPosition(SelectedPlanetConfig);
+                        _planetReady = false;
+                        _transitioning = true;
+                        _transitionStart = Elapsed();
+                        _transitionTarget = EditorMode.PlanetEdit;
+                    }
                 }
             }
 
@@ -452,7 +506,18 @@ public class GameEngine
             }
 
             var planetMvp = BuildPlanetMvp(_app.AspectRatio);
-            _planet.Draw(planetMvp, _distance);
+
+            // Starfield first — clears the framebuffer and lays down the
+            // procedural sky behind the focused planet.
+            if (_solarSystem != null)
+            {
+                var fwd = -Vector3.Normalize(cam);
+                var right = Vector3.Normalize(Vector3.Cross(fwd, new Vector3(0, 1, 0)));
+                var up = Vector3.Cross(right, fwd);
+                _solarSystem.DrawStarfield(fwd, right, up, PlanetViewFovYDegrees, _app.AspectRatio);
+            }
+
+            _planet.Draw(planetMvp, _distance, clearFirst: false);
 
             // Orbit rings start invisible up close, fade in as we zoom out so
             // the player can see the orbital structure before the auto-trigger
@@ -473,6 +538,11 @@ public class GameEngine
             _app.ShowUIButton("edit_toggle", false);
             _solarSystem.SetTime(elapsed);
             var mvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
+
+            // Starfield first (clears), then the rest of the system stacks on top.
+            var (fwd, right, up) = _solarSystem.GetCameraBasis();
+            _solarSystem.DrawStarfield(fwd, right, up, _solarSystem.FovYDegreesPublic, _app.AspectRatio);
+
             _solarSystem.Draw(mvp);
         }
         else if (Mode == EditorMode.StarMap && _starMap != null)

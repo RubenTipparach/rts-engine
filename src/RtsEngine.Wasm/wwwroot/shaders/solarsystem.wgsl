@@ -4,9 +4,21 @@
 struct Uniforms {
     mvp: mat4x4f,
     sunDir: vec4f,  // direction *toward* the sun, in world space; updated per body per frame
-    viewDir: vec4f, // direction *toward* the camera, in world space; treated as constant across the body
+    viewDir: vec4f, // xyz: direction *toward* the camera (constant across the body); w: dither factor 0..1
 }
 @binding(0) @group(0) var<uniform> u: Uniforms;
+
+// 4x4 Bayer matrix as a flat 16-element constant. Used for ordered-dither
+// transparency on bodies that cross between camera and the focused planet.
+fn bayer4(p: vec2u) -> f32 {
+    let m = array<f32, 16>(
+         0.0/16.0,  8.0/16.0,  2.0/16.0, 10.0/16.0,
+        12.0/16.0,  4.0/16.0, 14.0/16.0,  6.0/16.0,
+         3.0/16.0, 11.0/16.0,  1.0/16.0,  9.0/16.0,
+        15.0/16.0,  7.0/16.0, 13.0/16.0,  5.0/16.0,
+    );
+    return m[(p.x & 3u) + (p.y & 3u) * 4u];
+}
 
 struct VSOutput {
     @builtin(position) position: vec4f,
@@ -40,10 +52,22 @@ fn vs_main(
 
 @fragment
 fn fs_main(
+    @builtin(position) fragCoord: vec4f,
     @location(0) normal: vec3f,
     @location(1) color: vec3f,
     @location(2) brightness: f32,
 ) -> @location(0) vec4f {
+    // Ordered-dither transparency for backdrop bodies passing in front of the
+    // focused planet — discard pixels whose Bayer threshold is below the
+    // dither factor. dither=0 keeps the body fully opaque.
+    let dither = u.viewDir.w;
+    if (dither > 0.001) {
+        let p = vec2u(u32(fragCoord.x), u32(fragCoord.y));
+        if (dither > bayer4(p)) {
+            discard;
+        }
+    }
+
     let N = normalize(normal);
     let L = normalize(u.sunDir.xyz);
     let V = normalize(u.viewDir.xyz);

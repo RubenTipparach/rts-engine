@@ -25,6 +25,12 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
     private int _sunVbo, _sunIbo;
     private int _sunUbo, _sunBindGroup;
     private int _sunIndexCount;
+
+    // Starfield/nebula procedural background: a fullscreen triangle drawn at
+    // the far plane before everything else, so it shows through anywhere the
+    // scene is empty.
+    private int _starPipeline, _starVbo, _starIbo, _starUbo, _starBindGroup;
+
     private bool _ready;
 
     /// <summary>
@@ -54,7 +60,8 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         _system = system;
     }
 
-    public async Task Setup(string shaderCode, string outlineShaderCode, string sunShaderCode)
+    public async Task Setup(string shaderCode, string outlineShaderCode, string sunShaderCode,
+        string? starfieldShaderCode = null)
     {
         var shader = await _gpu.CreateShaderModule(shaderCode);
         var lineShader = await _gpu.CreateShaderModule(outlineShaderCode);
@@ -112,8 +119,68 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
                 _bodies.Add(await BuildBody(moon, planet));
         }
 
+        // Procedural star + nebula background.
+        if (starfieldShaderCode != null)
+        {
+            var starShader = await _gpu.CreateShaderModule(starfieldShaderCode);
+            _starPipeline = await _gpu.CreateRenderPipeline(starShader, new object[]
+            {
+                new {
+                    arrayStride = 12,
+                    attributes = new object[] { new { format = "float32x3", offset = 0, shaderLocation = 0 } }
+                }
+            });
+            _starUbo = await _gpu.CreateUniformBuffer(64); // camRight + camUp + camForward + params
+            _starBindGroup = await _gpu.CreateBindGroup(_starPipeline, 0, new object[]
+            {
+                new { binding = 0, bufferId = _starUbo },
+            });
+            // Fullscreen triangle: 3 verts cover NDC [-1,1] x [-1,1] after clip.
+            float[] starVerts = { -1f, -1f, 0f,   3f, -1f, 0f,   -1f, 3f, 0f };
+            _starVbo = await _gpu.CreateVertexBuffer(starVerts);
+            _starIbo = await _gpu.CreateIndexBuffer(new ushort[] { 0, 1, 2 });
+        }
+
         _ready = true;
     }
+
+    /// <summary>
+    /// Render the star + nebula background. Caller passes the camera basis
+    /// (already in world space) plus FOV/aspect — same numbers used to build
+    /// the MVP, so the starfield's reconstructed view ray matches the scene.
+    /// Clears the framebuffer; everything else this frame must use additive
+    /// render calls.
+    /// </summary>
+    public void DrawStarfield(Vector3 forward, Vector3 right, Vector3 up,
+        float fovYDegrees, float aspect)
+    {
+        if (!_ready || _starPipeline == 0) return;
+
+        var uni = new float[16];
+        uni[0] = right.X; uni[1] = right.Y; uni[2] = right.Z;
+        uni[4] = up.X; uni[5] = up.Y; uni[6] = up.Z;
+        uni[8] = forward.X; uni[9] = forward.Y; uni[10] = forward.Z;
+        uni[12] = MathF.Tan(fovYDegrees * MathF.PI / 360f); // tan(fov/2)
+        uni[13] = aspect;
+        uni[14] = _time;
+        _gpu.WriteBuffer(_starUbo, uni);
+        _gpu.Render(_starPipeline, _starVbo, _starIbo, _starBindGroup, 3);
+    }
+
+    /// <summary>
+    /// Camera basis (forward, right, up) for the current solar-system view.
+    /// Useful for the starfield shader and other rays-from-camera tricks.
+    /// </summary>
+    public (Vector3 forward, Vector3 right, Vector3 up) GetCameraBasis()
+    {
+        var eye = ComputeCameraWorldPos();
+        var fwd = Vector3.Normalize(_focusTarget - eye);
+        var right = Vector3.Normalize(Vector3.Cross(fwd, new Vector3(0, 1, 0)));
+        var up = Vector3.Cross(right, fwd);
+        return (fwd, right, up);
+    }
+
+    public float FovYDegreesPublic => FovYDegrees;
 
     private async Task<BodyRender> BuildBody(OrbitalBody body, OrbitalBody? parent)
     {
@@ -404,12 +471,14 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         // shaders can compute view-direction and fresnel rim glow per body.
         var cameraWorldPos = ComputeCameraWorldPos();
 
-        // Sun (procedural shader, own pipeline)
+        // Sun is additive: GameEngine renders the starfield first each frame
+        // and clears the framebuffer there. Everything inside Draw stacks on
+        // top of that.
         var sunUni = new float[20]; // mvp(16) + params(4)
         Array.Copy(mvpRawFloats, 0, sunUni, 0, 16);
         sunUni[16] = _time;
         _gpu.WriteBuffer(_sunUbo, sunUni);
-        _gpu.Render(_sunPipeline, _sunVbo, _sunIbo, _sunBindGroup, _sunIndexCount);
+        _gpu.RenderAdditional(_sunPipeline, _sunVbo, _sunIbo, _sunBindGroup, _sunIndexCount);
 
         // Bodies + orbit rings: each body's mesh is at the origin, so we
         // upload a translated MVP per body, per frame. This gives live orbit
@@ -454,7 +523,7 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
     /// to camera distance — and used by the shader's fresnel rim glow.
     /// </summary>
     private void WriteBodyUniform(int ubo, Vector3 translation, Matrix4X4<float> vpMat,
-        Vector3 cameraWorldPos, Vector3? lightFromWorldPos = null)
+        Vector3 cameraWorldPos, Vector3? lightFromWorldPos = null, float dither = 0f)
     {
         var modelMvp = Matrix4X4.Multiply(
             Matrix4X4.CreateTranslation(new Vector3D<float>(translation.X, translation.Y, translation.Z)),
@@ -484,6 +553,7 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         {
             uni[20] = 0f; uni[21] = 0f; uni[22] = 1f;
         }
+        uni[23] = dither;
         _gpu.WriteBuffer(ubo, uni);
     }
 
@@ -533,19 +603,33 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         _gpu.WriteBuffer(_sunUbo, sunUni);
         _gpu.RenderAdditional(_sunPipeline, _sunVbo, _sunIbo, _sunBindGroup, _sunIndexCount);
 
-        // Other bodies. Skip the focused planet (and its moons — they're handled
-        // by the detailed renderer or out of scope while editing).
+        // Distance from the camera to the focused planet (which sits at the
+        // origin in the shifted frame). Used to decide if a backdrop body has
+        // crossed in front of the planet from the camera's POV.
+        float camToPlanet = (cameraWorldPos - selfPos).Length();
+
+        // Other bodies. Skip only the focused planet itself (the detailed mesh
+        // is at the origin standing in for it) — the focused planet's moons
+        // stay visible so the player can see them swing past.
         foreach (var br in _bodies)
         {
             if (br.Body.ConfigFile == selfConfig) continue;
-            if (br.Parent != null && br.Parent.ConfigFile == selfConfig) continue;
 
             var parentPos = br.Parent != null ? br.Parent.GetPosition(_time) : Vector3.Zero;
             var bodyPos = parentPos + br.Body.GetPosition(_time);
+
+            // Dither bodies that cross between camera and the focused planet
+            // so the planet stays readable (e.g. the moon swinging past Earth
+            // shouldn't fully occlude it). Fade in over a 1-unit margin.
+            float camToBody = (cameraWorldPos - bodyPos).Length();
+            float delta = camToPlanet - camToBody; // > 0 when body is closer
+            float dither = Math.Clamp(delta * 0.7f, 0f, 0.85f);
+
             // Position passed to the shader is shifted (planet at origin) but
             // sunDir + viewDir must use the true solar-system world positions so
             // lighting matches what the body would look like in solar system view.
-            WriteBodyUniform(br.Ubo, bodyPos - selfPos, planetMvpMat, cameraWorldPos, lightFromWorldPos: bodyPos);
+            WriteBodyUniform(br.Ubo, bodyPos - selfPos, planetMvpMat, cameraWorldPos,
+                lightFromWorldPos: bodyPos, dither: dither);
             _gpu.RenderAdditional(_pipeline, br.Vbo, br.Ibo, br.BindGroup, br.IndexCount);
         }
 
@@ -584,6 +668,58 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
                     return p.GetPosition(_time) + m.GetPosition(_time);
         }
         return Vector3.Zero;
+    }
+
+    /// <summary>
+    /// Pick a body visible in the planet-edit backdrop. Same logic as
+    /// <see cref="PickPlanet"/> but the body positions are projected through
+    /// the planet view's MVP after subtracting <paramref name="selfPos"/> (the
+    /// focused planet sits at origin in that frame). Bodies that DrawBackdrop
+    /// would skip (the focused planet itself, and its moons) are skipped here
+    /// too so the player can't pick something they can't see.
+    /// </summary>
+    public (string? config, Vector3 worldPos) PickBackdrop(
+        float cx, float cy, float w, float h,
+        float[] planetMvpRawFloats, Vector3 selfPos, string? selfConfig,
+        float focalY)
+    {
+        var mvp = FloatsToMatrix(planetMvpRawFloats);
+        float bestScore = float.MaxValue;
+        string? best = null;
+        Vector3 bestWorld = Vector3.Zero;
+
+        void Check(OrbitalBody body, OrbitalBody? parent)
+        {
+            if (body.ConfigFile == selfConfig) return;
+
+            var parentPos = parent != null ? parent.GetPosition(_time) : Vector3.Zero;
+            var worldPos = parentPos + body.GetPosition(_time);
+            var shifted = worldPos - selfPos; // backdrop frame: focused planet at origin
+
+            var clip = Vector4.Transform(new Vector4(shifted, 1f), mvp);
+            if (clip.W <= 0.01f) return;
+
+            float sx = (clip.X / clip.W * 0.5f + 0.5f) * w;
+            float sy = (0.5f - clip.Y / clip.W * 0.5f) * h;
+            float screenRadius = MathF.Max(body.DisplayRadius * focalY * h * 0.5f / clip.W, 25f);
+
+            float dx = sx - cx, dy = sy - cy;
+            float dist = MathF.Sqrt(dx * dx + dy * dy);
+            float score = dist / screenRadius;
+            if (score < bestScore)
+            {
+                bestScore = score;
+                best = body.ConfigFile;
+                bestWorld = worldPos;
+            }
+        }
+
+        foreach (var p in _system.Planets)
+        {
+            Check(p, null);
+            foreach (var m in p.Moons) Check(m, p);
+        }
+        return bestScore < 3f ? (best, bestWorld) : (null, Vector3.Zero);
     }
 
     private string? _hiddenPlanetConfig;
