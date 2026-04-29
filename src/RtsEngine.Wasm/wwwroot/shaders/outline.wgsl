@@ -1,8 +1,10 @@
-// Simple solid-color line shader for cell outline highlight.
-// Uses only MVP; color is hardcoded (yellow).
+// Solid-color line shader for cell outlines and orbit rings. The `color`
+// uniform's alpha is honoured by the alpha-blended line pipeline so callers
+// can fade rings in/out without rebuilding geometry.
 
 struct Uniforms {
     mvp: mat4x4f,
+    color: vec4f, // rgb + alpha
 }
 
 @binding(0) @group(0) var<uniform> u: Uniforms;
@@ -23,5 +25,5 @@ fn vs_main(@location(0) pos: vec3f) -> @builtin(position) vec4f {
 
 @fragment
 fn fs_main() -> @location(0) vec4f {
-    return vec4f(1.0, 0.9, 0.2, 1.0);
+    return u.color;
 }

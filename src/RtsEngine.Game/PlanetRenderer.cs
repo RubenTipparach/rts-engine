@@ -55,7 +55,12 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
     private int _highlightedCell = -1;
     private bool _oReady;
     private bool _outlineDirty;
-    private readonly float[] _oUni = new float[16];
+    // mvp(16) + rgba color(4). Cell outline is opaque yellow.
+    private readonly float[] _oUni = new float[20]
+    {
+        0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+        1.0f, 0.9f, 0.2f, 1.0f,
+    };
 
     public PlanetMesh Mesh { get; }
 
@@ -170,7 +175,7 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
     public async Task SetupOutline(string outlineShader)
     {
         var oShader = await _gpu.CreateShaderModule(outlineShader);
-        _oUbo = await _gpu.CreateUniformBuffer(64);
+        _oUbo = await _gpu.CreateUniformBuffer(80);
 
         _oPipeline = await _gpu.CreateRenderPipelineLines(oShader, new object[]
         {

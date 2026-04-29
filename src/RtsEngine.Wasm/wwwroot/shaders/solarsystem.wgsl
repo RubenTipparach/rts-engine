@@ -4,6 +4,7 @@
 struct Uniforms {
     mvp: mat4x4f,
     sunDir: vec4f,  // direction *toward* the sun, in world space; updated per body per frame
+    viewDir: vec4f, // direction *toward* the camera, in world space; treated as constant across the body
 }
 @binding(0) @group(0) var<uniform> u: Uniforms;
 
@@ -45,9 +46,18 @@ fn fs_main(
 ) -> @location(0) vec4f {
     let N = normalize(normal);
     let L = normalize(u.sunDir.xyz);
+    let V = normalize(u.viewDir.xyz);
     let NdotL = max(dot(N, L), 0.0);
     // Match terrain.wgsl's Lambert coefficients so a planet at orbital position
     // P shades the same in solar system view as it does in planet detail view.
-    let lit = color * brightness * (0.25 + NdotL * 0.9);
+    var lit = color * brightness * (0.25 + NdotL * 0.9);
+
+    // Fresnel rim glow on the lit side. Cheap stand-in for the ray-marched
+    // atmospheric scatter on the detailed planet — gives every solar-system
+    // body a soft blue limb that fades out across the night side.
+    let rim = pow(1.0 - max(dot(N, V), 0.0), 3.5);
+    let dayFactor = smoothstep(-0.1, 0.3, NdotL);
+    lit = lit + vec3f(0.35, 0.55, 0.95) * rim * 0.35 * dayFactor;
+
     return vec4f(lit, 1.0);
 }

@@ -12,7 +12,8 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
 {
     public const int VertexFloats = 10; // pos3 + normal3 + color3 + brightness1
     public const int VertexStride = 40;
-    public const int UniformSize = 80; // mvp(64) + sunDir(16)
+    public const int BodyUniformSize = 96;  // mvp(64) + sunDir(16) + viewDir(16)
+    public const int RingUniformSize = 80;  // mvp(64) + color(16, w=alpha)
 
     private const float FovYDegrees = 50f;
     private static readonly float FocalY = 1f / MathF.Tan(FovYDegrees * MathF.PI / 360f);
@@ -130,7 +131,7 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
 
         int vbo = await _gpu.CreateVertexBuffer(bv.ToArray());
         int ibo = await _gpu.CreateIndexBuffer32(bi.ToArray());
-        int ubo = await _gpu.CreateUniformBuffer(UniformSize);
+        int ubo = await _gpu.CreateUniformBuffer(BodyUniformSize);
         int bg = await _gpu.CreateBindGroup(_pipeline, 0, new object[]
         {
             new { binding = 0, bufferId = ubo },
@@ -138,7 +139,7 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
 
         int rvbo = await _gpu.CreateVertexBuffer(rv.ToArray());
         int ribo = await _gpu.CreateIndexBuffer(ringIdx);
-        int rubo = await _gpu.CreateUniformBuffer(UniformSize);
+        int rubo = await _gpu.CreateUniformBuffer(RingUniformSize);
         int rbg = await _gpu.CreateBindGroup(_linePipeline, 0, new object[]
         {
             new { binding = 0, bufferId = rubo },
@@ -399,6 +400,10 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
     {
         if (!_ready) return;
 
+        // Camera in solar-system world coords — derived from view params so
+        // shaders can compute view-direction and fresnel rim glow per body.
+        var cameraWorldPos = ComputeCameraWorldPos();
+
         // Sun (procedural shader, own pipeline)
         var sunUni = new float[20]; // mvp(16) + params(4)
         Array.Copy(mvpRawFloats, 0, sunUni, 0, 16);
@@ -418,36 +423,44 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
             var parentPos = br.Parent != null ? br.Parent.GetPosition(_time) : Vector3.Zero;
             var bodyPos = parentPos + br.Body.GetPosition(_time);
 
-            WriteBodyUniform(br.Ubo, bodyPos, mvpMat);
+            WriteBodyUniform(br.Ubo, bodyPos, mvpMat, cameraWorldPos);
             _gpu.RenderAdditional(_pipeline, br.Vbo, br.Ibo, br.BindGroup, br.IndexCount);
 
             // Orbit ring is centered on the body's parent (origin for top-level planets).
-            var ringMvp = parentPos == Vector3.Zero
-                ? mvpRawFloats
-                : MatrixHelper.ToRawFloats(Matrix4X4.Multiply(
-                    Matrix4X4.CreateTranslation(new Vector3D<float>(parentPos.X, parentPos.Y, parentPos.Z)),
-                    mvpMat));
-            _gpu.WriteBuffer(br.RingUbo, ringMvp);
+            WriteRingUniform(br.RingUbo, parentPos, mvpMat, alpha: 1.0f);
             _gpu.RenderAdditional(_linePipeline, br.RingVbo, br.RingIbo, br.RingBindGroup, br.RingVertCount);
         }
     }
 
+    private Vector3 ComputeCameraWorldPos()
+    {
+        return _focusTarget + new Vector3(
+            _distance * MathF.Cos(_elevation) * MathF.Cos(_azimuth),
+            _distance * MathF.Sin(_elevation),
+            _distance * MathF.Cos(_elevation) * MathF.Sin(_azimuth));
+    }
+
     /// <summary>
-    /// Pack the body's MVP (translate(translation) * vp) + sunDir into its UBO.
-    /// <paramref name="translation"/> places the body's mesh in clip space,
-    /// while <paramref name="lightFromWorldPos"/> (defaults to translation) is
-    /// the body's true world position used to compute sunDir = -P.normalized.
-    /// In planet-edit mode the two differ because the world is shifted so the
-    /// focused planet sits at the origin, but lighting must still use the
-    /// unshifted positions.
+    /// Pack the body's MVP (translate(translation) * vp) + sunDir + viewDir
+    /// into its UBO. <paramref name="translation"/> places the body's mesh in
+    /// clip space, while <paramref name="lightFromWorldPos"/> (defaults to
+    /// translation) is the body's true world position used to compute
+    /// sunDir = -P.normalized. In planet-edit mode the two differ because the
+    /// world is shifted so the focused planet sits at the origin, but lighting
+    /// must still use the unshifted positions.
+    ///
+    /// viewDir = (cameraWorldPos - bodyWorldPos).normalized is treated as
+    /// constant across the body's surface — fine since bodies are tiny relative
+    /// to camera distance — and used by the shader's fresnel rim glow.
     /// </summary>
-    private void WriteBodyUniform(int ubo, Vector3 translation, Matrix4X4<float> vpMat, Vector3? lightFromWorldPos = null)
+    private void WriteBodyUniform(int ubo, Vector3 translation, Matrix4X4<float> vpMat,
+        Vector3 cameraWorldPos, Vector3? lightFromWorldPos = null)
     {
         var modelMvp = Matrix4X4.Multiply(
             Matrix4X4.CreateTranslation(new Vector3D<float>(translation.X, translation.Y, translation.Z)),
             vpMat);
         var raw = MatrixHelper.ToRawFloats(modelMvp);
-        var uni = new float[20];
+        var uni = new float[24];
         Array.Copy(raw, 0, uni, 0, 16);
 
         var lightPos = lightFromWorldPos ?? translation;
@@ -460,6 +473,33 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         {
             uni[16] = 0f; uni[17] = 1f; uni[18] = 0f; // fallback when at origin
         }
+
+        var toCam = cameraWorldPos - lightPos;
+        if (toCam.LengthSquared() > 1e-6f)
+        {
+            var viewDir = Vector3.Normalize(toCam);
+            uni[20] = viewDir.X; uni[21] = viewDir.Y; uni[22] = viewDir.Z;
+        }
+        else
+        {
+            uni[20] = 0f; uni[21] = 0f; uni[22] = 1f;
+        }
+        _gpu.WriteBuffer(ubo, uni);
+    }
+
+    /// <summary>Pack a ring's MVP + color (rgba) into its UBO.</summary>
+    private void WriteRingUniform(int ubo, Vector3 ringCenter, Matrix4X4<float> vpMat, float alpha)
+    {
+        var modelMvp = ringCenter == Vector3.Zero
+            ? vpMat
+            : Matrix4X4.Multiply(
+                Matrix4X4.CreateTranslation(new Vector3D<float>(ringCenter.X, ringCenter.Y, ringCenter.Z)),
+                vpMat);
+        var raw = MatrixHelper.ToRawFloats(modelMvp);
+        var uni = new float[20];
+        Array.Copy(raw, 0, uni, 0, 16);
+        // Yellow orbit-ring color, alpha controls fade.
+        uni[16] = 1.0f; uni[17] = 0.9f; uni[18] = 0.2f; uni[19] = alpha;
         _gpu.WriteBuffer(ubo, uni);
     }
 
@@ -472,8 +512,12 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
     /// the world translated so that <paramref name="selfPos"/> sits at the origin.
     /// Used by the planet edit view to render the rest of the solar system as a
     /// backdrop around the focused planet (which is rendered at the origin).
+    /// <paramref name="cameraWorldPos"/> is in solar-system coords; the renderer
+    /// uses it (un-shifted) for fresnel rim glow on each body. <paramref name="ringAlpha"/>
+    /// fades the orbit rings in as the camera zooms out — 0 hides them entirely.
     /// </summary>
-    public void DrawBackdrop(float[] planetMvpRawFloats, string? selfConfig, Vector3 selfPos)
+    public void DrawBackdrop(float[] planetMvpRawFloats, string? selfConfig, Vector3 selfPos,
+        Vector3 cameraWorldPos, float ringAlpha = 0f)
     {
         if (!_ready) return;
 
@@ -499,10 +543,32 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
             var parentPos = br.Parent != null ? br.Parent.GetPosition(_time) : Vector3.Zero;
             var bodyPos = parentPos + br.Body.GetPosition(_time);
             // Position passed to the shader is shifted (planet at origin) but
-            // sunDir must use the true solar-system world position so Lambert
-            // matches what the body would look like in solar system view.
-            WriteBodyUniform(br.Ubo, bodyPos - selfPos, planetMvpMat, lightFromWorldPos: bodyPos);
+            // sunDir + viewDir must use the true solar-system world positions so
+            // lighting matches what the body would look like in solar system view.
+            WriteBodyUniform(br.Ubo, bodyPos - selfPos, planetMvpMat, cameraWorldPos, lightFromWorldPos: bodyPos);
             _gpu.RenderAdditional(_pipeline, br.Vbo, br.Ibo, br.BindGroup, br.IndexCount);
+        }
+
+        if (ringAlpha > 0.001f)
+        {
+            // Orbit rings (top-level planets only — keeps the planet view tidy
+            // while still revealing orbital structure as the player zooms out).
+            foreach (var br in _bodies)
+            {
+                if (br.Parent != null) continue;
+                if (br.Body.ConfigFile == selfConfig) continue;
+                WriteRingUniform(br.RingUbo, -selfPos, planetMvpMat, ringAlpha);
+                _gpu.RenderAdditional(_linePipeline, br.RingVbo, br.RingIbo, br.RingBindGroup, br.RingVertCount);
+            }
+            // Show the focused planet's own ring too, so the player sees its
+            // orbit traced through itself.
+            foreach (var br in _bodies)
+            {
+                if (br.Parent != null) continue;
+                if (br.Body.ConfigFile != selfConfig) continue;
+                WriteRingUniform(br.RingUbo, -selfPos, planetMvpMat, ringAlpha);
+                _gpu.RenderAdditional(_linePipeline, br.RingVbo, br.RingIbo, br.RingBindGroup, br.RingVertCount);
+            }
         }
     }
 

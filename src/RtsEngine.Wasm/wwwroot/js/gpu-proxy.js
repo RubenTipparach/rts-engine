@@ -305,7 +305,16 @@
                 fragment: {
                     module: shaderModules[shaderModuleId],
                     entryPoint: 'fs_main',
-                    targets: [{ format: canvasFormat }],
+                    // Alpha-blended so callers can fade lines in/out via the
+                    // shader's color uniform alpha. At alpha=1 the blend is a
+                    // pass-through, so opaque uses (cell outline) are unchanged.
+                    targets: [{
+                        format: canvasFormat,
+                        blend: {
+                            color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                        },
+                    }],
                 },
                 primitive: { topology: 'line-list' },
                 depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less-equal' },

@@ -19,6 +19,21 @@ public class GameEngine
 
     private const float PixelsToRadians = 0.005f;
 
+    /// <summary>
+    /// Once the planet-view camera distance crosses this, we glide back to
+    /// solar-system view. Sits just above the solar-system camera's default
+    /// distance (80) so the user has to actively zoom out to leave.
+    /// </summary>
+    private const float AutoZoomOutThreshold = 100f;
+    private const float RingFadeNear = 20f;   // start fading rings in here
+    private const float RingFadeFar = 90f;    // fully visible by here (just below auto-trigger)
+
+    private static float Smoothstep(float lo, float hi, float x)
+    {
+        float t = Math.Clamp((x - lo) / (hi - lo), 0f, 1f);
+        return t * t * (3f - 2f * t);
+    }
+
     // Camera transition (solar system ↔ planet)
     private bool _transitioning;
     private float _transitionStart;
@@ -33,6 +48,12 @@ public class GameEngine
     public EditorMode Mode { get; set; } = EditorMode.SolarSystem;
     public string? SelectedPlanetConfig { get; private set; }
     public event Action? OnFrameRendered;
+
+    /// <summary>
+    /// Edit mode is OFF by default. Clicks only raise/lower terrain when the
+    /// player has explicitly toggled it on via the Edit button.
+    /// </summary>
+    private bool _editMode;
 
     public void SetPlanetRenderer(PlanetRenderer p) => _planet = p;
 
@@ -140,13 +161,38 @@ public class GameEngine
             ""cursor"":""pointer"",""display"":""none"",
             ""fontFamily"":""monospace""
         }";
+        var editCss = @"{
+            ""top"":""10px"",""left"":""200px"",
+            ""padding"":""10px 20px"",""fontSize"":""16px"",
+            ""background"":""rgba(40,30,10,0.9)"",""color"":""#fc6"",
+            ""border"":""1px solid #fc6"",""borderRadius"":""6px"",
+            ""cursor"":""pointer"",""display"":""none"",
+            ""fontFamily"":""monospace""
+        }";
         _app.CreateUIButton("back_solar", "⬅ Solar System", css);
+        _app.CreateUIButton("edit_toggle", "✏ Edit", editCss);
         _app.UIButtonClick += OnUIButton;
     }
 
     private void OnUIButton(string id)
     {
         if (id == "back_solar") SwitchToSolarSystem();
+        else if (id == "edit_toggle")
+        {
+            _editMode = !_editMode;
+            _hoveredCell = -1;
+            // Reuse CreateUIButton to update the label — JS overlay swaps the
+            // textContent on the existing element.
+            var editCss = @"{
+                ""top"":""10px"",""left"":""200px"",
+                ""padding"":""10px 20px"",""fontSize"":""16px"",""cursor"":""pointer"",
+                ""border"":""1px solid #fc6"",""borderRadius"":""6px"",""fontFamily"":""monospace"",
+                ""display"":""block"",
+                ""background"":""" + (_editMode ? "rgba(80,40,10,0.95)" : "rgba(40,30,10,0.9)") + @""",
+                ""color"":""" + (_editMode ? "#ffd080" : "#fc6") + @"""
+            }";
+            _app.CreateUIButton("edit_toggle", _editMode ? "✓ Editing" : "✏ Edit", editCss);
+        }
     }
 
     private void OnClick(float cx, float cy, int button)
@@ -156,6 +202,8 @@ public class GameEngine
         // UI buttons consume clicks first
         if (Mode == EditorMode.PlanetEdit)
         {
+            // Cells only respond to taps when the player has turned editing on.
+            if (!_editMode) return;
             var cell = PickCell(cx, cy);
             if (cell == null) return;
             if (button == 0) _planet.Mesh.ChangeLevel(cell.Value, +1);
@@ -189,8 +237,12 @@ public class GameEngine
 
     private void OnMove(float cx, float cy)
     {
-        if (Mode == EditorMode.PlanetEdit && !_transitioning)
+        // Only show the hex hover highlight while editing, so the planet looks
+        // clean by default.
+        if (Mode == EditorMode.PlanetEdit && !_transitioning && _editMode)
             _hoveredCell = PickCell(cx, cy) ?? -1;
+        else if (!_editMode && _hoveredCell != -1)
+            _hoveredCell = -1;
     }
 
     private void OnKey(string key)
@@ -328,7 +380,12 @@ public class GameEngine
                 _planet.Draw(planetMvp, zoomDist, clearFirst: true);
 
                 // Backdrop: sun + other bodies, world translated by -planetPos.
-                _solarSystem.DrawBackdrop(planetMvp, SelectedPlanetConfig, _transitionPlanetPos);
+                // Same fade curve as planet-edit normal tick so the ring alpha
+                // is continuous through trigger → transition → handoff.
+                var cameraWorldPosOut = _transitionPlanetPos + camPos;
+                float ringAlphaOut = Smoothstep(RingFadeNear, RingFadeFar, zoomDist);
+                _solarSystem.DrawBackdrop(planetMvp, SelectedPlanetConfig, _transitionPlanetPos,
+                    cameraWorldPosOut, ringAlphaOut);
 
                 if (t >= 1f)
                 {
@@ -349,6 +406,7 @@ public class GameEngine
             }
 
             _app.ShowUIButton("back_solar", false);
+            _app.ShowUIButton("edit_toggle", false);
             OnFrameRendered?.Invoke();
             return;
         }
@@ -356,6 +414,16 @@ public class GameEngine
         // Normal tick
         if (Mode == EditorMode.PlanetEdit)
         {
+            // Pulled too far out → glide back to the solar system view.
+            // Picked a touch above the planet view's solar-system distance (80)
+            // so the user has to actively zoom past the comfort zone to leave.
+            if (_distance > AutoZoomOutThreshold)
+            {
+                SwitchToSolarSystem();
+                OnFrameRendered?.Invoke();
+                return;
+            }
+
             await _planet.RebuildDirtyPatches();
             var cam = CameraPosition();
             _planet.SetCameraPosition(cam.X, cam.Y, cam.Z);
@@ -367,6 +435,7 @@ public class GameEngine
             // the solar-system origin, so the direction toward the sun (relative
             // to a planet at world position P) is -P/|P|.
             Vector3 selfPos = Vector3.Zero;
+            Vector3 cameraWorldPos = cam;
             if (_solarSystem != null)
             {
                 _solarSystem.SetTime(elapsed);
@@ -376,20 +445,32 @@ public class GameEngine
                     var sunDir = -Vector3.Normalize(selfPos);
                     _planet.SetSunDirection(sunDir.X, sunDir.Y, sunDir.Z);
                 }
+                // The planet view's camera lives at `cam` in planet-local space
+                // (origin = planet center). In solar-system world coords that's
+                // `selfPos + cam`. The backdrop shader needs world-space camera.
+                cameraWorldPos = selfPos + cam;
             }
 
             var planetMvp = BuildPlanetMvp(_app.AspectRatio);
             _planet.Draw(planetMvp, _distance);
 
+            // Orbit rings start invisible up close, fade in as we zoom out so
+            // the player can see the orbital structure before the auto-trigger
+            // pulls them back to solar-system view. Reaches full alpha just
+            // below the auto-trigger so the handoff doesn't pop.
+            float ringAlpha = Smoothstep(RingFadeNear, RingFadeFar, _distance);
+
             // Render the rest of the solar system (sun + other planets) as a
             // backdrop, with the world shifted so the focused planet is at origin.
-            _solarSystem?.DrawBackdrop(planetMvp, SelectedPlanetConfig, selfPos);
+            _solarSystem?.DrawBackdrop(planetMvp, SelectedPlanetConfig, selfPos, cameraWorldPos, ringAlpha);
 
             _app.ShowUIButton("back_solar", true);
+            _app.ShowUIButton("edit_toggle", true);
         }
         else if (Mode == EditorMode.SolarSystem && _solarSystem != null)
         {
             _app.ShowUIButton("back_solar", false);
+            _app.ShowUIButton("edit_toggle", false);
             _solarSystem.SetTime(elapsed);
             var mvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
             _solarSystem.Draw(mvp);
