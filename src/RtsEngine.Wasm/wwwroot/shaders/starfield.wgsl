@@ -1,10 +1,13 @@
 // Procedural star + nebula background. Drawn first each frame as a
-// fullscreen triangle at the far depth (z=1) so everything else writes
+// fullscreen triangle at the far plane so everything else writes
 // over it via standard log-depth comparison.
 //
-// Reconstructs a world-space view ray from the camera's basis vectors and
-// the fragment's NDC position, samples a sparse star field (hash-based)
-// and a soft fbm nebula, and adds both to a near-black space colour.
+// Star generation is a 3D-Voronoi port of the Phantom-Nebula Starfield
+// shader (https://github.com/RubenTipparach/Phantom-Nebula/.../Starfield.fs).
+// Each layer scatters cell centres in 3D and the fragment finds the
+// nearest cell across the 27 surrounding cells; stars are bright spots
+// at the cell-centre, brightness keyed off the cell hash. Three density
+// layers stack to give big sparse stars + medium + dense background fizz.
 
 struct Uniforms {
     // xyz: world-space camera basis vectors. w unused.
@@ -32,11 +35,70 @@ fn vs_main(@location(0) pos: vec3f) -> VSOutput {
     return out;
 }
 
-fn hash3(p: vec3f) -> f32 {
-    return fract(sin(dot(p, vec3f(127.1, 311.7, 74.7))) * 43758.5453);
+// ── Hash / Voronoi (ported from Phantom-Nebula) ─────────────────────────────
+
+fn hash1(x: f32) -> f32 {
+    return fract(x + 1.3215 * 1.8152);
 }
 
-fn noise3(p: vec3f) -> f32 {
+fn hash3(a: vec3f) -> f32 {
+    return fract((hash1(a.z * 42.8883) + hash1(a.y * 36.9125) + hash1(a.x * 65.4321)) * 291.1257);
+}
+
+fn rehash3(x: f32) -> vec3f {
+    return vec3f(
+        hash1(((x + 0.5283) * 59.3829) * 274.3487),
+        hash1(((x + 0.8192) * 83.6621) * 345.3871),
+        hash1(((x + 0.2157) * 36.6521) * 458.3971)
+    );
+}
+
+struct VoronoiResult {
+    dist: f32,
+    cellId: f32,
+}
+
+fn voronoi3D(posIn: vec3f, density: f32) -> VoronoiResult {
+    let pos = posIn * density;
+    let basePos = floor(pos);
+    var m = 9999.0;
+    var w = 0.0;
+
+    for (var ix = -1; ix < 2; ix = ix + 1) {
+        for (var iy = -1; iy < 2; iy = iy + 1) {
+            for (var iz = -1; iz < 2; iz = iz + 1) {
+                let cell = basePos + vec3f(f32(ix), f32(iy), f32(iz));
+                let h = hash3(cell);
+                let pt = rehash3(h) + cell;
+                let diff = pos - pt;
+                let d = dot(diff, diff);
+                if (d < m) {
+                    m = d;
+                    w = h;
+                }
+            }
+        }
+    }
+
+    var r: VoronoiResult;
+    r.dist = m;
+    r.cellId = w;
+    return r;
+}
+
+fn starfield3D(dir: vec3f, density: f32) -> f32 {
+    let v = voronoi3D(dir, density);
+    // Inverted smoothstep — close to the cell centre = bright.
+    let star = 1.0 - smoothstep(0.0, 0.02, v.dist);
+    let brightness = fract(v.cellId * 123.456);
+    // Only the top ~30% of cells light up, so most pixels are blank space.
+    let mask = step(0.7, brightness);
+    return star * brightness * mask;
+}
+
+// ── Nebula (cheap fbm) ───────────────────────────────────────────────────────
+
+fn vnoise(p: vec3f) -> f32 {
     let i = floor(p);
     let f = fract(p);
     let s = f * f * (3.0 - 2.0 * f);
@@ -53,29 +115,11 @@ fn fbm(p: vec3f) -> f32 {
     var a = 0.5;
     var q = p;
     for (var i = 0; i < 5; i = i + 1) {
-        v = v + a * noise3(q);
+        v = v + a * vnoise(q);
         q = q * 2.07;
         a = a * 0.5;
     }
     return v;
-}
-
-fn starsAt(dir: vec3f, scale: f32, threshold: f32, brightness: f32) -> vec3f {
-    let p = dir * scale;
-    let cell = floor(p);
-    let f = fract(p);
-    let h = hash3(cell);
-    if (h <= threshold) { return vec3f(0.0); }
-    // Star sub-pixel position inside the cell.
-    let center = vec2f(
-        fract(h * 17.13),
-        fract(h * 91.71));
-    let d = length(f.xy - center);
-    let glow = max(0.0, 1.0 - d * 12.0);
-    let core = smoothstep(0.95, 1.0, 1.0 - d * 50.0);
-    // Tint based on hash so stars vary slightly in colour.
-    let tint = mix(vec3f(0.85, 0.92, 1.0), vec3f(1.0, 0.95, 0.8), fract(h * 7.31));
-    return tint * (glow * 0.35 + core) * brightness;
 }
 
 @fragment
@@ -86,20 +130,22 @@ fn fs_main(@location(0) ndc: vec2f) -> @location(0) vec4f {
         + ndc.x * u.params.y * u.params.x * u.camRight.xyz
         + ndc.y * u.params.x * u.camUp.xyz);
 
-    // Two layers of stars at different scales for visual depth.
-    var col = vec3f(0.005, 0.007, 0.018); // deep-space tint
-    col = col + starsAt(ray, 220.0, 0.992, 1.0);
-    col = col + starsAt(ray, 90.0,  0.997, 1.4);
+    // Three Voronoi star layers at different densities.
+    var stars = 0.0;
+    stars = stars + starfield3D(ray, 100.0) * 1.0;
+    stars = stars + starfield3D(ray, 200.0) * 0.8;
+    stars = stars + starfield3D(ray, 300.0) * 0.6;
+    let starColor = vec3f(1.0, 0.98, 0.95) * stars;
 
     // Soft nebula — large-scale fbm shaded with two complementary tints.
     let drift = u.params.z * 0.005;
     let n = fbm(ray * 1.4 + vec3f(drift, 0.0, drift * 0.7));
     let n2 = fbm(ray * 3.1 + vec3f(7.3, 2.1, 9.9));
     let cloud = smoothstep(0.45, 0.78, n);
-    let warm = vec3f(0.45, 0.18, 0.32);   // magenta-rose
-    let cool = vec3f(0.10, 0.20, 0.45);   // deep blue
-    let nebula = mix(cool, warm, smoothstep(0.3, 0.8, n2)) * cloud * 0.18;
+    let warm = vec3f(0.55, 0.18, 0.38);   // magenta-rose
+    let cool = vec3f(0.10, 0.20, 0.50);   // deep blue
+    let nebula = mix(cool, warm, smoothstep(0.3, 0.8, n2)) * cloud * 0.20;
 
-    col = col + nebula;
-    return vec4f(col, 1.0);
+    let space = vec3f(0.005, 0.007, 0.018); // deep-space tint
+    return vec4f(space + nebula + starColor, 1.0);
 }
