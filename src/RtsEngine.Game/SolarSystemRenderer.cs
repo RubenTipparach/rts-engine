@@ -12,7 +12,7 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
 {
     public const int VertexFloats = 10; // pos3 + normal3 + color3 + brightness1
     public const int VertexStride = 40;
-    public const int UniformSize = 64; // just MVP
+    public const int UniformSize = 80; // mvp(64) + sunDir(16)
 
     private const float FovYDegrees = 50f;
     private static readonly float FocalY = 1f / MathF.Tan(FovYDegrees * MathF.PI / 360f);
@@ -418,10 +418,7 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
             var parentPos = br.Parent != null ? br.Parent.GetPosition(_time) : Vector3.Zero;
             var bodyPos = parentPos + br.Body.GetPosition(_time);
 
-            var bodyMvp = MatrixHelper.ToRawFloats(Matrix4X4.Multiply(
-                Matrix4X4.CreateTranslation(new Vector3D<float>(bodyPos.X, bodyPos.Y, bodyPos.Z)),
-                mvpMat));
-            _gpu.WriteBuffer(br.Ubo, bodyMvp);
+            WriteBodyUniform(br.Ubo, bodyPos, mvpMat);
             _gpu.RenderAdditional(_pipeline, br.Vbo, br.Ibo, br.BindGroup, br.IndexCount);
 
             // Orbit ring is centered on the body's parent (origin for top-level planets).
@@ -435,9 +432,93 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
         }
     }
 
+    /// <summary>
+    /// Pack the body's MVP (translate(translation) * vp) + sunDir into its UBO.
+    /// <paramref name="translation"/> places the body's mesh in clip space,
+    /// while <paramref name="lightFromWorldPos"/> (defaults to translation) is
+    /// the body's true world position used to compute sunDir = -P.normalized.
+    /// In planet-edit mode the two differ because the world is shifted so the
+    /// focused planet sits at the origin, but lighting must still use the
+    /// unshifted positions.
+    /// </summary>
+    private void WriteBodyUniform(int ubo, Vector3 translation, Matrix4X4<float> vpMat, Vector3? lightFromWorldPos = null)
+    {
+        var modelMvp = Matrix4X4.Multiply(
+            Matrix4X4.CreateTranslation(new Vector3D<float>(translation.X, translation.Y, translation.Z)),
+            vpMat);
+        var raw = MatrixHelper.ToRawFloats(modelMvp);
+        var uni = new float[20];
+        Array.Copy(raw, 0, uni, 0, 16);
+
+        var lightPos = lightFromWorldPos ?? translation;
+        if (lightPos.LengthSquared() > 1e-6f)
+        {
+            var sunDir = -Vector3.Normalize(lightPos);
+            uni[16] = sunDir.X; uni[17] = sunDir.Y; uni[18] = sunDir.Z;
+        }
+        else
+        {
+            uni[16] = 0f; uni[17] = 1f; uni[18] = 0f; // fallback when at origin
+        }
+        _gpu.WriteBuffer(ubo, uni);
+    }
+
     private static Matrix4X4<float> RawToSilkMat(float[] m) => new(
         m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7],
         m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
+
+    /// <summary>
+    /// Draw the sun and all bodies *except* <paramref name="selfConfig"/>, with
+    /// the world translated so that <paramref name="selfPos"/> sits at the origin.
+    /// Used by the planet edit view to render the rest of the solar system as a
+    /// backdrop around the focused planet (which is rendered at the origin).
+    /// </summary>
+    public void DrawBackdrop(float[] planetMvpRawFloats, string? selfConfig, Vector3 selfPos)
+    {
+        if (!_ready) return;
+
+        var planetMvpMat = RawToSilkMat(planetMvpRawFloats);
+        var worldShift = Matrix4X4.CreateTranslation(
+            new Vector3D<float>(-selfPos.X, -selfPos.Y, -selfPos.Z));
+        var shiftedMvp = Matrix4X4.Multiply(worldShift, planetMvpMat);
+
+        // Sun at solar-system origin: shifted by -selfPos, then projected.
+        var sunUni = new float[20];
+        Array.Copy(MatrixHelper.ToRawFloats(shiftedMvp), 0, sunUni, 0, 16);
+        sunUni[16] = _time;
+        _gpu.WriteBuffer(_sunUbo, sunUni);
+        _gpu.RenderAdditional(_sunPipeline, _sunVbo, _sunIbo, _sunBindGroup, _sunIndexCount);
+
+        // Other bodies. Skip the focused planet (and its moons — they're handled
+        // by the detailed renderer or out of scope while editing).
+        foreach (var br in _bodies)
+        {
+            if (br.Body.ConfigFile == selfConfig) continue;
+            if (br.Parent != null && br.Parent.ConfigFile == selfConfig) continue;
+
+            var parentPos = br.Parent != null ? br.Parent.GetPosition(_time) : Vector3.Zero;
+            var bodyPos = parentPos + br.Body.GetPosition(_time);
+            // Position passed to the shader is shifted (planet at origin) but
+            // sunDir must use the true solar-system world position so Lambert
+            // matches what the body would look like in solar system view.
+            WriteBodyUniform(br.Ubo, bodyPos - selfPos, planetMvpMat, lightFromWorldPos: bodyPos);
+            _gpu.RenderAdditional(_pipeline, br.Vbo, br.Ibo, br.BindGroup, br.IndexCount);
+        }
+    }
+
+    /// <summary>Current world position of the body identified by config file.</summary>
+    public Vector3 GetBodyWorldPosition(string? configFile)
+    {
+        if (configFile == null) return Vector3.Zero;
+        foreach (var p in _system.Planets)
+        {
+            if (p.ConfigFile == configFile) return p.GetPosition(_time);
+            foreach (var m in p.Moons)
+                if (m.ConfigFile == configFile)
+                    return p.GetPosition(_time) + m.GetPosition(_time);
+        }
+        return Vector3.Zero;
+    }
 
     private string? _hiddenPlanetConfig;
     private Vector3 _focusTarget = Vector3.Zero;
@@ -455,8 +536,10 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
             new Vector3D<float>(cx, cy, cz),
             new Vector3D<float>(_focusTarget.X, _focusTarget.Y, _focusTarget.Z),
             new Vector3D<float>(0, 1, 0));
+        // Far plane matches the planet view's projection so log-depth in WGSL
+        // (FAR=10000) produces a consistent depth curve across views.
         var proj = Matrix4X4.CreatePerspectiveFieldOfView(
-            Scalar.DegreesToRadians(FovYDegrees), aspect, 0.5f, 500.0f);
+            Scalar.DegreesToRadians(FovYDegrees), aspect, 0.5f, 10000.0f);
         return MatrixHelper.ToRawFloats(Matrix4X4.Multiply(view, proj));
     }
 

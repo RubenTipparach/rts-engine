@@ -22,6 +22,15 @@ struct VSOutput {
     @location(2) level: f32,
 }
 
+// Logarithmic depth (see sun.wgsl). FAR must match every other 3D shader so
+// the depth buffer sorts terrain, atmosphere, sun, and distant planets with a
+// single consistent curve.
+const LOG_DEPTH_FAR = 10000.0;
+fn applyLogDepth(p: vec4f) -> vec4f {
+    let logZ = log2(max(1e-6, 1.0 + p.w)) / log2(1.0 + LOG_DEPTH_FAR);
+    return vec4f(p.x, p.y, logZ * p.w, p.w);
+}
+
 @vertex
 fn vs_main(
     @location(0) pos: vec3f,
@@ -29,7 +38,7 @@ fn vs_main(
     @location(2) level: f32,
 ) -> VSOutput {
     var out: VSOutput;
-    out.position = u.mvp * vec4f(pos, 1.0);
+    out.position = applyLogDepth(u.mvp * vec4f(pos, 1.0));
     out.worldPos = pos;
     out.normal = normalize(normal);
     out.level = level;

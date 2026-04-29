@@ -331,7 +331,29 @@ public class GameEngine
             _planet.SetTime(elapsed);
             _planet.SetHighlightCell(_hoveredCell);
             await _planet.SyncOutline();
-            _planet.Draw(BuildPlanetMvp(_app.AspectRatio), _distance);
+
+            // Sync lighting to the planet's solar-system position: the sun is at
+            // the solar-system origin, so the direction toward the sun (relative
+            // to a planet at world position P) is -P/|P|.
+            Vector3 selfPos = Vector3.Zero;
+            if (_solarSystem != null)
+            {
+                _solarSystem.SetTime(elapsed);
+                selfPos = _solarSystem.GetBodyWorldPosition(SelectedPlanetConfig);
+                if (selfPos.LengthSquared() > 1e-6f)
+                {
+                    var sunDir = -Vector3.Normalize(selfPos);
+                    _planet.SetSunDirection(sunDir.X, sunDir.Y, sunDir.Z);
+                }
+            }
+
+            var planetMvp = BuildPlanetMvp(_app.AspectRatio);
+            _planet.Draw(planetMvp, _distance);
+
+            // Render the rest of the solar system (sun + other planets) as a
+            // backdrop, with the world shifted so the focused planet is at origin.
+            _solarSystem?.DrawBackdrop(planetMvp, SelectedPlanetConfig, selfPos);
+
             _app.ShowUIButton("back_solar", true);
         }
         else if (Mode == EditorMode.SolarSystem && _solarSystem != null)
@@ -370,8 +392,11 @@ public class GameEngine
             new Vector3D<float>(camPos.X, camPos.Y, camPos.Z),
             new Vector3D<float>(0, 0, 0),
             new Vector3D<float>(0, 1, 0));
+        // Far plane pushed out to fit the rest of the solar system (sun + other
+        // planets render as a backdrop). Logarithmic depth in the shaders keeps
+        // precision uniform across the wide range.
         var proj = Matrix4X4.CreatePerspectiveFieldOfView(
-            Scalar.DegreesToRadians(45.0f), aspectRatio, 0.1f, 100.0f);
+            Scalar.DegreesToRadians(45.0f), aspectRatio, 0.1f, 10000.0f);
         return MatrixHelper.ToRawFloats(Matrix4X4.Multiply(view, proj));
     }
 

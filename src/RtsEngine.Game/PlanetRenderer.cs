@@ -75,6 +75,13 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         _aUni[20] = x; _aUni[21] = y; _aUni[22] = z;
     }
 
+    /// <summary>Set the direction *toward* the sun (in planet-local space). Used by Lambert.</summary>
+    public void SetSunDirection(float x, float y, float z)
+    {
+        _tUni[16] = x; _tUni[17] = y; _tUni[18] = z;
+        _aUni[16] = x; _aUni[17] = y; _aUni[18] = z;
+    }
+
     public void SetHighlightCell(int cell)
     {
         if (cell == _highlightedCell) return;

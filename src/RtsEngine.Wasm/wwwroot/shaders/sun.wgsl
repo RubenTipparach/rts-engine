@@ -15,10 +15,20 @@ struct VSOutput {
     @location(2) localPos: vec3f,
 }
 
+// Logarithmic depth: maps view-space depth to NDC z = log2(1+w)/log2(1+FAR).
+// FAR must match the projection's far plane (engine uses 10000). Keeping
+// precision uniform across the very wide range needed when the sun and other
+// planets share the scene with the close-up detailed planet.
+const LOG_DEPTH_FAR = 10000.0;
+fn applyLogDepth(p: vec4f) -> vec4f {
+    let logZ = log2(max(1e-6, 1.0 + p.w)) / log2(1.0 + LOG_DEPTH_FAR);
+    return vec4f(p.x, p.y, logZ * p.w, p.w);
+}
+
 @vertex
 fn vs_main(@location(0) pos: vec3f) -> VSOutput {
     var out: VSOutput;
-    out.position = u.mvp * vec4f(pos, 1.0);
+    out.position = applyLogDepth(u.mvp * vec4f(pos, 1.0));
     out.worldPos = pos;
     out.normal = normalize(pos);
     out.localPos = pos;

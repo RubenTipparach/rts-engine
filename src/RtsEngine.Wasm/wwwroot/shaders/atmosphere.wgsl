@@ -16,10 +16,19 @@ struct VSOutput {
     @location(0) worldPos: vec3f,
 }
 
+// Logarithmic depth (see sun.wgsl). Atmosphere participates in the depth test
+// even though it doesn't write depth, so its NDC z must use the same curve as
+// terrain/sun/distant planets to interact correctly with them.
+const LOG_DEPTH_FAR = 10000.0;
+fn applyLogDepth(p: vec4f) -> vec4f {
+    let logZ = log2(max(1e-6, 1.0 + p.w)) / log2(1.0 + LOG_DEPTH_FAR);
+    return vec4f(p.x, p.y, logZ * p.w, p.w);
+}
+
 @vertex
 fn vs_main(@location(0) pos: vec3f) -> VSOutput {
     var out: VSOutput;
-    out.position = u.mvp * vec4f(pos, 1.0);
+    out.position = applyLogDepth(u.mvp * vec4f(pos, 1.0));
     out.worldPos = pos;
     return out;
 }
