@@ -111,8 +111,8 @@ These rules apply to every asset Claude generates, hand-edits, or asks the user 
 
 After each commit, always show these links to the user:
 
-- Play the games: https://rubentipparach.github.io/tic-labs/
-- Track CI builds: https://github.com/RubenTipparach/tic-labs/actions
+- Play the games: https://rubentipparach.github.io/rts-engine/
+- Track CI builds: https://github.com/RubenTipparach/rts-engine/actions
 
 ## CI/CD
 
