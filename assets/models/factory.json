@@ -1,0 +1,13 @@
+{
+  "kind": "building",
+  "color": [
+    0.4,
+    0.42,
+    0.48
+  ],
+  "groups": [
+    "hall",
+    "stack_a",
+    "stack_b"
+  ]
+}

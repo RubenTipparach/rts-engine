@@ -1,0 +1,13 @@
+{
+  "kind": "vehicle",
+  "color": [
+    0.45,
+    0.45,
+    0.5
+  ],
+  "groups": [
+    "hull",
+    "turret",
+    "barrel"
+  ]
+}

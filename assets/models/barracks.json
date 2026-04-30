@@ -1,0 +1,12 @@
+{
+  "kind": "building",
+  "color": [
+    0.55,
+    0.35,
+    0.25
+  ],
+  "groups": [
+    "walls",
+    "roof"
+  ]
+}
