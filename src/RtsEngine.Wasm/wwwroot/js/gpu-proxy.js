@@ -128,7 +128,10 @@
                 usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
                 mappedAtCreation: true,
             });
-            new Uint16Array(buf.getMappedRange(0, u16.byteLength)).set(u16);
+            // getMappedRange's offset+size must be multiples of 4 — use the
+            // padded size, then write only the source indices (the trailing
+            // ushort, if any, is uninitialized but never indexed by a draw).
+            new Uint16Array(buf.getMappedRange(0, padded)).set(u16);
             buf.unmap();
             const id = register(buffers, buf);
             indexFormats.set(id, 'uint16');
@@ -305,7 +308,16 @@
                 fragment: {
                     module: shaderModules[shaderModuleId],
                     entryPoint: 'fs_main',
-                    targets: [{ format: canvasFormat }],
+                    // Alpha-blended so callers can fade lines in/out via the
+                    // shader's color uniform alpha. At alpha=1 the blend is a
+                    // pass-through, so opaque uses (cell outline) are unchanged.
+                    targets: [{
+                        format: canvasFormat,
+                        blend: {
+                            color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                        },
+                    }],
                 },
                 primitive: { topology: 'line-list' },
                 depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less-equal' },

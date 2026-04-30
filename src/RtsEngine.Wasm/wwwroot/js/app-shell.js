@@ -83,28 +83,59 @@
                 dotnetRef.invokeMethodAsync('OnKeyDown', e.key);
             });
 
-            // Touch
+            // Touch — single finger drags, two fingers pinch-zoom.
             let touchActive = false, lastTX = 0, lastTY = 0;
             let touchDownX = 0, touchDownY = 0, touchDragDist = 0;
+            let pinchActive = false, lastPinchDist = 0;
+            const pinchDist = (t) => {
+                const dx = t[0].clientX - t[1].clientX;
+                const dy = t[0].clientY - t[1].clientY;
+                return Math.hypot(dx, dy);
+            };
+
             canvas.addEventListener('touchstart', e => {
                 e.preventDefault();
-                if (e.touches.length === 1) {
+                if (e.touches.length === 1 && !pinchActive) {
                     touchActive = true;
                     lastTX = e.touches[0].clientX; lastTY = e.touches[0].clientY;
                     touchDownX = lastTX; touchDownY = lastTY; touchDragDist = 0;
                     dotnetRef.invokeMethodAsync('OnPointerDown');
+                } else if (e.touches.length === 2) {
+                    // Promote to pinch — cancel any drag in progress without
+                    // emitting a click.
+                    if (touchActive) {
+                        touchActive = false;
+                        dotnetRef.invokeMethodAsync('OnPointerUp');
+                    }
+                    pinchActive = true;
+                    lastPinchDist = pinchDist(e.touches);
                 }
             }, { passive: false });
+
             canvas.addEventListener('touchmove', e => {
                 e.preventDefault();
+                if (pinchActive && e.touches.length === 2) {
+                    const d = pinchDist(e.touches);
+                    // Map pinch delta to scroll delta. Spreading fingers (d
+                    // grows) zooms in (positive scroll), matching desktop wheel.
+                    const delta = (d - lastPinchDist) * 5;
+                    lastPinchDist = d;
+                    if (Math.abs(delta) > 0.01) dotnetRef.invokeMethodAsync('OnScroll', delta);
+                    return;
+                }
                 if (!touchActive || e.touches.length !== 1) return;
                 const dx = e.touches[0].clientX - lastTX, dy = e.touches[0].clientY - lastTY;
                 touchDragDist += Math.abs(dx) + Math.abs(dy);
                 dotnetRef.invokeMethodAsync('OnPointerDrag', dx, dy);
                 lastTX = e.touches[0].clientX; lastTY = e.touches[0].clientY;
             }, { passive: false });
+
             canvas.addEventListener('touchend', e => {
                 e.preventDefault();
+                if (pinchActive && e.touches.length < 2) {
+                    pinchActive = false;
+                    return;
+                }
                 if (touchActive) {
                     touchActive = false;
                     dotnetRef.invokeMethodAsync('OnPointerUp');

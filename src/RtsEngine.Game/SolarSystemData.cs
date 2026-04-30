@@ -76,7 +76,8 @@ public sealed class OrbitalBody
 
     public Vector3 GetPosition(float time)
     {
-        float angle = Phase + time * OrbitSpeed;
+        const float TimeScale = 0.1f;
+        float angle = Phase + time * OrbitSpeed * TimeScale;
         return new Vector3(
             MathF.Cos(angle) * OrbitRadius,
             0,

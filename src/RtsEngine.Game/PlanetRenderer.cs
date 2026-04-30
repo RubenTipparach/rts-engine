@@ -55,7 +55,12 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
     private int _highlightedCell = -1;
     private bool _oReady;
     private bool _outlineDirty;
-    private readonly float[] _oUni = new float[16];
+    // mvp(16) + rgba color(4). Cell outline is opaque yellow.
+    private readonly float[] _oUni = new float[20]
+    {
+        0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+        1.0f, 0.9f, 0.2f, 1.0f,
+    };
 
     public PlanetMesh Mesh { get; }
 
@@ -73,6 +78,13 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
     {
         _tUni[20] = x; _tUni[21] = y; _tUni[22] = z;
         _aUni[20] = x; _aUni[21] = y; _aUni[22] = z;
+    }
+
+    /// <summary>Set the direction *toward* the sun (in planet-local space). Used by Lambert.</summary>
+    public void SetSunDirection(float x, float y, float z)
+    {
+        _tUni[16] = x; _tUni[17] = y; _tUni[18] = z;
+        _aUni[16] = x; _aUni[17] = y; _aUni[18] = z;
     }
 
     public void SetHighlightCell(int cell)
@@ -163,7 +175,7 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
     public async Task SetupOutline(string outlineShader)
     {
         var oShader = await _gpu.CreateShaderModule(outlineShader);
-        _oUbo = await _gpu.CreateUniformBuffer(64);
+        _oUbo = await _gpu.CreateUniformBuffer(80);
 
         _oPipeline = await _gpu.CreateRenderPipelineLines(oShader, new object[]
         {
@@ -202,7 +214,9 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
     /// </summary>
     public void Draw(float[] mvpRawFloats, float cameraDistance = 3f, bool clearFirst = true)
     {
-        if (cameraDistance > 50f) return; // too far, let solar system handle it
+        // No LOD cutoff: the planet view now lets the camera zoom out to see
+        // the whole solar system, so the detailed mesh has to keep drawing
+        // (just smaller and without atmosphere/outline at far distances).
 
         Array.Copy(mvpRawFloats, 0, _tUni, 0, 16);
         _gpu.WriteBuffer(_tUbo, _tUni);
