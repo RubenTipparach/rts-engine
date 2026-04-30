@@ -53,8 +53,17 @@ public static class Program
             renderer.ApplyConfig(config);
             await renderer.Setup(OpenGLGPU.TerrainShaderGLSL);
 
+            EngineConfig engineConfig = new();
+            try
+            {
+                var engineYamlPath = Path.Combine(AppContext.BaseDirectory, "config", "engine.yaml");
+                if (File.Exists(engineYamlPath))
+                    engineConfig = EngineConfig.FromYaml(File.ReadAllText(engineYamlPath));
+            }
+            catch { /* use defaults */ }
+
             backend = new DesktopAppBackend(window);
-            engine = new GameEngine(backend, gpu, renderer);
+            engine = new GameEngine(backend, gpu, renderer, null, null, engineConfig);
             engine.Run();
         };
 

@@ -32,3 +32,11 @@ planetEditView:
   defaultDistance: 3.0
   minDistance: 2.0
   maxDistance: 8.0
+
+# Ground-level RTS camera. As the player zooms toward the surface the look-at
+# target slides from the planet center to a point ahead on the ground, producing
+# a tilted, traditional-RTS view.
+rtsCamera:
+  groundClearance: 0.15    # camera floor altitude above surface (radius units)
+  tiltStartHeight: 0.6     # altitude at which tilt fades in (radius units)
+  lookAhead: 0.25          # forward look-at offset along surface tangent (radius units, ~30° tilt at ground)

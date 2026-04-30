@@ -10,6 +10,7 @@ public sealed class EngineConfig
     public LightingConfig Lighting { get; set; } = new();
     public SolarSystemViewConfig SolarSystemView { get; set; } = new();
     public PlanetEditViewConfig PlanetEditView { get; set; } = new();
+    public RtsCameraConfig RtsCamera { get; set; } = new();
 
     public static EngineConfig FromYaml(string yaml)
     {
@@ -61,4 +62,25 @@ public sealed class PlanetEditViewConfig
     public float DefaultDistance { get; set; } = 3f;
     public float MinDistance { get; set; } = 2f;
     public float MaxDistance { get; set; } = 8f;
+}
+
+/// <summary>
+/// Ground-level RTS camera behavior. As the player zooms toward the surface
+/// the look-at target slides from the planet center to a point ahead on the
+/// ground, producing a tilted, traditional-RTS view.
+/// </summary>
+public sealed class RtsCameraConfig
+{
+    /// <summary>Camera floor altitude above the surface, in radius units. The
+    /// minimum orbit distance becomes radius * (1 + GroundClearance).</summary>
+    public float GroundClearance { get; set; } = 0.15f;
+
+    /// <summary>Altitude (above surface, radius units) at which the tilt
+    /// blend starts fading in. Above this the camera looks at planet center.</summary>
+    public float TiltStartHeight { get; set; } = 0.6f;
+
+    /// <summary>How far ahead (along the surface, radius units) the look-at
+    /// target sits when fully tilted. Tuned so that altitude/lookAhead gives
+    /// roughly a 30° downward tilt at the ground floor.</summary>
+    public float LookAhead { get; set; } = 0.25f;
 }

@@ -11,6 +11,7 @@ public class GameEngine
     private readonly StarMapRenderer? _starMap;
     private readonly SolarSystemRenderer? _solarSystem;
     private readonly IGPU _gpu;
+    private readonly EngineConfig _config;
 
     private float _azimuth, _elevation = 0.4f, _distance = 3.0f;
     private bool _dragging;
@@ -101,13 +102,15 @@ public class GameEngine
     }
 
     public GameEngine(IRenderBackend app, IGPU gpu, PlanetRenderer planet,
-        StarMapRenderer? starMap = null, SolarSystemRenderer? solarSystem = null)
+        StarMapRenderer? starMap = null, SolarSystemRenderer? solarSystem = null,
+        EngineConfig? config = null)
     {
         _app = app;
         _gpu = gpu;
         _planet = planet;
         _starMap = starMap;
         _solarSystem = solarSystem;
+        _config = config ?? new EngineConfig();
 
         _app.PointerDown += () =>
         {
@@ -144,9 +147,10 @@ public class GameEngine
             {
                 // Multiplicative scale so far-out scrolls don't crawl. Range
                 // goes wide enough to see the sun and other planets behind the
-                // detailed mesh.
+                // detailed mesh, and tight enough to skim the surface for an
+                // RTS-style ground view.
                 _distance -= delta * _distance * 0.001f;
-                _distance = Math.Clamp(_distance, 2.0f, 200f);
+                _distance = Math.Clamp(_distance, MinPlanetDistance(), 200f);
             }
             else if (Mode == EditorMode.StarMap)
                 _starMap?.Zoom(delta);
@@ -568,17 +572,50 @@ public class GameEngine
     private float[] BuildPlanetMvp(float aspectRatio)
         => BuildPlanetMvpAt(CameraPosition(), aspectRatio);
 
+    /// <summary>Closest the planet camera may approach, in world units. Sits
+    /// just above the highest possible terrain so ground-level RTS zoom never
+    /// dips below the surface.</summary>
+    private float MinPlanetDistance()
+    {
+        float radius = _planet.Mesh.Radius;
+        return radius * (1f + _config.RtsCamera.GroundClearance);
+    }
+
+    /// <summary>Tilted look-at target for RTS-style ground view. At high
+    /// altitude returns the planet center; near the surface the target slides
+    /// to a point ahead on the ground so the camera tilts forward rather than
+    /// staring straight down.</summary>
+    private Vector3 PlanetLookAtTarget(Vector3 camPos)
+    {
+        float radius = _planet.Mesh.Radius;
+        float altitude = camPos.Length() - radius;
+        float blend = 1f - Smoothstep(0f, _config.RtsCamera.TiltStartHeight, altitude);
+        if (blend <= 0f) return Vector3.Zero;
+
+        // Tangent at the camera pointing toward decreasing elevation — i.e.
+        // "forward along the ground" for an orbit camera. Drives the look-at
+        // offset so dragging tilts the view across the surface, not around it.
+        float ce = MathF.Cos(_elevation), se = MathF.Sin(_elevation);
+        float ca = MathF.Cos(_azimuth), sa = MathF.Sin(_azimuth);
+        var southTangent = new Vector3(se * ca, -ce, se * sa);
+        var camDir = Vector3.Normalize(camPos);
+        var groundTarget = camDir * radius + southTangent * (radius * _config.RtsCamera.LookAhead);
+        return groundTarget * blend;
+    }
+
     private float[] BuildPlanetMvpAt(Vector3 camPos, float aspectRatio)
     {
+        var lookAt = PlanetLookAtTarget(camPos);
         var view = Matrix4X4.CreateLookAt(
             new Vector3D<float>(camPos.X, camPos.Y, camPos.Z),
-            new Vector3D<float>(0, 0, 0),
+            new Vector3D<float>(lookAt.X, lookAt.Y, lookAt.Z),
             new Vector3D<float>(0, 1, 0));
         // Far plane pushed out to fit the rest of the solar system (sun + other
         // planets render as a backdrop). Logarithmic depth in the shaders keeps
-        // precision uniform across the wide range.
+        // precision uniform across the wide range. Near plane tightened so the
+        // RTS ground camera doesn't clip into nearby terrain.
         var proj = Matrix4X4.CreatePerspectiveFieldOfView(
-            Scalar.DegreesToRadians(45.0f), aspectRatio, 0.1f, 10000.0f);
+            Scalar.DegreesToRadians(45.0f), aspectRatio, 0.01f, 10000.0f);
         return MatrixHelper.ToRawFloats(Matrix4X4.Multiply(view, proj));
     }
 

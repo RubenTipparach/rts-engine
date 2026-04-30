@@ -49,8 +49,17 @@
             // Planet (default Earth)
             _planet = await CreatePlanetRenderer("planets/earth.yaml");
 
+            // Engine config (camera tuning, RTS ground view, LOD, lighting)
+            EngineConfig engineConfig;
+            try
+            {
+                var engineYaml = await Http.GetStringAsync("config/engine.yaml");
+                engineConfig = EngineConfig.FromYaml(engineYaml);
+            }
+            catch { engineConfig = new EngineConfig(); }
+
             // Engine
-            _engine = new GameEngine(_app, gpu, _planet, _starMap, _solarSystem);
+            _engine = new GameEngine(_app, gpu, _planet, _starMap, _solarSystem, engineConfig);
             _engine.Mode = EditorMode.SolarSystem;
 
             _engine.SetupUI();
