@@ -150,7 +150,11 @@ public sealed class RtsRenderer : IDisposable
         uni[20] = _sunDir.X; uni[21] = _sunDir.Y; uni[22] = _sunDir.Z; uni[23] = 0f;
 
         _gpu.WriteBuffer(_ubo, uni);
-        _gpu.Render(_pipeline, m.Vbo, m.Ibo, _bindGroup, m.IndexCount);
+        // RenderAdditional loads the existing color + depth buffers — Render
+        // would clear them, wiping out the planet, starfield, and any
+        // previously-drawn entities. Each instance ticks onto the same
+        // accumulated frame.
+        _gpu.RenderAdditional(_pipeline, m.Vbo, m.Ibo, _bindGroup, m.IndexCount);
     }
 
     /// <summary>
