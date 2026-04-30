@@ -58,8 +58,23 @@
             }
             catch { engineConfig = new EngineConfig(); }
 
+            // RTS gameplay (buildings + units). Optional — falls back to a
+            // pure planet editor if either the config or shader is missing.
+            RtsConfig? rtsConfig = null;
+            RtsRenderer? rtsRenderer = null;
+            try
+            {
+                var rtsYaml = await Http.GetStringAsync("config/rts.yaml");
+                rtsConfig = RtsConfig.FromYaml(rtsYaml);
+                var rtsShader = await Http.GetStringAsync("shaders/rts.wgsl");
+                rtsRenderer = new RtsRenderer(gpu, rtsConfig);
+                await rtsRenderer.Setup(rtsShader);
+            }
+            catch { rtsConfig = null; rtsRenderer = null; }
+
             // Engine
-            _engine = new GameEngine(_app, gpu, _planet, _starMap, _solarSystem, engineConfig);
+            _engine = new GameEngine(_app, gpu, _planet, _starMap, _solarSystem,
+                engineConfig, rtsRenderer, rtsConfig);
             _engine.Mode = EditorMode.SolarSystem;
 
             _engine.SetupUI();

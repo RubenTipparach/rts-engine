@@ -10,6 +10,9 @@ public class GameEngine
     private PlanetRenderer _planet;
     private readonly StarMapRenderer? _starMap;
     private readonly SolarSystemRenderer? _solarSystem;
+    private readonly RtsRenderer? _rts;
+    private readonly RtsConfig? _rtsConfig;
+    private readonly RtsState _state = new();
     private readonly IGPU _gpu;
     private readonly EngineConfig _config;
 
@@ -64,7 +67,14 @@ public class GameEngine
     /// </summary>
     private bool _editMode;
 
-    public void SetPlanetRenderer(PlanetRenderer p) => _planet = p;
+    public void SetPlanetRenderer(PlanetRenderer p)
+    {
+        _planet = p;
+        // Cell indices are planet-specific — buildings built on the previous
+        // planet would map to nonsensical cells on the new one. Wipe state.
+        _state.Clear();
+        RefreshRtsButtons();
+    }
 
     /// <summary>Called by Home.razor after the planet renderer is ready.</summary>
     public void SwitchToPlanetEdit()
@@ -103,13 +113,16 @@ public class GameEngine
 
     public GameEngine(IRenderBackend app, IGPU gpu, PlanetRenderer planet,
         StarMapRenderer? starMap = null, SolarSystemRenderer? solarSystem = null,
-        EngineConfig? config = null)
+        EngineConfig? config = null,
+        RtsRenderer? rts = null, RtsConfig? rtsConfig = null)
     {
         _app = app;
         _gpu = gpu;
         _planet = planet;
         _starMap = starMap;
         _solarSystem = solarSystem;
+        _rts = rts;
+        _rtsConfig = rtsConfig;
         _config = config ?? new EngineConfig();
 
         _app.PointerDown += () =>
@@ -183,7 +196,68 @@ public class GameEngine
         }";
         _app.CreateUIButton("back_solar", "⬅ Solar System", css);
         _app.CreateUIButton("edit_toggle", "✏ Edit", editCss);
+
+        // RTS build bar — one button per building type, laid out along the
+        // bottom edge. Produce buttons (per selected building) and the
+        // cancel-placement button are created lazily on demand.
+        if (_rtsConfig != null)
+        {
+            for (int i = 0; i < _rtsConfig.Buildings.Count; i++)
+            {
+                var b = _rtsConfig.Buildings[i];
+                _app.CreateUIButton($"build_{b.Id}", $"🏗 {b.Name}", BuildButtonCss(i, active: false));
+                _app.ShowUIButton($"build_{b.Id}", false);
+            }
+            _app.CreateUIButton("cancel_placement", "✕ Cancel Placement", CancelPlacementCss());
+            _app.ShowUIButton("cancel_placement", false);
+
+            // Pre-create produce buttons too so we can just toggle visibility.
+            // Worst case = max(produces) buttons; create one per unit type and
+            // re-label as needed. Simpler: one button per unique unit id.
+            var unitIds = _rtsConfig.Units.Select(u => u.Id).Distinct().ToList();
+            for (int i = 0; i < unitIds.Count; i++)
+            {
+                _app.CreateUIButton($"produce_{unitIds[i]}", "", ProduceButtonCss(i));
+                _app.ShowUIButton($"produce_{unitIds[i]}", false);
+            }
+        }
+
         _app.UIButtonClick += OnUIButton;
+    }
+
+    private static string BuildButtonCss(int slot, bool active)
+    {
+        int left = 10 + slot * 180;
+        var bg = active ? "rgba(80,40,10,0.95)" : "rgba(20,40,30,0.9)";
+        var col = active ? "#ffd080" : "#9fc";
+        return @"{""bottom"":""10px"",""left"":""" + left + @"px""," +
+               @"""padding"":""10px 16px"",""fontSize"":""14px""," +
+               @"""background"":""" + bg + @"""," +
+               @"""color"":""" + col + @"""," +
+               @"""border"":""1px solid #4a8"",""borderRadius"":""6px""," +
+               @"""cursor"":""pointer"",""display"":""none""," +
+               @"""fontFamily"":""monospace""}";
+    }
+
+    private static string ProduceButtonCss(int slot)
+    {
+        int top = 60 + slot * 50;
+        return @"{""top"":""" + top + @"px"",""right"":""10px""," +
+               @"""padding"":""8px 14px"",""fontSize"":""13px""," +
+               @"""background"":""rgba(40,20,40,0.9)"",""color"":""#fac""," +
+               @"""border"":""1px solid #c6a"",""borderRadius"":""6px""," +
+               @"""cursor"":""pointer"",""display"":""none""," +
+               @"""fontFamily"":""monospace""}";
+    }
+
+    private static string CancelPlacementCss()
+    {
+        return @"{""bottom"":""60px"",""left"":""10px""," +
+               @"""padding"":""8px 14px"",""fontSize"":""13px""," +
+               @"""background"":""rgba(60,20,20,0.9)"",""color"":""#fcc""," +
+               @"""border"":""1px solid #c66"",""borderRadius"":""6px""," +
+               @"""cursor"":""pointer"",""display"":""none""," +
+               @"""fontFamily"":""monospace""}";
     }
 
     private void OnUIButton(string id)
@@ -205,6 +279,108 @@ public class GameEngine
             }";
             _app.CreateUIButton("edit_toggle", _editMode ? "✓ Editing" : "✏ Edit", editCss);
         }
+        else if (id == "cancel_placement")
+        {
+            _state.PlacementBuildingId = null;
+            RefreshRtsButtons();
+        }
+        else if (id.StartsWith("build_") && _rtsConfig != null)
+        {
+            var typeId = id.Substring("build_".Length);
+            // Toggle: clicking the same build button cancels placement.
+            _state.PlacementBuildingId = _state.PlacementBuildingId == typeId ? null : typeId;
+            _state.SelectedBuildingInstanceId = -1;
+            RefreshRtsButtons();
+        }
+        else if (id.StartsWith("produce_") && _rtsConfig != null)
+        {
+            var unitId = id.Substring("produce_".Length);
+            ProduceUnit(unitId);
+        }
+    }
+
+    /// <summary>
+    /// Cheap per-frame visibility sync — only toggles ShowUIButton, no
+    /// label/CSS rewrites. Call every frame in PlanetEdit; call once on
+    /// mode change to hide everything when leaving.
+    /// </summary>
+    private void UpdateRtsButtonVisibility()
+    {
+        if (_rtsConfig == null) return;
+        bool inPlanet = Mode == EditorMode.PlanetEdit && !_transitioning;
+
+        foreach (var b in _rtsConfig.Buildings)
+            _app.ShowUIButton($"build_{b.Id}", inPlanet);
+        _app.ShowUIButton("cancel_placement", inPlanet && _state.PlacementBuildingId != null);
+
+        var selected = _state.SelectedBuilding;
+        var selectedDef = selected != null ? _rtsConfig.GetBuilding(selected.TypeId) : null;
+        var enabled = inPlanet && selectedDef != null ? selectedDef.Produces : new List<string>();
+        foreach (var u in _rtsConfig.Units)
+            _app.ShowUIButton($"produce_{u.Id}", enabled.Contains(u.Id));
+    }
+
+    /// <summary>
+    /// Full refresh — rewrites button labels + CSS to reflect placement
+    /// highlights and the produce-bar slot order. Called from event
+    /// handlers (build/produce/cancel clicks, building selection).
+    /// </summary>
+    private void RefreshRtsButtons()
+    {
+        if (_rtsConfig == null) return;
+
+        for (int i = 0; i < _rtsConfig.Buildings.Count; i++)
+        {
+            var b = _rtsConfig.Buildings[i];
+            bool active = _state.PlacementBuildingId == b.Id;
+            _app.CreateUIButton($"build_{b.Id}", (active ? "▶ " : "🏗 ") + b.Name,
+                BuildButtonCss(i, active));
+        }
+
+        var selected = _state.SelectedBuilding;
+        var selectedDef = selected != null ? _rtsConfig.GetBuilding(selected.TypeId) : null;
+        if (selectedDef != null)
+        {
+            for (int slot = 0; slot < selectedDef.Produces.Count; slot++)
+            {
+                var uid = selectedDef.Produces[slot];
+                var unitDef = _rtsConfig.GetUnit(uid);
+                _app.CreateUIButton($"produce_{uid}", $"⚙ {unitDef?.Name ?? uid}",
+                    ProduceButtonCss(slot));
+            }
+        }
+
+        UpdateRtsButtonVisibility();
+    }
+
+    private void ProduceUnit(string unitId)
+    {
+        if (_rtsConfig == null) return;
+        var b = _state.SelectedBuilding;
+        if (b == null) return;
+        var def = _rtsConfig.GetBuilding(b.TypeId);
+        if (def == null || !def.Produces.Contains(unitId)) return;
+
+        var mesh = _planet.Mesh;
+        var up = mesh.GetCellCenter(b.CellIndex);
+        float surfaceR = mesh.Radius + mesh.GetLevel(b.CellIndex) * mesh.StepHeight;
+
+        // Spawn units in a ring around the building so successive units don't
+        // stack on the same point. Tangent basis comes from the cell's normal.
+        var worldUp = new Vector3(0, 1, 0);
+        var tangentA = Vector3.Cross(worldUp, up);
+        if (tangentA.LengthSquared() < 1e-5f) tangentA = Vector3.Cross(new Vector3(1, 0, 0), up);
+        tangentA = Vector3.Normalize(tangentA);
+        var tangentB = Vector3.Normalize(Vector3.Cross(up, tangentA));
+
+        int slot = b.UnitsSpawned;
+        b.UnitsSpawned++;
+        float angle = slot * 0.7f;
+        float ring = 0.06f * mesh.Radius;
+        var offset = tangentA * (MathF.Cos(angle) * ring) + tangentB * (MathF.Sin(angle) * ring);
+        var pos = Vector3.Normalize(up * surfaceR + offset) * (surfaceR + 0.002f);
+
+        _state.SpawnUnit(unitId, pos, Vector3.Normalize(pos));
     }
 
     private void OnClick(float cx, float cy, int button)
@@ -236,13 +412,55 @@ public class GameEngine
                 }
             }
 
+            // RTS interactions take priority over terrain editing when edit
+            // mode is OFF — left-click places a queued building, picks an
+            // existing one, or deselects on empty cells.
+            if (!_editMode && _rts != null && button == 0)
+            {
+                var cell = PickCell(cx, cy);
+                if (cell == null)
+                {
+                    if (_state.SelectedBuildingInstanceId != -1 || _state.PlacementBuildingId != null)
+                    {
+                        _state.SelectedBuildingInstanceId = -1;
+                        _state.PlacementBuildingId = null;
+                        RefreshRtsButtons();
+                    }
+                    return;
+                }
+
+                if (_state.PlacementBuildingId != null)
+                {
+                    if (_state.BuildingAtCell(cell.Value) == null)
+                        _state.PlaceBuilding(_state.PlacementBuildingId, cell.Value);
+                    _state.PlacementBuildingId = null;
+                    RefreshRtsButtons();
+                    return;
+                }
+
+                var existing = _state.BuildingAtCell(cell.Value);
+                if (existing != null)
+                {
+                    _state.SelectedBuildingInstanceId = existing.InstanceId;
+                    RefreshRtsButtons();
+                    return;
+                }
+
+                if (_state.SelectedBuildingInstanceId != -1)
+                {
+                    _state.SelectedBuildingInstanceId = -1;
+                    RefreshRtsButtons();
+                }
+                return;
+            }
+
             // Cells only respond to taps when the player has turned editing on.
             if (!_editMode) return;
-            var cell = PickCell(cx, cy);
-            if (cell == null) return;
-            if (button == 0) _planet.Mesh.ChangeLevel(cell.Value, +1);
-            else if (button == 2) _planet.Mesh.ChangeLevel(cell.Value, -1);
-            _planet.MarkDirty(cell.Value);
+            var editCell = PickCell(cx, cy);
+            if (editCell == null) return;
+            if (button == 0) _planet.Mesh.ChangeLevel(editCell.Value, +1);
+            else if (button == 2) _planet.Mesh.ChangeLevel(editCell.Value, -1);
+            _planet.MarkDirty(editCell.Value);
         }
         else if (Mode == EditorMode.StarMap && _starMap != null && button == 0)
         {
@@ -465,6 +683,7 @@ public class GameEngine
 
             _app.ShowUIButton("back_solar", false);
             _app.ShowUIButton("edit_toggle", false);
+            UpdateRtsButtonVisibility();
             OnFrameRendered?.Invoke();
             return;
         }
@@ -523,6 +742,16 @@ public class GameEngine
 
             _planet.Draw(planetMvp, _distance, clearFirst: false);
 
+            // Buildings and units sit on the planet surface, in the same local
+            // space as the terrain mesh. Reuse the planet MVP so they line up
+            // exactly with the cells they're placed on.
+            if (_rts != null)
+            {
+                _rts.SetSunDirection(selfPos.LengthSquared() > 1e-6f
+                    ? -Vector3.Normalize(selfPos) : new Vector3(0.5f, 0.7f, 0.5f));
+                _rts.Draw(_state, _planet.Mesh, planetMvp);
+            }
+
             // Orbit rings start invisible up close, fade in as we zoom out so
             // the player can see the orbital structure before the auto-trigger
             // pulls them back to solar-system view. Reaches full alpha just
@@ -535,11 +764,13 @@ public class GameEngine
 
             _app.ShowUIButton("back_solar", true);
             _app.ShowUIButton("edit_toggle", true);
+            UpdateRtsButtonVisibility();
         }
         else if (Mode == EditorMode.SolarSystem && _solarSystem != null)
         {
             _app.ShowUIButton("back_solar", false);
             _app.ShowUIButton("edit_toggle", false);
+            UpdateRtsButtonVisibility();
             _solarSystem.SetTime(elapsed);
             var mvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
 
@@ -552,6 +783,8 @@ public class GameEngine
         else if (Mode == EditorMode.StarMap && _starMap != null)
         {
             _app.ShowUIButton("back_solar", false);
+            _app.ShowUIButton("edit_toggle", false);
+            UpdateRtsButtonVisibility();
             var mvp = _starMap.BuildMvpFloats(_app.AspectRatio);
             _starMap.Draw(mvp);
         }
