@@ -23,8 +23,15 @@ public sealed class RtsState
     /// <summary>Currently selected building, or -1.</summary>
     public int SelectedBuildingInstanceId { get; set; } = -1;
 
+    /// <summary>Currently selected unit, or -1. Mutually exclusive with
+    /// the building selection — picking one clears the other.</summary>
+    public int SelectedUnitInstanceId { get; set; } = -1;
+
     public PlacedBuilding? SelectedBuilding =>
         Buildings.FirstOrDefault(b => b.InstanceId == SelectedBuildingInstanceId);
+
+    public SpawnedUnit? SelectedUnit =>
+        Units.FirstOrDefault(u => u.InstanceId == SelectedUnitInstanceId);
 
     public PlacedBuilding? BuildingAtCell(int cellIndex) =>
         Buildings.FirstOrDefault(b => b.CellIndex == cellIndex);
@@ -60,6 +67,7 @@ public sealed class RtsState
         Units.Clear();
         PlacementBuildingId = null;
         SelectedBuildingInstanceId = -1;
+        SelectedUnitInstanceId = -1;
     }
 }
 
@@ -84,4 +92,16 @@ public sealed class SpawnedUnit
     /// <summary>Outward radial unit vector at the unit's position. Used by
     /// the renderer to orient the unit so its base sits flat on the ground.</summary>
     public Vector3 SurfaceUp { get; set; }
+    /// <summary>The cell the unit currently occupies. Updated by the
+    /// movement system as the unit advances along its path.</summary>
+    public int CellIndex { get; set; }
+
+    /// <summary>Pathfinder result. Null/empty when stationary; otherwise a
+    /// list of cell indices ending at the goal. <see cref="PathIndex"/> is
+    /// the next cell to step toward.</summary>
+    public List<int>? Path { get; set; }
+    public int PathIndex { get; set; }
+    /// <summary>Heading vector along the surface (tangent), used by the
+    /// renderer to face the unit's model toward its next step.</summary>
+    public Vector3 Heading { get; set; }
 }

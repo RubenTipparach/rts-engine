@@ -40,3 +40,7 @@ rtsCamera:
   groundClearance: 0.15    # camera floor altitude above surface (radius units)
   tiltStartHeight: 0.6     # altitude at which tilt fades in (radius units)
   lookAhead: 0.25          # forward look-at offset along surface tangent (radius units, ~30° tilt at ground)
+
+slopes:
+  density: 0.45            # fraction of eligible border cells that become slopes
+  seedOffset: 1337         # combined with planet seed for deterministic slope placement

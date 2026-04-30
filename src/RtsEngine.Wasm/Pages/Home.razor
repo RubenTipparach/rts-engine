@@ -18,6 +18,7 @@
     private StarMapRenderer? _starMap;
     private SolarSystemRenderer? _solarSystem;
     private IGPU? _gpu;
+    private EngineConfig _engineConfig = new();
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -46,20 +47,24 @@
             _starMap = new StarMapRenderer(gpu, galaxy);
             await _starMap.Setup(starmapShader);
 
-            // Planet (default Earth)
-            _planet = await CreatePlanetRenderer("planets/earth.yaml");
-
-            // Engine config (camera tuning, RTS ground view, LOD, lighting)
-            EngineConfig engineConfig;
+            // Engine config (camera tuning, RTS ground view, LOD, lighting,
+            // slope density). Loaded BEFORE the planet so slope generation
+            // has the density value at mesh-build time.
             try
             {
                 var engineYaml = await Http.GetStringAsync("config/engine.yaml");
-                engineConfig = EngineConfig.FromYaml(engineYaml);
+                _engineConfig = EngineConfig.FromYaml(engineYaml);
             }
-            catch { engineConfig = new EngineConfig(); }
+            catch { _engineConfig = new EngineConfig(); }
+
+            // Planet (default Earth)
+            _planet = await CreatePlanetRenderer("planets/earth.yaml");
+            var engineConfig = _engineConfig;
 
             // RTS gameplay (buildings + units). Optional — falls back to a
             // pure planet editor if either the config or shader is missing.
+            // Baked .obj models from assets/models/ replace the procedural
+            // boxes when available; missing files just fall back to MakeBox.
             RtsConfig? rtsConfig = null;
             RtsRenderer? rtsRenderer = null;
             try
@@ -67,8 +72,18 @@
                 var rtsYaml = await Http.GetStringAsync("config/rts.yaml");
                 rtsConfig = RtsConfig.FromYaml(rtsYaml);
                 var rtsShader = await Http.GetStringAsync("shaders/rts.wgsl");
+                var objs = new Dictionary<string, string>();
+                foreach (var entityId in rtsConfig.Buildings.Select(b => b.Id)
+                                          .Concat(rtsConfig.Units.Select(u => u.Id)))
+                {
+                    try
+                    {
+                        objs[entityId] = await Http.GetStringAsync($"assets/models/{entityId}.obj");
+                    }
+                    catch { /* fall back to procedural box for this entity */ }
+                }
                 rtsRenderer = new RtsRenderer(gpu, rtsConfig);
-                await rtsRenderer.Setup(rtsShader);
+                await rtsRenderer.Setup(rtsShader, objs);
             }
             catch { rtsConfig = null; rtsRenderer = null; }
 
@@ -143,6 +158,13 @@
             seed: config.Generation.Seed,
             frequency: config.Generation.Frequency,
             thresholds: config.Generation.Thresholds.ToArray());
+
+        // Procedural slope ramps at elevation borders so ground units have a
+        // way down without needing to hop. Seeded by the planet seed combined
+        // with a config-driven offset so terrain and slopes stay independent.
+        SlopeGenerator.Generate(mesh,
+            seed: config.Generation.Seed ^ _engineConfig.Slopes.SeedOffset,
+            density: _engineConfig.Slopes.Density);
 
         var renderer = new PlanetRenderer(_gpu, mesh);
         renderer.ApplyConfig(config);

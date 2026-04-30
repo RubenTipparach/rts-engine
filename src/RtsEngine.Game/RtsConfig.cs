@@ -48,4 +48,9 @@ public sealed class UnitDef
     public List<float> Color { get; set; } = new() { 0.5f, 0.7f, 0.5f };
     public float HalfWidth { get; set; } = 0.01f;
     public float Height { get; set; } = 0.018f;
+    /// <summary>Surface speed in radius units per second.</summary>
+    public float Speed { get; set; } = 0.04f;
+    /// <summary>Infantry-style mobility — can hop a single elevation step
+    /// between adjacent cells without needing a slope.</summary>
+    public bool CanHop { get; set; } = false;
 }

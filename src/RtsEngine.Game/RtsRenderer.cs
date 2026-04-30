@@ -42,7 +42,7 @@ public sealed class RtsRenderer : IDisposable
         _config = config;
     }
 
-    public async Task Setup(string shaderCode)
+    public async Task Setup(string shaderCode, Dictionary<string, string>? objs = null)
     {
         var shader = await _gpu.CreateShaderModule(shaderCode);
         _pipeline = await _gpu.CreateRenderPipeline(shader, new object[]
@@ -64,21 +64,38 @@ public sealed class RtsRenderer : IDisposable
 
         foreach (var b in _config.Buildings)
         {
-            var (v, i) = MakeBox(b.HalfWidth, b.Height);
-            int vbo = await _gpu.CreateVertexBuffer(v);
-            int ibo = await _gpu.CreateIndexBuffer(i);
-            _buildingMeshes[b.Id] = new Mesh { Vbo = vbo, Ibo = ibo, IndexCount = i.Length };
+            _buildingMeshes[b.Id] = await BuildMesh(b.Id, objs, b.HalfWidth, b.Height);
             _buildingColors[b.Id] = ColorOf(b.Color);
         }
         foreach (var u in _config.Units)
         {
-            var (v, i) = MakeBox(u.HalfWidth, u.Height);
-            int vbo = await _gpu.CreateVertexBuffer(v);
-            int ibo = await _gpu.CreateIndexBuffer(i);
-            _unitMeshes[u.Id] = new Mesh { Vbo = vbo, Ibo = ibo, IndexCount = i.Length };
+            _unitMeshes[u.Id] = await BuildMesh(u.Id, objs, u.HalfWidth, u.Height);
             _unitColors[u.Id] = ColorOf(u.Color);
         }
         _ready = true;
+    }
+
+    /// <summary>
+    /// Try the baked .obj first (canonical artifact under assets/models/),
+    /// fall back to a procedural box if no .obj was provided. Box dimensions
+    /// come from the YAML so the silhouette still matches roughly even when
+    /// running in environments where the asset pipeline isn't wired up.
+    /// </summary>
+    private async Task<Mesh> BuildMesh(string entityId, Dictionary<string, string>? objs,
+        float halfWidth, float height)
+    {
+        float[] verts; ushort[] idx;
+        if (objs != null && objs.TryGetValue(entityId, out var objText))
+        {
+            (verts, idx) = ObjLoader.Parse(objText);
+        }
+        else
+        {
+            (verts, idx) = MakeBox(halfWidth, height);
+        }
+        int vbo = await _gpu.CreateVertexBuffer(verts);
+        int ibo = await _gpu.CreateIndexBuffer(idx);
+        return new Mesh { Vbo = vbo, Ibo = ibo, IndexCount = idx.Length };
     }
 
     public void SetSunDirection(Vector3 dir) => _sunDir = dir;
@@ -112,8 +129,11 @@ public sealed class RtsRenderer : IDisposable
         {
             if (!_unitMeshes.TryGetValue(u.TypeId, out var um)) continue;
             var color = _unitColors[u.TypeId];
-            var modelMvp = BuildModelMvp(u.SurfacePoint, u.SurfaceUp, planetMvpMat);
-            DrawInstance(um, modelMvp, color, selected: false);
+            // Face the unit's local +Z along its current heading so models
+            // look like they're walking the path, not facing a fixed compass.
+            var modelMvp = BuildModelMvp(u.SurfacePoint, u.SurfaceUp, planetMvpMat,
+                                         heading: u.Heading);
+            DrawInstance(um, modelMvp, color, selected: u.InstanceId == state.SelectedUnitInstanceId);
         }
     }
 
@@ -135,17 +155,28 @@ public sealed class RtsRenderer : IDisposable
 
     /// <summary>
     /// Build a model matrix that maps Y-up local space onto the surface
-    /// tangent frame at <paramref name="pos"/>. Picks an arbitrary tangent
-    /// "right" via cross with world up; falls back to X-axis at the poles.
+    /// tangent frame at <paramref name="pos"/>. Optional <paramref name="heading"/>
+    /// rotates the model around the surface up so it faces the direction
+    /// of travel; without one we pick an arbitrary tangent "right".
     /// </summary>
-    private static Matrix4X4<float> BuildModelMvp(Vector3 pos, Vector3 up, Matrix4X4<float> mvp)
+    private static Matrix4X4<float> BuildModelMvp(Vector3 pos, Vector3 up,
+        Matrix4X4<float> mvp, Vector3? heading = null)
     {
         var u = Vector3.Normalize(up);
-        var worldUp = new Vector3(0, 1, 0);
-        var right = Vector3.Cross(worldUp, u);
-        if (right.LengthSquared() < 1e-5f) right = new Vector3(1, 0, 0);
-        right = Vector3.Normalize(right);
-        var fwd = Vector3.Normalize(Vector3.Cross(u, right));
+        Vector3 fwd;
+        if (heading is { } hd && hd.LengthSquared() > 1e-8f)
+        {
+            // Project heading onto the tangent plane so it stays perpendicular
+            // to the surface up — keeps the model upright even on a tilted
+            // slope cell where the heading vector picks up a radial component.
+            var h = hd - u * Vector3.Dot(hd, u);
+            fwd = h.LengthSquared() > 1e-8f ? Vector3.Normalize(h) : ArbitraryTangent(u);
+        }
+        else
+        {
+            fwd = ArbitraryTangent(u);
+        }
+        var right = Vector3.Normalize(Vector3.Cross(u, fwd));
 
         // Row-major basis: rows are right/up/fwd, then translation row.
         var basis = new Matrix4X4<float>(
@@ -154,6 +185,15 @@ public sealed class RtsRenderer : IDisposable
             fwd.X,   fwd.Y,   fwd.Z,   0f,
             pos.X,   pos.Y,   pos.Z,   1f);
         return Matrix4X4.Multiply(basis, mvp);
+    }
+
+    private static Vector3 ArbitraryTangent(Vector3 up)
+    {
+        var worldUp = new Vector3(0, 1, 0);
+        var right = Vector3.Cross(worldUp, up);
+        if (right.LengthSquared() < 1e-5f) right = new Vector3(1, 0, 0);
+        right = Vector3.Normalize(right);
+        return Vector3.Normalize(Vector3.Cross(up, right));
     }
 
     private static Matrix4X4<float> RawToMat(float[] m) => new(

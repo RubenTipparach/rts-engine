@@ -57,6 +57,7 @@ public class GameEngine
     private string? _pendingPlanetSwitch;
 
     private bool _running;
+    private float _lastTickElapsed;
     public EditorMode Mode { get; set; } = EditorMode.SolarSystem;
     public string? SelectedPlanetConfig { get; private set; }
     public event Action? OnFrameRendered;
@@ -380,7 +381,11 @@ public class GameEngine
         var offset = tangentA * (MathF.Cos(angle) * ring) + tangentB * (MathF.Sin(angle) * ring);
         var pos = Vector3.Normalize(up * surfaceR + offset) * (surfaceR + 0.002f);
 
-        _state.SpawnUnit(unitId, pos, Vector3.Normalize(pos));
+        var spawned = _state.SpawnUnit(unitId, pos, Vector3.Normalize(pos));
+        // Anchor the unit on the building's cell so move commands have a
+        // valid starting point for pathfinding from the moment it spawns.
+        spawned.CellIndex = b.CellIndex;
+        spawned.Heading = tangentA;
     }
 
     private void OnClick(float cx, float cy, int button)
@@ -413,16 +418,44 @@ public class GameEngine
             }
 
             // RTS interactions take priority over terrain editing when edit
-            // mode is OFF — left-click places a queued building, picks an
-            // existing one, or deselects on empty cells.
-            if (!_editMode && _rts != null && button == 0)
+            // mode is OFF — left-click places a queued building, picks a
+            // unit or building, or deselects. Right-click on a selected unit
+            // issues a move command via the pathfinder.
+            if (!_editMode && _rts != null)
             {
+                if (button == 2)
+                {
+                    HandleMoveCommand(cx, cy);
+                    return;
+                }
+
+                if (button != 0) return;
+
+                // Picking priority while not placing: units first (they sit on
+                // top of cells and are smaller, so the player would expect a
+                // direct hit to select the unit not its cell), then buildings,
+                // then a plain cell click.
+                if (_state.PlacementBuildingId == null)
+                {
+                    int unitId = PickUnit(cx, cy);
+                    if (unitId >= 0)
+                    {
+                        _state.SelectedUnitInstanceId = unitId;
+                        _state.SelectedBuildingInstanceId = -1;
+                        RefreshRtsButtons();
+                        return;
+                    }
+                }
+
                 var cell = PickCell(cx, cy);
                 if (cell == null)
                 {
-                    if (_state.SelectedBuildingInstanceId != -1 || _state.PlacementBuildingId != null)
+                    if (_state.SelectedBuildingInstanceId != -1
+                        || _state.SelectedUnitInstanceId != -1
+                        || _state.PlacementBuildingId != null)
                     {
                         _state.SelectedBuildingInstanceId = -1;
+                        _state.SelectedUnitInstanceId = -1;
                         _state.PlacementBuildingId = null;
                         RefreshRtsButtons();
                     }
@@ -442,13 +475,15 @@ public class GameEngine
                 if (existing != null)
                 {
                     _state.SelectedBuildingInstanceId = existing.InstanceId;
+                    _state.SelectedUnitInstanceId = -1;
                     RefreshRtsButtons();
                     return;
                 }
 
-                if (_state.SelectedBuildingInstanceId != -1)
+                if (_state.SelectedBuildingInstanceId != -1 || _state.SelectedUnitInstanceId != -1)
                 {
                     _state.SelectedBuildingInstanceId = -1;
+                    _state.SelectedUnitInstanceId = -1;
                     RefreshRtsButtons();
                 }
                 return;
@@ -708,6 +743,15 @@ public class GameEngine
             _planet.SetHighlightCell(_hoveredCell);
             await _planet.SyncOutline();
 
+            // Advance any units that have a path queued. Frame-bounded dt so
+            // a stutter (long await above) doesn't teleport units forward.
+            if (_rts != null && _rtsConfig != null)
+            {
+                float dt = MathF.Min(0.05f, elapsed - _lastTickElapsed);
+                if (dt > 0f) MovementSystem.Tick(_state, _planet.Mesh, _rtsConfig, dt);
+            }
+            _lastTickElapsed = elapsed;
+
             // Sync lighting to the planet's solar-system position: the sun is at
             // the solar-system origin, so the direction toward the sun (relative
             // to a planet at world position P) is -P/|P|.
@@ -859,6 +903,64 @@ public class GameEngine
         m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
 
     // ── Picking ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Project every spawned unit to screen, return the instance id of the
+    /// nearest one within a generous pick radius (units are visually small,
+    /// so we forgive imprecise clicks). -1 if nothing's close enough.
+    /// </summary>
+    private int PickUnit(float canvasX, float canvasY)
+    {
+        if (_rts == null) return -1;
+        float w = _app.CanvasWidth, h = _app.CanvasHeight;
+        if (w < 1 || h < 1) return -1;
+
+        var m = BuildPlanetMvp(w / h);
+        var mvp = new Matrix4x4(
+            m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7],
+            m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
+
+        const float pickPx = 18f;
+        float bestDist = pickPx * pickPx;
+        int best = -1;
+        var camDir = Vector3.Normalize(CameraPosition());
+
+        foreach (var unit in _state.Units)
+        {
+            // Cull units on the far side of the planet.
+            if (Vector3.Dot(unit.SurfaceUp, camDir) < -0.05f) continue;
+
+            var clip = Vector4.Transform(new Vector4(unit.SurfacePoint, 1f), mvp);
+            if (clip.W <= 0.001f) continue;
+            float sx = (clip.X / clip.W * 0.5f + 0.5f) * w;
+            float sy = (0.5f - clip.Y / clip.W * 0.5f) * h;
+            float d = (sx - canvasX) * (sx - canvasX) + (sy - canvasY) * (sy - canvasY);
+            if (d < bestDist) { bestDist = d; best = unit.InstanceId; }
+        }
+        return best;
+    }
+
+    /// <summary>
+    /// Right-click handler: if a unit is selected and the click landed on
+    /// a cell, queue an A* path and let MovementSystem advance the unit
+    /// next tick. No-op if there's no path or no selection.
+    /// </summary>
+    private void HandleMoveCommand(float canvasX, float canvasY)
+    {
+        var unit = _state.SelectedUnit;
+        if (unit == null || _rtsConfig == null) return;
+        var def = _rtsConfig.GetUnit(unit.TypeId);
+        if (def == null) return;
+
+        var targetCell = PickCell(canvasX, canvasY);
+        if (targetCell == null) return;
+
+        var path = Pathfinding.FindPath(_planet.Mesh, unit.CellIndex, targetCell.Value, def.CanHop);
+        if (path == null) return;
+
+        unit.Path = path;
+        unit.PathIndex = path.Count > 0 && path[0] == unit.CellIndex ? 1 : 0;
+    }
 
     private int? PickCell(float canvasX, float canvasY)
     {

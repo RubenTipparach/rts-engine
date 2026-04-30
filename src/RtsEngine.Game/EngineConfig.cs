@@ -11,6 +11,7 @@ public sealed class EngineConfig
     public SolarSystemViewConfig SolarSystemView { get; set; } = new();
     public PlanetEditViewConfig PlanetEditView { get; set; } = new();
     public RtsCameraConfig RtsCamera { get; set; } = new();
+    public SlopeConfig Slopes { get; set; } = new();
 
     public static EngineConfig FromYaml(string yaml)
     {
@@ -62,6 +63,23 @@ public sealed class PlanetEditViewConfig
     public float DefaultDistance { get; set; } = 3f;
     public float MinDistance { get; set; } = 2f;
     public float MaxDistance { get; set; } = 8f;
+}
+
+/// <summary>
+/// Procedural slope placement. Slopes ramp between adjacent cells of
+/// different levels and are the primary way ground units traverse cliffs.
+/// </summary>
+public sealed class SlopeConfig
+{
+    /// <summary>Fraction of cells sitting between a strictly-lower and
+    /// strictly-higher neighbor that get converted into slope ramps. The
+    /// rest stay as flat-topped cliffs.</summary>
+    public float Density { get; set; } = 0.45f;
+
+    /// <summary>Independent seed offset so slope placement is stable per
+    /// planet but not coupled to terrain noise. Combined with the planet's
+    /// own noise seed at generation time.</summary>
+    public int SeedOffset { get; set; } = 1337;
 }
 
 /// <summary>
