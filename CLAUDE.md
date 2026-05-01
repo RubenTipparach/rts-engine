@@ -82,15 +82,23 @@ RtsEngine.Desktop (Silk.NET OpenGL host)
 
 ## Config-Driven Design (NO HARDCODED MAGIC NUMBERS)
 
-**Every game-design or visual parameter that a user would want to tweak MUST live in a YAML config file.** Never hardcode values like camera distances, LOD thresholds, transition speeds, sphere segment counts, lighting intensities, or color values directly in C# code. Instead:
+**Hard rule: unless a value is an exact constant that will never be changed or modified, do not hardcode magic numbers in code. Always add the value to a config file somewhere.** This applies to every camera distance, threshold, blend percentage, LOD knob, transition duration, scroll factor, lerp rate, fade band, sphere segment count, lighting intensity, color, FOV, near/far plane, drag sensitivity, density, density factor, decay rate — anything a designer or future Claude run might want to tune.
+
+Config homes:
 
 1. **Planet config** (`wwwroot/planets/<name>.yaml`): radius, subdivisions, stepHeight, terrain levels, atmosphere, noise, textures, zoom min/max
 2. **Solar system config** (`wwwroot/config/solarsystem.yaml`): sun properties, orbital bodies, display radii, orbit distances/speeds
-3. **Engine config** (`wwwroot/config/engine.yaml`): camera defaults, transition speed, LOD distance thresholds, lighting params, sphere segment counts
+3. **Engine config** (`wwwroot/config/engine.yaml`): camera defaults, transition speed, LOD distance thresholds, lighting params, sphere segment counts, RTS camera tuning, slope density
+4. **RTS gameplay config** (`wwwroot/config/rts.yaml`): buildings + units, speeds, sizes, colors, hop capability
 
 Config files are loaded at startup via `HttpClient.GetStringAsync` (WASM) or `File.ReadAllText` (Desktop), parsed by `YamlDotNet`. All config classes live in `RtsEngine.Game` with `FromYaml()` static factory methods.
 
-**When adding new features:** if a value affects visuals, gameplay feel, or anything a designer would tweak — put it in config, not code. The code should read config values and apply them. The only constants allowed in code are mathematical ones (π, conversion factors) and structural ones (patch count = 20, vertex stride).
+**Allowed exceptions** (everything else goes in config):
+- Mathematical constants — π, e, conversion factors (deg→rad), small epsilons used purely for numerical safety (1e-6 etc).
+- Structural invariants that aren't going to change without a code rewrite — icosahedron patch count = 20, vertex stride floats per-shader, the fact that hex cells have 6 sides.
+- Format-level constants — PNG signature bytes, .obj line prefixes, shader binding indices.
+
+**When in doubt, put it in config.** A duplicate config knob that turns out to never need tuning is cheap to delete; a hardcoded number that turns out to need tuning means hunting through C# at the wrong moment.
 
 ## Editor Modes
 

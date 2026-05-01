@@ -62,7 +62,12 @@ public sealed class PlanetEditViewConfig
 {
     public float DefaultDistance { get; set; } = 3f;
     public float MinDistance { get; set; } = 2f;
-    public float MaxDistance { get; set; } = 8f;
+    public float MaxDistance { get; set; } = 200f;
+    /// <summary>Distance above which the planet camera auto-glides back to
+    /// solar-system view. Sits a touch above the solar-system camera's
+    /// default distance so the player has to actively zoom past the comfort
+    /// zone to leave.</summary>
+    public float AutoZoomOutThreshold { get; set; } = 100f;
 }
 
 /// <summary>
@@ -93,13 +98,30 @@ public sealed class RtsCameraConfig
     /// minimum orbit distance becomes radius * (1 + GroundClearance).</summary>
     public float GroundClearance { get; set; } = 0.15f;
 
-    /// <summary>Altitude (above surface, radius units) at which the tilt
-    /// blend starts fading in. Above this the camera looks at planet center.
-    /// Larger values make the tilt engage sooner during a zoom-in.</summary>
-    public float TiltStartHeight { get; set; } = 1.2f;
-
     /// <summary>How far ahead (along the surface, radius units) the look-at
     /// target sits when fully tilted. Tuned so that altitude/lookAhead gives
     /// roughly a 30° downward tilt at the ground floor.</summary>
     public float LookAhead { get; set; } = 0.25f;
+
+    /// <summary>Zoom percentage (log-altitude space, 0 = max zoom out, 1 =
+    /// max zoom in) at which the RTS tilt starts engaging. Below this the
+    /// camera looks at planet center; above this it begins tilting to a
+    /// horizon-ahead RTS view.</summary>
+    public float TiltStartZoomPercent { get; set; } = 0.70f;
+
+    /// <summary>Zoom percentage at which the RTS tilt is fully engaged.
+    /// Between TiltStart and TiltFull the tilt smoothstep-lerps in.</summary>
+    public float TiltFullZoomPercent { get; set; } = 1.0f;
+
+    /// <summary>Per-scroll-delta-unit altitude change as a fraction of the
+    /// current altitude. Each tick changes altitude by `delta × altitude ×
+    /// scrollIncrement`, so the subjective zoom speed is uniform regardless
+    /// of how close the camera is.</summary>
+    public float ScrollIncrement { get; set; } = 0.002f;
+
+    /// <summary>How fast the displayed zoom catches up to the target zoom
+    /// (per second). Higher = snappier. The exponential decay gives smooth
+    /// motion without explicit easing curves; rate 12 = ~98% of the way in
+    /// 0.3 seconds.</summary>
+    public float ZoomLerpRate { get; set; } = 12.0f;
 }

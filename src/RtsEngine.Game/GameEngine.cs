@@ -17,18 +17,18 @@ public class GameEngine
     private readonly EngineConfig _config;
 
     private float _azimuth, _elevation = 0.4f, _distance = 3.0f;
+    /// <summary>Scroll updates this; the per-tick zoom lerp chases it from
+    /// <see cref="_distance"/> at <c>RtsCamera.ZoomLerpRate</c> per second.
+    /// Decoupling the two gives smooth zoom without losing input snappiness —
+    /// the user's scroll wheel writes immediately into the target, the
+    /// camera follows.</summary>
+    private float _targetDistance = 3.0f;
     private bool _dragging;
     private int _hoveredCell = -1;
     private DateTime _startTime = DateTime.UtcNow;
 
     private const float PixelsToRadians = 0.005f;
 
-    /// <summary>
-    /// Once the planet-view camera distance crosses this, we glide back to
-    /// solar-system view. Sits just above the solar-system camera's default
-    /// distance (80) so the user has to actively zoom out to leave.
-    /// </summary>
-    private const float AutoZoomOutThreshold = 100f;
     private const float RingFadeNear = 20f;   // start fading rings in here
     private const float RingFadeFar = 90f;    // fully visible by here (just below auto-trigger)
     private const float PlanetViewFovYDegrees = 45f;
@@ -160,18 +160,17 @@ public class GameEngine
             if (Mode == EditorMode.PlanetEdit)
             {
                 // Logarithmic zoom: each scroll tick changes *altitude*
-                // (distance above the surface), not distance from the planet
-                // center, by a fixed percentage. Result: at the orbit floor
-                // (~0.15 radius up) one click moves a fraction of a step;
-                // at 100-radius altitude one click moves several radii.
-                // The subjective zoom speed feels uniform regardless of how
-                // close the camera is — fine for fine-tuning RTS framing
-                // and still snappy when pulling out toward solar system view.
+                // (above the surface) by a fixed percentage, not distance
+                // from the planet center. Subjective zoom speed feels
+                // uniform regardless of altitude. Scroll writes the *target*
+                // distance; the camera lerps to it in Tick (RtsCamera.ZoomLerpRate)
+                // so the motion is smooth without losing input snappiness.
                 float radius = _planet.Mesh.Radius;
-                float altitude = MathF.Max(1e-4f, _distance - radius);
-                altitude -= delta * altitude * 0.001f;
-                _distance = radius + altitude;
-                _distance = Math.Clamp(_distance, MinPlanetDistance(), 200f);
+                float altitude = MathF.Max(1e-4f, _targetDistance - radius);
+                altitude -= delta * altitude * _config.RtsCamera.ScrollIncrement;
+                _targetDistance = radius + altitude;
+                _targetDistance = Math.Clamp(_targetDistance,
+                    MinPlanetDistance(), _config.PlanetEditView.MaxDistance);
             }
             else if (Mode == EditorMode.StarMap)
                 _starMap?.Zoom(delta);
@@ -345,21 +344,14 @@ public class GameEngine
             return;
         }
 
-        float radius = _planet.Mesh.Radius;
-        float altitude = _distance - radius;
-        float minAlt = MathF.Max(1e-4f, MinPlanetDistance() - radius);
-        float maxAlt = AutoZoomOutThreshold - radius;
+        float altitude = _distance - _planet.Mesh.Radius;
 
-        // Log-space mapping so the bar's fill matches the log-space scroll
-        // wheel — equal angular sweep on the bar = equal scroll travel.
-        float logAlt = MathF.Log(MathF.Max(1e-4f, altitude));
-        float logMin = MathF.Log(minAlt);
-        float logMax = MathF.Log(maxAlt);
-        float zoomPct = 1f - (logAlt - logMin) / (logMax - logMin);
-        zoomPct = Math.Clamp(zoomPct, 0f, 1f);
+        // Reuse the same helpers the camera does so the indicator is the
+        // source of truth for tuning — what you read here is what the tilt
+        // and the smooth-up basis are reacting to.
+        float zoomPct = ZoomPercent(_distance);
         int zoomInt = (int)MathF.Round(zoomPct * 100f);
-
-        float tiltBlend = 1f - Smoothstep(0f, _config.RtsCamera.TiltStartHeight, altitude);
+        float tiltBlend = TiltBlend(_distance);
         int tiltInt = (int)MathF.Round(tiltBlend * 100f);
 
         // Multiline text on a button with white-space:pre. \n becomes a real
@@ -708,7 +700,8 @@ public class GameEngine
                 {
                     _transitioning = false;
                     Mode = EditorMode.PlanetEdit;
-                    _distance = 3f;
+                    _distance = _config.PlanetEditView.DefaultDistance;
+                    _targetDistance = _distance;
                     _azimuth = _solarSystem.Azimuth;
                     _elevation = _solarSystem.Elevation;
                     _hoveredCell = -1;
@@ -795,7 +788,7 @@ public class GameEngine
             // Pulled too far out → glide back to the solar system view.
             // Picked a touch above the planet view's solar-system distance (80)
             // so the user has to actively zoom past the comfort zone to leave.
-            if (_distance > AutoZoomOutThreshold)
+            if (_distance > _config.PlanetEditView.AutoZoomOutThreshold)
             {
                 SwitchToSolarSystem();
                 OnFrameRendered?.Invoke();
@@ -803,6 +796,18 @@ public class GameEngine
             }
 
             await _planet.RebuildDirtyPatches();
+
+            // Smooth zoom: chase the scroll-set target with an exponential
+            // decay. Rate is per-second, so dt-corrected — feels identical
+            // at 30 fps, 60 fps, or a stutter-recovery 120 fps tick. A clamped
+            // dt prevents huge frame gaps from snapping the camera.
+            float zoomDt = MathF.Min(0.05f, elapsed - _lastTickElapsed);
+            if (zoomDt > 0f)
+            {
+                float a = 1f - MathF.Exp(-_config.RtsCamera.ZoomLerpRate * zoomDt);
+                _distance += (_targetDistance - _distance) * a;
+            }
+
             var cam = CameraPosition();
             _planet.SetCameraPosition(cam.X, cam.Y, cam.Z);
             _planet.SetTime(elapsed);
@@ -813,8 +818,7 @@ public class GameEngine
             // a stutter (long await above) doesn't teleport units forward.
             if (_rts != null && _rtsConfig != null)
             {
-                float dt = MathF.Min(0.05f, elapsed - _lastTickElapsed);
-                if (dt > 0f) MovementSystem.Tick(_state, _planet.Mesh, _rtsConfig, dt);
+                if (zoomDt > 0f) MovementSystem.Tick(_state, _planet.Mesh, _rtsConfig, zoomDt);
             }
             _lastTickElapsed = elapsed;
 
@@ -924,20 +928,47 @@ public class GameEngine
         return radius * (1f + _config.RtsCamera.GroundClearance);
     }
 
+    /// <summary>
+    /// Zoom level expressed as a fraction in log-altitude space —
+    /// 0 = at the auto-zoom-out threshold (max zoom out), 1 = at the
+    /// orbit floor (max zoom in). Same parameterization as the on-screen
+    /// indicator bar so designers can tune <c>RtsCamera.TiltStartZoomPercent</c>
+    /// against numbers they can see.
+    /// </summary>
+    private float ZoomPercent(float distance)
+    {
+        float radius = _planet.Mesh.Radius;
+        float altitude = MathF.Max(1e-4f, distance - radius);
+        float minAlt = MathF.Max(1e-4f, MinPlanetDistance() - radius);
+        float maxAlt = MathF.Max(minAlt + 1e-3f, _config.PlanetEditView.AutoZoomOutThreshold - radius);
+        float pct = 1f - (MathF.Log(altitude) - MathF.Log(minAlt))
+                       / (MathF.Log(maxAlt) - MathF.Log(minAlt));
+        return Math.Clamp(pct, 0f, 1f);
+    }
+
+    /// <summary>RTS tilt blend driven by zoom percentage rather than raw
+    /// altitude — gives designers two clean tunables (start% / full%) that
+    /// don't change meaning when the planet radius does.</summary>
+    private float TiltBlend(float distance)
+    {
+        return Smoothstep(_config.RtsCamera.TiltStartZoomPercent,
+                          _config.RtsCamera.TiltFullZoomPercent,
+                          ZoomPercent(distance));
+    }
+
     /// <summary>Tilted look-at target for RTS-style ground view. At high
     /// altitude returns the planet center; near the surface the target slides
     /// to a point ahead on the ground so the camera tilts forward rather than
     /// staring straight down.</summary>
     private Vector3 PlanetLookAtTarget(Vector3 camPos)
     {
-        float radius = _planet.Mesh.Radius;
-        float altitude = camPos.Length() - radius;
-        float blend = 1f - Smoothstep(0f, _config.RtsCamera.TiltStartHeight, altitude);
+        float blend = TiltBlend(camPos.Length());
         if (blend <= 0f) return Vector3.Zero;
 
         // Tangent at the camera pointing toward decreasing elevation — i.e.
         // "forward along the ground" for an orbit camera. Drives the look-at
         // offset so dragging tilts the view across the surface, not around it.
+        float radius = _planet.Mesh.Radius;
         float ce = MathF.Cos(_elevation), se = MathF.Sin(_elevation);
         float ca = MathF.Cos(_azimuth), sa = MathF.Sin(_azimuth);
         var southTangent = new Vector3(se * ca, -ce, se * sa);
@@ -950,19 +981,34 @@ public class GameEngine
     {
         var lookAt = PlanetLookAtTarget(camPos);
 
-        // World-up vector for CreateLookAt — blend global Y (orbit) → radial
-        // outward (RTS) as tilt comes in. With a fixed (0,1,0) the forward
-        // vector rotates toward -Y as we tilt down, eventually getting close
-        // to anti-parallel with world-up; cross(forward, up) shrinks to zero
-        // and CreateLookAt produces a basis that flips on tiny numerical
-        // noise — that's the upside-down at full tilt. Radial up is always
-        // perpendicular to a tangent forward, so it doesn't degenerate.
-        float radius = _planet.Mesh.Radius;
-        float altitude = camPos.Length() - radius;
-        float tiltBlend = 1f - Smoothstep(0f, _config.RtsCamera.TiltStartHeight, altitude);
+        // World-up that's stable across the full tilt sweep without quaternion
+        // bookkeeping. Two candidate up axes — global Y (good for orbital view
+        // looking at planet center) and radial outward (good for ground-level
+        // RTS view) — are weighted by their perpendicularity to forward and
+        // mixed.
+        //
+        // The naive lerp(worldY, camDir, tiltBlend) version flipped the camera
+        // mid-tilt: at intermediate blends the lerped vector ended up nearly
+        // anti-parallel to forward, cross(forward, up) collapsed, the basis
+        // flipped, the camera rolled 180°. A perpendicularity-weighted mix
+        // can never be parallel to forward unless both candidates are — which
+        // only happens if camDir is parallel to worldY (camera at a pole, and
+        // _elevation is clamped well short of that).
+        var fwdRaw = new Vector3(lookAt.X, lookAt.Y, lookAt.Z) - camPos;
+        var fwd = fwdRaw.LengthSquared() > 1e-8f
+            ? Vector3.Normalize(fwdRaw) : new Vector3(0, 0, -1);
         var camDir = camPos.LengthSquared() > 1e-8f
             ? Vector3.Normalize(camPos) : new Vector3(0, 1, 0);
-        var worldUp = Vector3.Lerp(new Vector3(0, 1, 0), camDir, tiltBlend);
+        var worldY = new Vector3(0, 1, 0);
+
+        float wY = 1f - MathF.Abs(Vector3.Dot(fwd, worldY));
+        float wR = 1f - MathF.Abs(Vector3.Dot(fwd, camDir));
+        // Square the weights so a fully-perpendicular axis dominates strongly
+        // over a near-parallel one — keeps worldUp comfortably away from the
+        // forward axis at all tilt amounts.
+        wY *= wY; wR *= wR;
+        float total = wY + wR + 1e-6f;
+        var worldUp = (worldY * wY + camDir * wR) / total;
         if (worldUp.LengthSquared() < 1e-6f) worldUp = camDir;
         worldUp = Vector3.Normalize(worldUp);
 
