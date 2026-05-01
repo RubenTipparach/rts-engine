@@ -883,10 +883,27 @@ public class GameEngine
     private float[] BuildPlanetMvpAt(Vector3 camPos, float aspectRatio)
     {
         var lookAt = PlanetLookAtTarget(camPos);
+
+        // World-up vector for CreateLookAt — blend global Y (orbit) → radial
+        // outward (RTS) as tilt comes in. With a fixed (0,1,0) the forward
+        // vector rotates toward -Y as we tilt down, eventually getting close
+        // to anti-parallel with world-up; cross(forward, up) shrinks to zero
+        // and CreateLookAt produces a basis that flips on tiny numerical
+        // noise — that's the upside-down at full tilt. Radial up is always
+        // perpendicular to a tangent forward, so it doesn't degenerate.
+        float radius = _planet.Mesh.Radius;
+        float altitude = camPos.Length() - radius;
+        float tiltBlend = 1f - Smoothstep(0f, _config.RtsCamera.TiltStartHeight, altitude);
+        var camDir = camPos.LengthSquared() > 1e-8f
+            ? Vector3.Normalize(camPos) : new Vector3(0, 1, 0);
+        var worldUp = Vector3.Lerp(new Vector3(0, 1, 0), camDir, tiltBlend);
+        if (worldUp.LengthSquared() < 1e-6f) worldUp = camDir;
+        worldUp = Vector3.Normalize(worldUp);
+
         var view = Matrix4X4.CreateLookAt(
             new Vector3D<float>(camPos.X, camPos.Y, camPos.Z),
             new Vector3D<float>(lookAt.X, lookAt.Y, lookAt.Z),
-            new Vector3D<float>(0, 1, 0));
+            new Vector3D<float>(worldUp.X, worldUp.Y, worldUp.Z));
         // Far plane pushed out to fit the rest of the solar system (sun + other
         // planets render as a backdrop). Logarithmic depth in the shaders keeps
         // precision uniform across the wide range. Near plane tightened so the
