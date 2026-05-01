@@ -94,8 +94,9 @@ public sealed class RtsCameraConfig
     public float GroundClearance { get; set; } = 0.15f;
 
     /// <summary>Altitude (above surface, radius units) at which the tilt
-    /// blend starts fading in. Above this the camera looks at planet center.</summary>
-    public float TiltStartHeight { get; set; } = 0.6f;
+    /// blend starts fading in. Above this the camera looks at planet center.
+    /// Larger values make the tilt engage sooner during a zoom-in.</summary>
+    public float TiltStartHeight { get; set; } = 1.2f;
 
     /// <summary>How far ahead (along the surface, radius units) the look-at
     /// target sits when fully tilted. Tuned so that altitude/lookAhead gives

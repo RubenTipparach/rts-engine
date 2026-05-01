@@ -38,7 +38,7 @@ planetEditView:
 # a tilted, traditional-RTS view.
 rtsCamera:
   groundClearance: 0.15    # camera floor altitude above surface (radius units)
-  tiltStartHeight: 0.6     # altitude at which tilt fades in (radius units)
+  tiltStartHeight: 1.2     # altitude at which tilt fades in (radius units) — larger = tilt engages sooner
   lookAhead: 0.25          # forward look-at offset along surface tangent (radius units, ~30° tilt at ground)
 
 slopes:

@@ -159,11 +159,18 @@ public class GameEngine
             if (_transitioning) return;
             if (Mode == EditorMode.PlanetEdit)
             {
-                // Multiplicative scale so far-out scrolls don't crawl. Range
-                // goes wide enough to see the sun and other planets behind the
-                // detailed mesh, and tight enough to skim the surface for an
-                // RTS-style ground view.
-                _distance -= delta * _distance * 0.001f;
+                // Logarithmic zoom: each scroll tick changes *altitude*
+                // (distance above the surface), not distance from the planet
+                // center, by a fixed percentage. Result: at the orbit floor
+                // (~0.15 radius up) one click moves a fraction of a step;
+                // at 100-radius altitude one click moves several radii.
+                // The subjective zoom speed feels uniform regardless of how
+                // close the camera is — fine for fine-tuning RTS framing
+                // and still snappy when pulling out toward solar system view.
+                float radius = _planet.Mesh.Radius;
+                float altitude = MathF.Max(1e-4f, _distance - radius);
+                altitude -= delta * altitude * 0.001f;
+                _distance = radius + altitude;
                 _distance = Math.Clamp(_distance, MinPlanetDistance(), 200f);
             }
             else if (Mode == EditorMode.StarMap)
@@ -322,6 +329,65 @@ public class GameEngine
     }
 
     /// <summary>
+    /// Heads-up zoom indicator on the left edge — vertical bar fills as we
+    /// approach the surface, plus numerical distance / altitude / zoom% /
+    /// tilt% readouts so designers can dial in camera tuning by eye. Hidden
+    /// outside PlanetEdit. Recreates the button each frame — cheap because
+    /// the JS side reuses the existing DOM element and only touches text +
+    /// style properties.
+    /// </summary>
+    private void UpdateZoomIndicator()
+    {
+        bool show = Mode == EditorMode.PlanetEdit && !_transitioning;
+        if (!show)
+        {
+            _app.ShowUIButton("zoom_indicator", false);
+            return;
+        }
+
+        float radius = _planet.Mesh.Radius;
+        float altitude = _distance - radius;
+        float minAlt = MathF.Max(1e-4f, MinPlanetDistance() - radius);
+        float maxAlt = AutoZoomOutThreshold - radius;
+
+        // Log-space mapping so the bar's fill matches the log-space scroll
+        // wheel — equal angular sweep on the bar = equal scroll travel.
+        float logAlt = MathF.Log(MathF.Max(1e-4f, altitude));
+        float logMin = MathF.Log(minAlt);
+        float logMax = MathF.Log(maxAlt);
+        float zoomPct = 1f - (logAlt - logMin) / (logMax - logMin);
+        zoomPct = Math.Clamp(zoomPct, 0f, 1f);
+        int zoomInt = (int)MathF.Round(zoomPct * 100f);
+
+        float tiltBlend = 1f - Smoothstep(0f, _config.RtsCamera.TiltStartHeight, altitude);
+        int tiltInt = (int)MathF.Round(tiltBlend * 100f);
+
+        // Multiline text on a button with white-space:pre. \n becomes a real
+        // newline thanks to that style.
+        string label = $"ZOOM\nD {_distance:F2}\nA {altitude:F3}\nZ {zoomInt,3}%\nT {tiltInt,3}%";
+
+        // Linear gradient with a hard color stop at zoomInt% gives a clean
+        // bar look without needing two separate elements.
+        string css = "{" +
+            "\"left\":\"10px\",\"top\":\"80px\"," +
+            "\"width\":\"80px\",\"height\":\"220px\"," +
+            "\"padding\":\"8px 6px\"," +
+            "\"background\":\"linear-gradient(to top, rgba(80,200,120,0.75) " + zoomInt + "%, rgba(20,40,30,0.85) " + zoomInt + "%)\"," +
+            "\"color\":\"#dfe\",\"fontSize\":\"11px\"," +
+            "\"border\":\"1px solid #4a8\",\"borderRadius\":\"6px\"," +
+            "\"fontFamily\":\"monospace\"," +
+            "\"textAlign\":\"left\"," +
+            "\"whiteSpace\":\"pre\"," +
+            "\"pointerEvents\":\"none\"," +
+            "\"lineHeight\":\"1.45\"," +
+            "\"display\":\"block\"" +
+        "}";
+
+        _app.CreateUIButton("zoom_indicator", label, css);
+        _app.ShowUIButton("zoom_indicator", true);
+    }
+
+    /// <summary>
     /// Full refresh — rewrites button labels + CSS to reflect placement
     /// highlights and the produce-bar slot order. Called from event
     /// handlers (build/produce/cancel clicks, building selection).
@@ -351,7 +417,7 @@ public class GameEngine
             }
         }
 
-        UpdateRtsButtonVisibility();
+        UpdateRtsButtonVisibility(); UpdateZoomIndicator();
     }
 
     private void ProduceUnit(string unitId)
@@ -718,7 +784,7 @@ public class GameEngine
 
             _app.ShowUIButton("back_solar", false);
             _app.ShowUIButton("edit_toggle", false);
-            UpdateRtsButtonVisibility();
+            UpdateRtsButtonVisibility(); UpdateZoomIndicator();
             OnFrameRendered?.Invoke();
             return;
         }
@@ -808,13 +874,13 @@ public class GameEngine
 
             _app.ShowUIButton("back_solar", true);
             _app.ShowUIButton("edit_toggle", true);
-            UpdateRtsButtonVisibility();
+            UpdateRtsButtonVisibility(); UpdateZoomIndicator();
         }
         else if (Mode == EditorMode.SolarSystem && _solarSystem != null)
         {
             _app.ShowUIButton("back_solar", false);
             _app.ShowUIButton("edit_toggle", false);
-            UpdateRtsButtonVisibility();
+            UpdateRtsButtonVisibility(); UpdateZoomIndicator();
             _solarSystem.SetTime(elapsed);
             var mvp = _solarSystem.BuildMvpFloats(_app.AspectRatio);
 
@@ -828,7 +894,7 @@ public class GameEngine
         {
             _app.ShowUIButton("back_solar", false);
             _app.ShowUIButton("edit_toggle", false);
-            UpdateRtsButtonVisibility();
+            UpdateRtsButtonVisibility(); UpdateZoomIndicator();
             var mvp = _starMap.BuildMvpFloats(_app.AspectRatio);
             _starMap.Draw(mvp);
         }
