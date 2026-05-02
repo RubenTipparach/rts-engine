@@ -15,6 +15,13 @@ public sealed class WebGPU : IGPU
     public async Task<bool> Init(string canvasId)
         => await _js.InvokeAsync<bool>("GPUProxy.init", canvasId);
 
+    /// <summary>Reason the most recent <see cref="Init"/> failed, or empty
+    /// string if it succeeded. Lets the host surface "WebGPU not supported"
+    /// or "no adapter" to the user instead of a silent white canvas — which
+    /// is what mobile browsers without WebGPU look like otherwise.</summary>
+    public async Task<string> GetInitError()
+        => await _js.InvokeAsync<string>("GPUProxy.getInitError");
+
     public async Task<int> CreateShaderModule(string shaderCode)
         => await _js.InvokeAsync<int>("GPUProxy.createShaderModule", shaderCode);
 

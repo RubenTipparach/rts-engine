@@ -487,13 +487,21 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
 
         foreach (var br in _bodies)
         {
-            if (br.Body.ConfigFile == _hiddenPlanetConfig) continue;
-
             var parentPos = br.Parent != null ? br.Parent.GetPosition(_time) : Vector3.Zero;
             var bodyPos = parentPos + br.Body.GetPosition(_time);
 
-            WriteBodyUniform(br.Ubo, bodyPos, mvpMat, cameraWorldPos);
-            _gpu.RenderAdditional(_pipeline, br.Vbo, br.Ibo, br.BindGroup, br.IndexCount);
+            // Body mesh of the focused planet is hidden during transitions —
+            // the detailed planet renderer is standing in for it at the same
+            // world position, and overlaying both produces z-fight + visual
+            // doubling. The orbit RING isn't replaced by anything though, so
+            // it should always draw alongside the others; otherwise selecting
+            // a planet makes its orbit path snap out of existence while every
+            // other ring keeps fading naturally.
+            if (br.Body.ConfigFile != _hiddenPlanetConfig)
+            {
+                WriteBodyUniform(br.Ubo, bodyPos, mvpMat, cameraWorldPos);
+                _gpu.RenderAdditional(_pipeline, br.Vbo, br.Ibo, br.BindGroup, br.IndexCount);
+            }
 
             // Orbit ring is centered on the body's parent (origin for top-level planets).
             WriteRingUniform(br.RingUbo, parentPos, mvpMat, alpha: 1.0f);

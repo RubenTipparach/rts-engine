@@ -17,4 +17,18 @@
     <ProjectReference Include="..\RtsEngine.Game\RtsEngine.Game.csproj" />
   </ItemGroup>
 
+  <!--
+    Surface the canonical baked assets (under /assets at the repo root) as
+    Blazor static content under wwwroot/assets so they're fetchable at
+    /assets/<...> URLs. Source-of-truth lives at the repo root per the
+    static-asset guidelines; this just makes them available at runtime.
+  -->
+  <ItemGroup>
+    <Content Include="..\..\assets\**\*.*">
+      <Link>wwwroot\assets\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
 </Project>

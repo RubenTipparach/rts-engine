@@ -1,0 +1,13 @@
+{
+  "kind": "vehicle",
+  "color": [
+    0.5,
+    0.45,
+    0.3
+  ],
+  "groups": [
+    "body",
+    "cabin",
+    "antenna"
+  ]
+}

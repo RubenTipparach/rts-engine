@@ -31,4 +31,20 @@ solarSystemView:
 planetEditView:
   defaultDistance: 3.0
   minDistance: 2.0
-  maxDistance: 8.0
+  maxDistance: 200.0          # camera distance clamp (radius units)
+  autoZoomOutThreshold: 100.0 # distance above which we glide back to solar system
+
+# Ground-level RTS camera. As the player zooms toward the surface the look-at
+# target slides from the planet center to a point ahead on the ground, producing
+# a tilted, traditional-RTS view.
+rtsCamera:
+  groundClearance: 0.15        # camera floor altitude above surface (radius units)
+  lookAhead: 0.25              # forward look-at offset along surface tangent (radius units, ~30° tilt at ground)
+  tiltStartZoomPercent: 0.70   # zoom % (log-altitude) at which the RTS tilt starts engaging
+  tiltFullZoomPercent: 1.00    # zoom % at which the RTS tilt is fully engaged
+  scrollIncrement: 0.002       # altitude change per scroll-delta unit, as a fraction of current altitude
+  zoomLerpRate: 12.0           # per-second exponential rate that displayed zoom chases the target
+
+slopes:
+  density: 0.45            # fraction of eligible border cells that become slopes
+  seedOffset: 1337         # combined with planet seed for deterministic slope placement
