@@ -63,7 +63,10 @@
                     if (el) el.textContent = msg;
                 };
                 canvas = document.getElementById(canvasId);
-                if (!canvas) return false;
+                if (!canvas) {
+                    window.GPUProxyInitError = `Canvas '${canvasId}' not found in document.`;
+                    return false;
+                }
                 context = canvas.getContext('webgpu');
                 if (!context) {
                     window.GPUProxyInitError = 'Failed to get WebGPU canvas context.';

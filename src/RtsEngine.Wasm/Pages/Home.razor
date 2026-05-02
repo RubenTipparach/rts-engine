@@ -26,7 +26,21 @@
         try
         {
             var gpu = new WebGPU(JS);
-            if (!await gpu.Init("gpuCanvas")) return;
+            if (!await gpu.Init("gpuCanvas"))
+            {
+                // Surface the JS-side init reason so mobile users (where
+                // WebGPU support is patchy — iOS Safari < 18.2 has none, and
+                // some Android Chromes need flags) don't just see a blank
+                // canvas. Without this the page looks like it crashed.
+                var reason = await gpu.GetInitError();
+                if (string.IsNullOrEmpty(reason))
+                    reason = "WebGPU init failed (no further detail). Try a recent Chrome/Edge desktop, or Safari 18.2+ on iOS / Chrome 121+ on Android.";
+                await JS.InvokeVoidAsync("eval",
+                    $"document.getElementById('gpu-errors').textContent = {System.Text.Json.JsonSerializer.Serialize(reason)};" +
+                    "document.getElementById('gpu-errors').style.maxHeight = '200px';" +
+                    "document.getElementById('gpu-errors').style.fontSize = '14px';");
+                return;
+            }
             _gpu = gpu;
 
             _app = new WebGLRenderBackend(JS);
