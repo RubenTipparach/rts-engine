@@ -23,15 +23,26 @@ public sealed class RtsState
     /// <summary>Currently selected building, or -1.</summary>
     public int SelectedBuildingInstanceId { get; set; } = -1;
 
-    /// <summary>Currently selected unit, or -1. Mutually exclusive with
-    /// the building selection — picking one clears the other.</summary>
-    public int SelectedUnitInstanceId { get; set; } = -1;
+    /// <summary>Currently selected unit instance ids. Mutually exclusive with
+    /// the building selection — picking one clears the other. A single-click
+    /// fills this with one id; a box select fills it with all units inside
+    /// the rect.</summary>
+    public HashSet<int> SelectedUnitInstanceIds { get; } = new();
+
+    /// <summary>Convenience: first selected unit id, or -1.</summary>
+    public int SelectedUnitInstanceId =>
+        SelectedUnitInstanceIds.Count > 0 ? SelectedUnitInstanceIds.First() : -1;
 
     public PlacedBuilding? SelectedBuilding =>
         Buildings.FirstOrDefault(b => b.InstanceId == SelectedBuildingInstanceId);
 
     public SpawnedUnit? SelectedUnit =>
-        Units.FirstOrDefault(u => u.InstanceId == SelectedUnitInstanceId);
+        SelectedUnitInstanceIds.Count > 0
+            ? Units.FirstOrDefault(u => u.InstanceId == SelectedUnitInstanceIds.First())
+            : null;
+
+    public IEnumerable<SpawnedUnit> SelectedUnits =>
+        Units.Where(u => SelectedUnitInstanceIds.Contains(u.InstanceId));
 
     public PlacedBuilding? BuildingAtCell(int cellIndex) =>
         Buildings.FirstOrDefault(b => b.CellIndex == cellIndex);
@@ -67,7 +78,7 @@ public sealed class RtsState
         Units.Clear();
         PlacementBuildingId = null;
         SelectedBuildingInstanceId = -1;
-        SelectedUnitInstanceId = -1;
+        SelectedUnitInstanceIds.Clear();
     }
 }
 

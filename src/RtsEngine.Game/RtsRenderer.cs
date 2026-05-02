@@ -133,7 +133,7 @@ public sealed class RtsRenderer : IDisposable
             // look like they're walking the path, not facing a fixed compass.
             var modelMvp = BuildModelMvp(u.SurfacePoint, u.SurfaceUp, planetMvpMat,
                                          heading: u.Heading);
-            DrawInstance(um, modelMvp, color, selected: u.InstanceId == state.SelectedUnitInstanceId);
+            DrawInstance(um, modelMvp, color, selected: state.SelectedUnitInstanceIds.Contains(u.InstanceId));
         }
     }
 

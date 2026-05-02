@@ -68,6 +68,20 @@ public class GameEngine
     /// </summary>
     private bool _editMode;
 
+    /// <summary>
+    /// True while the user is dragging a box-select rectangle. Suppresses
+    /// PointerDrag-driven orbit so plain left drag doesn't move the camera
+    /// when the player is selecting units.
+    /// </summary>
+    private bool _boxSelectActive;
+
+    /// <summary>Anchor cell of the click that opened the unit context menu.
+    /// The "move" / "attack" context-menu actions then queue against the next
+    /// world click.</summary>
+    private string? _pendingUnitOrder;     // "move", "attack", or null
+    private const float ContextMenuItemHeight = 32f;
+    private static readonly string[] ContextMenuItems = { "Cancel order", "Guard", "Move", "Attack" };
+
     public void SetPlanetRenderer(PlanetRenderer p)
     {
         _planet = p;
@@ -141,7 +155,14 @@ public class GameEngine
 
         _app.PointerDrag += (dx, dy) =>
         {
-            if (!_dragging || _transitioning) return;
+            if (_transitioning) return;
+            // While the player is pulling a box-select rectangle, plain-left
+            // drag should not orbit the planet camera. Desktop fires both
+            // BoxSelectUpdate and PointerDrag for the same gesture so other
+            // modes (solar system / starmap, where there's nothing to box-
+            // select) keep their existing left-drag-orbits behaviour.
+            if (_boxSelectActive) return;
+            if (!_dragging) return;
             if (Mode == EditorMode.PlanetEdit)
             {
                 _azimuth += dx * PixelsToRadians;
@@ -152,6 +173,43 @@ public class GameEngine
                 _starMap?.Orbit(dx, dy);
             else if (Mode == EditorMode.SolarSystem)
                 _solarSystem?.Orbit(dx, dy);
+        };
+
+        // Explicit orbit gesture: middle drag or Alt+left drag on desktop.
+        // Desktop fires this in addition to PointerDrag so we'd double-orbit
+        // if both ran — gate this one to PlanetEdit, where plain PointerDrag
+        // is suppressed by _boxSelectActive during box select.
+        _app.OrbitDrag += (dx, dy) =>
+        {
+            if (_transitioning) return;
+            if (Mode != EditorMode.PlanetEdit) return;
+            _azimuth += dx * PixelsToRadians;
+            _elevation += dy * PixelsToRadians;
+            _elevation = Math.Clamp(_elevation, -1.4f, 1.4f);
+        };
+
+        _app.BoxSelectUpdate += (x0, y0, x1, y1) =>
+        {
+            if (_transitioning) return;
+            if (Mode != EditorMode.PlanetEdit) return;
+            _boxSelectActive = true;
+            UpdateBoxSelectOverlay(x0, y0, x1, y1);
+        };
+
+        _app.BoxSelectComplete += (x0, y0, x1, y1) =>
+        {
+            _boxSelectActive = false;
+            HideBoxSelectOverlay();
+            if (_transitioning) return;
+            if (Mode != EditorMode.PlanetEdit) return;
+            BoxSelectUnits(x0, y0, x1, y1);
+        };
+
+        _app.ContextMenuRequested += (x, y) =>
+        {
+            if (_transitioning) return;
+            if (Mode != EditorMode.PlanetEdit) return;
+            ShowUnitContextMenu(x, y);
         };
 
         _app.Scroll += delta =>
@@ -304,6 +362,11 @@ public class GameEngine
             var unitId = id.Substring("produce_".Length);
             ProduceUnit(unitId);
         }
+        else if (id.StartsWith("ctx_"))
+        {
+            if (int.TryParse(id.Substring("ctx_".Length), out var idx))
+                OnContextMenuPick(idx);
+        }
     }
 
     /// <summary>
@@ -450,6 +513,19 @@ public class GameEngine
     {
         if (_transitioning) return;
 
+        // Any click outside the context menu dismisses it. Clicks ON the
+        // menu hit UIButtonClick → OnContextMenuPick which hides it itself.
+        HideUnitContextMenu();
+
+        // If a "Move" / "Attack" context menu order is pending, the next
+        // left-click on the world consumes it as the order's target.
+        if (button == 0 && _pendingUnitOrder != null && Mode == EditorMode.PlanetEdit && !_editMode)
+        {
+            HandleMoveCommand(cx, cy);  // both move and attack route through here for now
+            _pendingUnitOrder = null;
+            return;
+        }
+
         // UI buttons consume clicks first
         if (Mode == EditorMode.PlanetEdit)
         {
@@ -498,7 +574,8 @@ public class GameEngine
                     int unitId = PickUnit(cx, cy);
                     if (unitId >= 0)
                     {
-                        _state.SelectedUnitInstanceId = unitId;
+                        _state.SelectedUnitInstanceIds.Clear();
+                        _state.SelectedUnitInstanceIds.Add(unitId);
                         _state.SelectedBuildingInstanceId = -1;
                         RefreshRtsButtons();
                         return;
@@ -509,11 +586,11 @@ public class GameEngine
                 if (cell == null)
                 {
                     if (_state.SelectedBuildingInstanceId != -1
-                        || _state.SelectedUnitInstanceId != -1
+                        || _state.SelectedUnitInstanceIds.Count > 0
                         || _state.PlacementBuildingId != null)
                     {
                         _state.SelectedBuildingInstanceId = -1;
-                        _state.SelectedUnitInstanceId = -1;
+                        _state.SelectedUnitInstanceIds.Clear();
                         _state.PlacementBuildingId = null;
                         RefreshRtsButtons();
                     }
@@ -533,15 +610,15 @@ public class GameEngine
                 if (existing != null)
                 {
                     _state.SelectedBuildingInstanceId = existing.InstanceId;
-                    _state.SelectedUnitInstanceId = -1;
+                    _state.SelectedUnitInstanceIds.Clear();
                     RefreshRtsButtons();
                     return;
                 }
 
-                if (_state.SelectedBuildingInstanceId != -1 || _state.SelectedUnitInstanceId != -1)
+                if (_state.SelectedBuildingInstanceId != -1 || _state.SelectedUnitInstanceIds.Count > 0)
                 {
                     _state.SelectedBuildingInstanceId = -1;
-                    _state.SelectedUnitInstanceId = -1;
+                    _state.SelectedUnitInstanceIds.Clear();
                     RefreshRtsButtons();
                 }
                 return;
@@ -567,6 +644,7 @@ public class GameEngine
         else if (Mode == EditorMode.SolarSystem && _solarSystem != null && button == 0)
         {
             var (config, pos, dispR) = _solarSystem.PickPlanet(cx, cy, _app.CanvasWidth, _app.CanvasHeight);
+            Console.Error.WriteLine($"[click] solar pick at ({cx},{cy}) → {config ?? "<none>"}");
             if (config != null)
             {
                 SelectedPlanetConfig = config;
@@ -623,8 +701,27 @@ public class GameEngine
 
     private float Elapsed() => (float)(DateTime.UtcNow - _startTime).TotalSeconds;
 
+    private long _tickCount;
+
     private async Task Tick()
     {
+        try { await TickInner(); }
+        catch (Exception e)
+        {
+            // Silk.NET swallows exceptions thrown from async render handlers
+            // (the Task is fire-and-forget). Surface them here or we'd see a
+            // frozen window with no diagnostic.
+            Console.Error.WriteLine($"[tick] EXCEPTION: {e.GetType().Name}: {e.Message}");
+            Console.Error.WriteLine(e.StackTrace);
+        }
+    }
+
+    private async Task TickInner()
+    {
+        if (_tickCount < 3 || _tickCount == 60 || _tickCount == 300)
+            Console.Error.WriteLine($"[tick] {_tickCount} mode={Mode} canvas={_app.CanvasWidth}x{_app.CanvasHeight} dist={_distance:F1} planetReady={_planetReady}");
+        _tickCount++;
+
         float elapsed = Elapsed();
 
         // Handle zoom transition: renders actual planet during zoom for seamless switch
@@ -698,6 +795,7 @@ public class GameEngine
                 // Switch when animation done AND planet ready
                 if (t >= 1f && _planetReady)
                 {
+                    Console.Error.WriteLine($"[transition] zoom-in complete; switching Mode → PlanetEdit");
                     _transitioning = false;
                     Mode = EditorMode.PlanetEdit;
                     _distance = _config.PlanetEditView.DefaultDistance;
@@ -778,6 +876,7 @@ public class GameEngine
             _app.ShowUIButton("back_solar", false);
             _app.ShowUIButton("edit_toggle", false);
             UpdateRtsButtonVisibility(); UpdateZoomIndicator();
+            _app.RenderUI();
             OnFrameRendered?.Invoke();
             return;
         }
@@ -845,7 +944,9 @@ public class GameEngine
             var planetMvp = BuildPlanetMvp(_app.AspectRatio);
 
             // Starfield first — clears the framebuffer and lays down the
-            // procedural sky behind the focused planet.
+            // procedural sky behind the focused planet. Without solar system
+            // (e.g. desktop build), the planet itself has to clear instead so
+            // the previous frame doesn't bleed through.
             if (_solarSystem != null)
             {
                 var fwd = -Vector3.Normalize(cam);
@@ -854,7 +955,7 @@ public class GameEngine
                 _solarSystem.DrawStarfield(fwd, right, up, PlanetViewFovYDegrees, _app.AspectRatio);
             }
 
-            _planet.Draw(planetMvp, _distance, clearFirst: false);
+            _planet.Draw(planetMvp, _distance, clearFirst: _solarSystem == null);
 
             // Buildings and units sit on the planet surface, in the same local
             // space as the terrain mesh. Reuse the planet MVP so they line up
@@ -902,6 +1003,10 @@ public class GameEngine
             var mvp = _starMap.BuildMvpFloats(_app.AspectRatio);
             _starMap.Draw(mvp);
         }
+
+        // Platform UI overlay. WASM uses HTML buttons that draw themselves;
+        // desktop rasterises an EngineUI quad mesh.
+        _app.RenderUI();
 
         OnFrameRendered?.Invoke();
     }
@@ -1070,25 +1175,29 @@ public class GameEngine
     }
 
     /// <summary>
-    /// Right-click handler: if a unit is selected and the click landed on
-    /// a cell, queue an A* path and let MovementSystem advance the unit
-    /// next tick. No-op if there's no path or no selection.
+    /// Right-click handler: queue A* paths to the clicked cell for every
+    /// currently-selected unit. No-op if nothing's selected or the click
+    /// missed the surface.
     /// </summary>
     private void HandleMoveCommand(float canvasX, float canvasY)
     {
-        var unit = _state.SelectedUnit;
-        if (unit == null || _rtsConfig == null) return;
-        var def = _rtsConfig.GetUnit(unit.TypeId);
-        if (def == null) return;
+        if (_rtsConfig == null) return;
+        if (_state.SelectedUnitInstanceIds.Count == 0) return;
 
         var targetCell = PickCell(canvasX, canvasY);
         if (targetCell == null) return;
 
-        var path = Pathfinding.FindPath(_planet.Mesh, unit.CellIndex, targetCell.Value, def.CanHop);
-        if (path == null) return;
+        foreach (var unit in _state.SelectedUnits)
+        {
+            var def = _rtsConfig.GetUnit(unit.TypeId);
+            if (def == null) continue;
 
-        unit.Path = path;
-        unit.PathIndex = path.Count > 0 && path[0] == unit.CellIndex ? 1 : 0;
+            var path = Pathfinding.FindPath(_planet.Mesh, unit.CellIndex, targetCell.Value, def.CanHop);
+            if (path == null) continue;
+
+            unit.Path = path;
+            unit.PathIndex = path.Count > 0 && path[0] == unit.CellIndex ? 1 : 0;
+        }
     }
 
     private int? PickCell(float canvasX, float canvasY)
@@ -1122,5 +1231,123 @@ public class GameEngine
         }
 
         return bestCell >= 0 ? bestCell : null;
+    }
+
+    // ── Box select + context menu ─────────────────────────────────────────
+
+    /// <summary>
+    /// Update / show the translucent rectangle that marks the in-progress
+    /// box selection. Reuses the EngineUI button pipeline so we don't need a
+    /// dedicated overlay path — the button gets a transparent fill, no label,
+    /// and pointerEvents:none so clicks on it pass straight through.
+    /// </summary>
+    private void UpdateBoxSelectOverlay(float x0, float y0, float x1, float y1)
+    {
+        float left = MathF.Min(x0, x1);
+        float top  = MathF.Min(y0, y1);
+        float w = MathF.Abs(x1 - x0);
+        float h = MathF.Abs(y1 - y0);
+        var css = "{" +
+            "\"left\":\"" + (int)left + "px\",\"top\":\"" + (int)top + "px\"," +
+            "\"width\":\"" + (int)w + "px\",\"height\":\"" + (int)h + "px\"," +
+            "\"background\":\"rgba(80,200,120,0.18)\"," +
+            "\"color\":\"rgba(120,255,160,0.85)\"," +
+            "\"pointerEvents\":\"none\",\"display\":\"block\"}";
+        _app.CreateUIButton("box_select", "", css);
+        _app.ShowUIButton("box_select", true);
+    }
+
+    private void HideBoxSelectOverlay() => _app.ShowUIButton("box_select", false);
+
+    /// <summary>
+    /// Project every spawned unit through the current planet MVP and add any
+    /// whose screen-space position falls inside the rect to the multi-select
+    /// set. Replaces (doesn't append to) the prior selection.
+    /// </summary>
+    private void BoxSelectUnits(float x0, float y0, float x1, float y1)
+    {
+        if (_rts == null || _rtsConfig == null) return;
+        float w = _app.CanvasWidth, h = _app.CanvasHeight;
+        if (w < 1 || h < 1) return;
+
+        var mvp = FloatsToMatrix(BuildPlanetMvp(w / h));
+
+        _state.SelectedUnitInstanceIds.Clear();
+        _state.SelectedBuildingInstanceId = -1;
+
+        foreach (var unit in _state.Units)
+        {
+            var clip = Vector4.Transform(new Vector4(unit.SurfacePoint, 1f), mvp);
+            if (clip.W <= 0.001f) continue;
+            float sx = (clip.X / clip.W * 0.5f + 0.5f) * w;
+            float sy = (0.5f - clip.Y / clip.W * 0.5f) * h;
+
+            // Drop units behind the planet from the camera's perspective —
+            // their screen position would otherwise sweep through the rect
+            // and grab them through solid surface.
+            var camDir = Vector3.Normalize(CameraPosition());
+            if (Vector3.Dot(unit.SurfaceUp, camDir) < -0.1f) continue;
+
+            if (sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1)
+                _state.SelectedUnitInstanceIds.Add(unit.InstanceId);
+        }
+
+        RefreshRtsButtons();
+    }
+
+    private static Matrix4x4 FloatsToMatrix(float[] m) => new(
+        m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7],
+        m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
+
+    /// <summary>
+    /// Pop up a 4-item context menu near the cursor — Cancel order / Guard /
+    /// Move / Attack. No-op if there are no selected units; the right-click
+    /// move-order path stays the primary way to issue moves.
+    /// </summary>
+    private void ShowUnitContextMenu(float x, float y)
+    {
+        if (_state.SelectedUnitInstanceIds.Count == 0) { HideUnitContextMenu(); return; }
+        for (int i = 0; i < ContextMenuItems.Length; i++)
+        {
+            float top = y + i * ContextMenuItemHeight;
+            var css = "{" +
+                "\"left\":\"" + (int)x + "px\",\"top\":\"" + (int)top + "px\"," +
+                "\"width\":\"140px\",\"height\":\"" + (int)ContextMenuItemHeight + "px\"," +
+                "\"background\":\"rgba(20,25,35,0.95)\"," +
+                "\"color\":\"#cde\"," +
+                "\"display\":\"block\"}";
+            _app.CreateUIButton($"ctx_{i}", ContextMenuItems[i], css);
+            _app.ShowUIButton($"ctx_{i}", true);
+        }
+    }
+
+    private void HideUnitContextMenu()
+    {
+        for (int i = 0; i < ContextMenuItems.Length; i++)
+            _app.ShowUIButton($"ctx_{i}", false);
+    }
+
+    /// <summary>Handle a click on a ctx_N button.</summary>
+    private void OnContextMenuPick(int index)
+    {
+        switch (index)
+        {
+            case 0: // Cancel order
+                foreach (var u in _state.SelectedUnits) { u.Path = null; u.PathIndex = 0; }
+                _pendingUnitOrder = null;
+                break;
+            case 1: // Guard
+                // Stub: no enemy AI yet. Clear paths so the unit stays put.
+                foreach (var u in _state.SelectedUnits) { u.Path = null; u.PathIndex = 0; }
+                _pendingUnitOrder = null;
+                break;
+            case 2: // Move
+                _pendingUnitOrder = "move";
+                break;
+            case 3: // Attack
+                _pendingUnitOrder = "attack";
+                break;
+        }
+        HideUnitContextMenu();
     }
 }
