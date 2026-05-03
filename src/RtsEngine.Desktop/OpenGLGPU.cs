@@ -242,13 +242,23 @@ internal sealed class OpenGLGPU : IGPU, IDisposable
 
     public unsafe void WriteBuffer(int bufferId, float[] data)
     {
-        if (!_bufferKind.TryGetValue(bufferId, out var kind) || kind != BufferKind.Uniform) return;
-        _gl.BindBuffer(BufferTargetARB.UniformBuffer, _buffers[bufferId]);
-        // Match WebGPU writeBuffer semantics: it uploads exactly the floats given,
-        // starting at offset 0. The buffer is sized larger when std140 padding is
-        // needed; the trailing bytes stay whatever the driver initialised them to.
+        if (!_bufferKind.TryGetValue(bufferId, out var kind)) return;
+        // Match WebGPU writeBuffer semantics: it uploads exactly the floats
+        // given, starting at offset 0, into whatever buffer kind was created.
+        // We bind to the matching target so streaming a vertex buffer (e.g.
+        // the per-frame path-debug or HP-bar VBOs) actually lands in the GL
+        // backend; previously this was a silent no-op for non-uniform buffers
+        // and the driver kept showing the buffer's initial zero contents.
+        var target = kind switch
+        {
+            BufferKind.Uniform => BufferTargetARB.UniformBuffer,
+            BufferKind.Index16 => BufferTargetARB.ElementArrayBuffer,
+            BufferKind.Index32 => BufferTargetARB.ElementArrayBuffer,
+            _                  => BufferTargetARB.ArrayBuffer,
+        };
+        _gl.BindBuffer(target, _buffers[bufferId]);
         fixed (float* p = data)
-            _gl.BufferSubData(BufferTargetARB.UniformBuffer, 0, (nuint)(data.Length * sizeof(float)), p);
+            _gl.BufferSubData(target, 0, (nuint)(data.Length * sizeof(float)), p);
     }
 
     public void DestroyBuffer(int bufferId)

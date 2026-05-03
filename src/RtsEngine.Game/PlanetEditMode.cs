@@ -40,6 +40,12 @@ public sealed class PlanetEditMode : IEditorMode
     private string? _pendingUnitOrder;     // "move", "attack", or null
     private bool _boxSelectActive;
     private float _lastTickElapsed;
+    /// <summary>Last canvas-space cursor position seen via OnMove. Cached
+    /// so the per-frame tick can re-pick the cell under the cursor when
+    /// the camera moves on its own (scroll-zoom lerp, transition handoff,
+    /// programmatic orbit) — pointer events only fire when the cursor
+    /// pixel changes, but the cell under it can slide without that.</summary>
+    private float _lastPointerX = -1f, _lastPointerY = -1f;
 
     public bool BoxSelectActive => _boxSelectActive;
 
@@ -173,9 +179,11 @@ public sealed class PlanetEditMode : IEditorMode
             if (button != 0) return;
 
             // Picking priority while not placing: units first (they sit on
-            // top of cells and are smaller, so the player would expect a
-            // direct hit to select the unit not its cell), then buildings,
-            // then a plain cell click.
+            // top of cells and are smaller, so a direct hit on a unit should
+            // select the unit not its cell), then buildings via their own
+            // generous pixel hitbox (cell-exact picking gets noisy under
+            // heavy camera tilt — building selection used to silently fail
+            // there), then a plain cell click.
             if (_state.PlacementBuildingId == null)
             {
                 int unitId = _picker.PickUnit(canvasX, canvasY);
@@ -184,6 +192,15 @@ public sealed class PlanetEditMode : IEditorMode
                     _state.SelectedUnitInstanceIds.Clear();
                     _state.SelectedUnitInstanceIds.Add(unitId);
                     _state.SelectedBuildingInstanceId = -1;
+                    _hud.RefreshRtsButtons();
+                    return;
+                }
+
+                int bldgId = _picker.PickBuilding(canvasX, canvasY);
+                if (bldgId >= 0)
+                {
+                    _state.SelectedBuildingInstanceId = bldgId;
+                    _state.SelectedUnitInstanceIds.Clear();
                     _hud.RefreshRtsButtons();
                     return;
                 }
@@ -213,15 +230,6 @@ public sealed class PlanetEditMode : IEditorMode
                 return;
             }
 
-            var existing = _state.BuildingAtCell(cell.Value);
-            if (existing != null)
-            {
-                _state.SelectedBuildingInstanceId = existing.InstanceId;
-                _state.SelectedUnitInstanceIds.Clear();
-                _hud.RefreshRtsButtons();
-                return;
-            }
-
             if (_state.SelectedBuildingInstanceId != -1 || _state.SelectedUnitInstanceIds.Count > 0)
             {
                 _state.SelectedBuildingInstanceId = -1;
@@ -243,19 +251,12 @@ public sealed class PlanetEditMode : IEditorMode
 
     public void OnMove(float canvasX, float canvasY)
     {
-        // Track the cell under the cursor unconditionally — used by the hex
-        // highlight (edit mode only), the building-placement ghost (placement
-        // mode), and the building HP bar hover lookup. Whether to *show*
-        // those is decided downstream.
-        _hoveredCell = _picker.PickCell(canvasX, canvasY) ?? -1;
-
-        // Hover-pick units and buildings so the HP bar overlay can show on
-        // hover (in addition to selection). Cheap — units are few, building
-        // lookup is a single dictionary probe off the cell index.
-        _state.HoveredUnitInstanceId = _picker.PickUnit(canvasX, canvasY);
-        _state.HoveredBuildingInstanceId = _hoveredCell >= 0
-            ? (_state.BuildingAtCell(_hoveredCell)?.InstanceId ?? -1)
-            : -1;
+        // Just record where the cursor is. The actual cell + unit + building
+        // pick runs every frame in RenderTick so it tracks the surface
+        // correctly when the camera moves under a stationary pointer (scroll
+        // zoom, smooth zoom lerp, transitions).
+        _lastPointerX = canvasX;
+        _lastPointerY = canvasY;
     }
 
     public void OnKey(string key)
@@ -314,6 +315,28 @@ public sealed class PlanetEditMode : IEditorMode
         var cam = _camera.Position();
         planet.SetCameraPosition(cam.X, cam.Y, cam.Z);
         planet.SetTime(elapsed);
+
+        // Re-pick the cell under the (cached) cursor every frame, after the
+        // camera has been advanced. This is the load-bearing fix for "ghost
+        // sticks to the wrong cell" — pointer events only fire when the
+        // cursor pixel changes, but the cell under a stationary pointer
+        // slides whenever the camera moves (scroll-zoom lerp, drag-orbit,
+        // transitions). Picking lives here so it always sees the current
+        // MVP. PickUnit / BuildingAtCell ride along for the HP bar hover.
+        if (_lastPointerX >= 0f && _lastPointerY >= 0f)
+        {
+            _hoveredCell = _picker.PickCell(_lastPointerX, _lastPointerY) ?? -1;
+            _state.HoveredUnitInstanceId = _picker.PickUnit(_lastPointerX, _lastPointerY);
+            // Use the same generous building hitbox for hover that we use
+            // for click — falls back to BuildingAtCell only if the screen-
+            // space pick misses, which keeps it consistent with selection
+            // behaviour and lets the HP bar show on hover at high tilt.
+            int hoveredBldg = _picker.PickBuilding(_lastPointerX, _lastPointerY);
+            if (hoveredBldg < 0 && _hoveredCell >= 0)
+                hoveredBldg = _state.BuildingAtCell(_hoveredCell)?.InstanceId ?? -1;
+            _state.HoveredBuildingInstanceId = hoveredBldg;
+        }
+
         // Hex outline highlight only shows up while terrain editing — keeps
         // the planet looking clean during normal RTS play.
         planet.SetHighlightCell(_hud.EditMode ? _hoveredCell : -1);

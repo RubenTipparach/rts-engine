@@ -20,4 +20,45 @@
     <ProjectReference Include="..\RtsEngine.Game\RtsEngine.Game.csproj" />
   </ItemGroup>
 
+  <!--
+    Mirror the shared /assets/ tree (source of truth at the repo root) into
+    the build output so the binary can resolve "config/engine.yaml",
+    "shaders/terrain.wgsl", etc. relative to AppContext.BaseDirectory.
+    Symmetric with what RtsEngine.Wasm.csproj does for wwwroot. Only the
+    GLSL shader port goes into Desktop's bundle (.wgsl is Wasm-only); the
+    rest of the subtrees are platform-agnostic.
+  -->
+  <ItemGroup>
+    <Content Include="..\..\assets\config\**\*.*">
+      <Link>config\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="..\..\assets\planets\**\*.*">
+      <Link>planets\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="..\..\assets\shaders\**\*.glsl">
+      <Link>shaders\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="..\..\assets\textures\**\*.*">
+      <Link>textures\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="..\..\assets\models\**\*.*">
+      <Link>assets\models\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="..\..\assets\animations\**\*.*">
+      <Link>assets\animations\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
 </Project>

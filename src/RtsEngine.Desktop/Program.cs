@@ -113,29 +113,12 @@ public static class Program
     }
 
     /// <summary>
-    /// Find the asset roots. Production (build-run.bat) lays everything under
-    /// `./wwwroot/` next to the exe — same shape WASM ships with — and that's
-    /// the only root needed.
-    ///
-    /// Dev (`dotnet run`) reads the live WASM project's wwwroot directly. That
-    /// folder doesn't contain assets/models/ at rest (the WASM csproj surfaces
-    /// repo-root /assets virtually at runtime), so we add a second root that
-    /// points at the repo root. FileAssetSource tries each in turn.
+    /// The Desktop csproj's Content links mirror the repo-root /assets
+    /// tree into the build output (config/, planets/, shaders/, textures/
+    /// at the binary root, with models/animations under assets/). So
+    /// FileAssetSource just resolves "config/foo.yaml" against
+    /// AppContext.BaseDirectory and finds the file directly.
     /// </summary>
-    private static string[] ResolveAssetRoots()
-    {
-        var sideBySide = Path.Combine(AppContext.BaseDirectory, "wwwroot");
-        if (Directory.Exists(sideBySide))
-            return new[] { sideBySide };
-
-        var devWwwroot = Path.GetFullPath(Path.Combine(
-            AppContext.BaseDirectory, "..", "..", "..", "..", "RtsEngine.Wasm", "wwwroot"));
-        var repoRoot = Path.GetFullPath(Path.Combine(
-            AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
-        var roots = new List<string>();
-        if (Directory.Exists(devWwwroot)) roots.Add(devWwwroot);
-        if (Directory.Exists(repoRoot)) roots.Add(repoRoot);
-        if (roots.Count == 0) roots.Add(AppContext.BaseDirectory);
-        return roots.ToArray();
-    }
+    private static string[] ResolveAssetRoots() =>
+        new[] { AppContext.BaseDirectory };
 }

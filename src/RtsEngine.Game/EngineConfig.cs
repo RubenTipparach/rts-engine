@@ -12,6 +12,7 @@ public sealed class EngineConfig
     public PlanetEditViewConfig PlanetEditView { get; set; } = new();
     public RtsCameraConfig RtsCamera { get; set; } = new();
     public SlopeConfig Slopes { get; set; } = new();
+    public ChamferConfig Terrain { get; set; } = new();
     public DebugConfig Debug { get; set; } = new();
 
     public static EngineConfig FromYaml(string yaml)
@@ -69,6 +70,27 @@ public sealed class PlanetEditViewConfig
     /// default distance so the player has to actively zoom past the comfort
     /// zone to leave.</summary>
     public float AutoZoomOutThreshold { get; set; } = 100f;
+}
+
+/// <summary>
+/// Geometric chamfer applied at every land cell's perimeter. Creates a
+/// small 45° bevel where cliff tops meet flat ground; concave edges (cliff
+/// bases) get a faint inverse bevel as a side-effect of uniform application,
+/// which reads as soft erosion rather than a hard step at typical RTS
+/// camera angles. Disabled for water cells (level 0) so the sea surface
+/// stays flat.
+/// </summary>
+public sealed class ChamferConfig
+{
+    /// <summary>Fraction of the way each polygon vertex is pulled toward
+    /// the cell center to form the top fan's "inner ring". 0 disables
+    /// the chamfer entirely. Typical: 0.10–0.20.</summary>
+    public float ChamferInset { get; set; } = 0.15f;
+
+    /// <summary>Drop in radius units that the perimeter polygon vertex
+    /// sits below the cell's nominal level height — this is the height of
+    /// the chamfer bevel. 0 disables the chamfer. Typical: ~0.3 × stepHeight.</summary>
+    public float ChamferDrop { get; set; } = 0.012f;
 }
 
 /// <summary>

@@ -56,9 +56,11 @@ public static class MovementSystem
                     stepLen -= dist;
                     if (unit.PathIndex >= path.Count)
                     {
-                        // Goal reached. Clear the path so we stop advancing.
-                        unit.Path = null;
-                        unit.PathIndex = 0;
+                        // Goal reached — leave Path on the unit so debug
+                        // visualization can still show it. PathIndex >=
+                        // Count is the "no more steps to take" signal the
+                        // movement loop already checks against.
+                        break;
                     }
                     continue;
                 }

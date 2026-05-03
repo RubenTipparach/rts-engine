@@ -28,6 +28,8 @@ public sealed class PlanetMesh
 
     public float Radius { get; }
     public float StepHeight { get; }
+    public float ChamferInset { get; }
+    public float ChamferDrop { get; }
     public int CellCount => _centers.Length;
 
     private readonly Vector3[] _centers;
@@ -48,10 +50,13 @@ public sealed class PlanetMesh
     private readonly int[] _patchId;         // cell → patch (0..19)
     private readonly List<int>[] _patchCells; // patch → list of cell indices
 
-    public PlanetMesh(int subdivisions = 4, float radius = 1.0f, float stepHeight = 0.04f)
+    public PlanetMesh(int subdivisions = 4, float radius = 1.0f, float stepHeight = 0.04f,
+        float chamferInset = 0f, float chamferDrop = 0f)
     {
         Radius = radius;
         StepHeight = stepHeight;
+        ChamferInset = chamferInset;
+        ChamferDrop = chamferDrop;
 
         var (verts, tris) = BuildIcosphere(subdivisions);
         int V = verts.Count;
@@ -374,6 +379,42 @@ public sealed class PlanetMesh
         }
         float centerH = slope == null ? h : GetCenterHeight(cell);
 
+        // Per-edge convexity drives per-edge chamfer. An edge is convex
+        // when both of its corner heights sit strictly above the neighbor's
+        // top — only then does dropping it produce a visible cliff-top
+        // bevel. Edges with same/higher neighbors keep their corners at
+        // full vertH so adjacent cells meet flush. Asymmetric on purpose:
+        // the higher cell drops, the lower cell does not (the wall is
+        // shortened by `ChamferDrop` and the chamfer ring covers the
+        // visual gap on top), so concave edges never get a bevel.
+        var nbrs = _neighbors[cell];
+        bool[] edgeConvex = new bool[n];
+        bool anyConvex = false;
+        for (int k = 0; k < n; k++)
+        {
+            byte nLevelE = _levels[nbrs[k]];
+            float nhE = Radius + nLevelE * StepHeight;
+            int pAe = ((k - 1) + n) % n;
+            int pBe = k;
+            float ourMinH = MathF.Min(vertH[pAe], vertH[pBe]);
+            edgeConvex[k] = ourMinH > nhE + 1e-5f;
+            if (edgeConvex[k]) anyConvex = true;
+        }
+        bool chamferActive = level > 0 && ChamferDrop > 0f && ChamferInset > 0f && anyConvex;
+        var edgeDrop = new float[n];
+        if (chamferActive)
+        {
+            for (int k = 0; k < n; k++)
+                edgeDrop[k] = edgeConvex[k] ? ChamferDrop : 0f;
+        }
+        var insetDirs = new Vector3[n];
+        for (int i = 0; i < n; i++)
+        {
+            insetDirs[i] = chamferActive
+                ? Vector3.Normalize(Vector3.Lerp(_polyVerts[cell][i], cellNormal, ChamferInset))
+                : _polyVerts[cell][i];
+        }
+
         // Slope cells skip the underwater rendering path even if their nominal
         // level is 0 — the tilt makes a flat seabed wrong, and slopes only
         // appear at cliff borders, never below water.
@@ -385,16 +426,40 @@ public sealed class PlanetMesh
         }
         else
         {
-            // Slope tops inherit the cell's own level texture — a grass
-            // cell's slope is still grass on top, the way real terrain
-            // grows over a hillside. The vertical cliff walls below stay
-            // rock-textured (handled in the wall loop) so the cliff face
-            // still reads as exposed rock.
-            EmitCellFanCustom(verts, idx, cell, vertH, centerH, cellNormal, level);
+            // Top fan emitted per-edge so each edge can decide for itself
+            // whether to pull its corners in toward cellNormal (only at
+            // convex edges, to make room for a chamfer bevel) or run the
+            // top fan all the way out to polyVerts (at non-convex edges,
+            // so adjacent same-level cells meet flush at the polygon
+            // edge with no extra geometry sitting between them). The
+            // center vertex is shared across all N triangles.
+            Vector3 cellFaceNormalLocal = ComputeFaceNormal(cell);
+            uint centerIdx = (uint)(verts.Count / VertexFloats);
+            EmitVert(verts, cellNormal * centerH, cellFaceNormalLocal, level);
+            for (int k = 0; k < n; k++)
+            {
+                int pA = ((k - 1) + n) % n;
+                int pB = k;
+                bool conv = chamferActive && edgeConvex[k];
+                Vector3 cornerA = (conv ? insetDirs[pA] : _polyVerts[cell][pA]) * vertH[pA];
+                Vector3 cornerB = (conv ? insetDirs[pB] : _polyVerts[cell][pB]) * vertH[pB];
+                Vector3 nA = SmoothNormalAtCorner(cell, pA);
+                Vector3 nB = SmoothNormalAtCorner(cell, pB);
+                uint baseIdx = (uint)(verts.Count / VertexFloats);
+                EmitVert(verts, cornerA, nA, level);
+                EmitVert(verts, cornerB, nB, level);
+                idx.Add(centerIdx);
+                idx.Add(baseIdx);
+                idx.Add(baseIdx + 1);
+            }
+            if (chamferActive) EmitChamferRing(verts, idx, cell, insetDirs, vertH, edgeConvex, level);
         }
 
-        var nbrs = _neighbors[cell];
-        float nominalH = Radius + level * StepHeight;
+        // Asymmetric drop: only the higher cell drops at a convex edge, so
+        // the wall extends from our (vertH - drop) at the top down to the
+        // neighbor's full vertH at the bottom. Wall is shorter by drop;
+        // the chamfer ring on top covers the visual gap.
+        float nominalH = h;
         for (int k = 0; k < nbrs.Length; k++)
         {
             byte nLevel = _levels[nbrs[k]];
@@ -402,8 +467,11 @@ public sealed class PlanetMesh
 
             int pA = ((k - 1) + n) % n;
             int pB = k;
-            float topAH = vertH[pA];
-            float topBH = vertH[pB];
+            // Per-edge perim heights — drop only on convex edges (= where
+            // edgeDrop[k] > 0). Non-convex edges keep topAH/topBH at vertH
+            // so adjacent same-level cells meet flush.
+            float topAH = vertH[pA] - edgeDrop[k];
+            float topBH = vertH[pB] - edgeDrop[k];
 
             // Boundary height the wall meets at this edge:
             //   - flat cells: the neighbor's flat top (nh).
@@ -464,7 +532,94 @@ public sealed class PlanetMesh
         int n = _polyVerts[cell].Length;
         var heights = new float[n];
         for (int i = 0; i < n; i++) heights[i] = h;
-        EmitCellFanCustom(verts, idx, cell, heights, h, normal, level);
+        EmitCellFanCustom(verts, idx, cell, _polyVerts[cell], heights, h, normal, level);
+    }
+
+    /// <summary>
+    /// Per-edge chamfer ring. For each polygon edge k, emits one quad:
+    /// inner corners at <c>insetDirs[i] * vertHeights[i]</c> (full height,
+    /// inset toward cell center) and outer corners at
+    /// <c>polyVerts[i] * (vertHeights[i] - edgeDrop[k])</c>. Convex edges
+    /// have <c>edgeDrop[k] = ChamferDrop</c> so the quad tilts down to the
+    /// lowered perimeter — the visible 45° bevel. Non-convex edges have
+    /// <c>edgeDrop[k] = 0</c> so the quad stays at full vertH — a flat
+    /// ring filling the gap between inset top fan and perimeter without
+    /// producing a bevel, so adjacent same-level cells meet flush.
+    ///
+    /// Where adjacent edges differ in their drop ("split vertex"), the two
+    /// quads end at different heights at the shared polygon vertex; a
+    /// small seal triangle bridges that height step to keep the geometry
+    /// water-tight.
+    ///
+    /// Both windings are emitted (front- and back-facing) because the
+    /// bevel can be viewed from either side as the camera moves around;
+    /// matches the wall loop's two-sided convention.
+    /// </summary>
+    private void EmitChamferRing(List<float> verts, List<uint> idx, int cell,
+        Vector3[] insetDirs, float[] vertHeights, bool[] edgeConvex, byte level)
+    {
+        int n = _polyVerts[cell].Length;
+        const byte rockLevel = 3;
+
+        // Per-CONVEX-edge ring quads. Non-convex edges get no geometry —
+        // the top fan already runs straight to polyVerts on those sides,
+        // so no fill is needed and adjacent same-level cells meet flush.
+        for (int k = 0; k < n; k++)
+        {
+            if (!edgeConvex[k]) continue;
+            int pA = ((k - 1) + n) % n;
+            int pB = k;
+            Vector3 innerA = insetDirs[pA] * vertHeights[pA];
+            Vector3 innerB = insetDirs[pB] * vertHeights[pB];
+            Vector3 outerB = _polyVerts[cell][pB] * (vertHeights[pB] - ChamferDrop);
+            Vector3 outerA = _polyVerts[cell][pA] * (vertHeights[pA] - ChamferDrop);
+
+            Vector3 nA = SmoothNormalAtCorner(cell, pA);
+            Vector3 nB = SmoothNormalAtCorner(cell, pB);
+
+            uint b = (uint)(verts.Count / VertexFloats);
+            EmitVert(verts, innerA, nA, rockLevel);
+            EmitVert(verts, innerB, nB, rockLevel);
+            EmitVert(verts, outerB, nB, rockLevel);
+            EmitVert(verts, outerA, nA, rockLevel);
+
+            // Two-sided (front + back) so the bevel is visible from any angle.
+            idx.Add(b); idx.Add(b + 1); idx.Add(b + 2);
+            idx.Add(b); idx.Add(b + 2); idx.Add(b + 3);
+            idx.Add(b); idx.Add(b + 2); idx.Add(b + 1);
+            idx.Add(b); idx.Add(b + 3); idx.Add(b + 2);
+        }
+
+        // Seal triangles at split vertices — where one adjacent edge is
+        // convex and the other isn't, the convex side's top fan corner
+        // sits at insetDirs[i] (pulled in) while the non-convex side's
+        // sits at polyVerts[i] (full perimeter). The seal connects:
+        //   - inner = insetDirs[i] * vertH (convex top fan corner)
+        //   - outerNonConvex = polyVerts[i] * vertH (non-convex top fan corner)
+        //   - outerConvex = polyVerts[i] * (vertH - drop) (convex chamfer ring outer)
+        // closing the small triangular gap at the corner where the two
+        // edge styles meet. Rock-textured since the seal continues
+        // directly from the chamfer bevel.
+        for (int i = 0; i < n; i++)
+        {
+            int kLeft = i;             // edge k where pB == i
+            int kRight = (i + 1) % n;  // edge k where pA == i
+            if (edgeConvex[kLeft] == edgeConvex[kRight]) continue;
+
+            Vector3 inner = insetDirs[i] * vertHeights[i];
+            Vector3 outerNonConvex = _polyVerts[cell][i] * vertHeights[i];
+            Vector3 outerConvex = _polyVerts[cell][i] * (vertHeights[i] - ChamferDrop);
+            Vector3 nrm = SmoothNormalAtCorner(cell, i);
+
+            uint b = (uint)(verts.Count / VertexFloats);
+            EmitVert(verts, inner, nrm, rockLevel);
+            EmitVert(verts, outerNonConvex, nrm, rockLevel);
+            EmitVert(verts, outerConvex, nrm, rockLevel);
+
+            // Two-sided like the ring quads.
+            idx.Add(b); idx.Add(b + 1); idx.Add(b + 2);
+            idx.Add(b); idx.Add(b + 2); idx.Add(b + 1);
+        }
     }
 
     /// <summary>
@@ -524,7 +679,7 @@ public sealed class PlanetMesh
     /// lighting transitions smoothly across cell boundaries.
     /// </summary>
     private void EmitCellFanCustom(List<float> verts, List<uint> idx, int cell,
-        float[] vertHeights, float centerH, Vector3 fallbackNormal, byte level)
+        Vector3[] outerDirs, float[] vertHeights, float centerH, Vector3 fallbackNormal, byte level)
     {
         int n = _polyVerts[cell].Length;
         Vector3 cellNormal = _centers[cell];
@@ -546,7 +701,7 @@ public sealed class PlanetMesh
             Vector3 smooth = cellFaceNormal + nA + nB;
             if (smooth.LengthSquared() > 1e-8f) smooth = Vector3.Normalize(smooth);
             else smooth = cellFaceNormal;
-            EmitVert(verts, _polyVerts[cell][i] * vertHeights[i], smooth, level);
+            EmitVert(verts, outerDirs[i] * vertHeights[i], smooth, level);
         }
         for (int i = 0; i < n; i++)
         {

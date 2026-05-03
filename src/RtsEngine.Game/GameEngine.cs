@@ -64,7 +64,7 @@ public class GameEngine
         _config = config ?? new EngineConfig();
 
         _camera = new PlanetCamera(_config, () => _planet.Mesh.Radius);
-        _picker = new PlanetPicker(_app, _camera, () => _planet.Mesh, () => _state.Units);
+        _picker = new PlanetPicker(_app, _camera, () => _planet.Mesh, () => _state.Units, () => _state.Buildings);
         _transition = new ModeTransition(_camera, _app, _solarSystem, _config);
         _hud = new EngineHud(_app, _camera, _state, _rtsConfig,
             () => _planet.Mesh.Radius, () => Mode, () => _transition.IsActive);

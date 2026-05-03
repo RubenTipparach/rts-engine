@@ -12,7 +12,8 @@
       "Bash(git -C /c/Users/santi/repos/rts-engine log --all --oneline --diff-filter=A -- \"src/RtsEngine.Game/*.cs\")",
       "Bash(git -C /c/Users/santi/repos/rts-engine grep -l \"PickCell\\\\|pickCell\\\\|RaycastSphere\\\\|RaySphere\\\\|raySphere\" 3189e12 -- \"src/\")",
       "Bash(git -C /c/Users/santi/repos/rts-engine show 3189e12:src/RtsEngine.Game/GameEngine.cs)",
-      "Bash(awk 'NR>=63 && NR<=130' /c/Users/santi/repos/rts-engine/src/RtsEngine.Game/PlanetPicker.cs)"
+      "Bash(awk 'NR>=63 && NR<=130' /c/Users/santi/repos/rts-engine/src/RtsEngine.Game/PlanetPicker.cs)",
+      "Bash(git mv *)"
     ]
   }
 }

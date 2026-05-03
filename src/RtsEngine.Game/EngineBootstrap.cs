@@ -74,7 +74,7 @@ public sealed class EngineBootstrap
         try
         {
             EngineConfig = EngineConfig.FromYaml(await _assets.GetTextAsync("config/engine.yaml"));
-            Trace("engine config loaded");
+            Trace($"engine config loaded (debug.showUnitPaths={EngineConfig.Debug.ShowUnitPaths})");
         }
         catch (Exception e)
         {
@@ -152,14 +152,20 @@ public sealed class EngineBootstrap
             var lineShader = await _assets.GetTextAsync("shaders/outline.wgsl");
 
             // Baked .obj models from assets/models/ replace the procedural
-            // boxes when available; missing files just fall back to MakeBox.
+            // boxes when available. Missing files fall back to MakeBox but
+            // we log a warning per-entity so a stray "everything is a cube"
+            // bug is loud rather than silent — usually means the asset
+            // pipeline didn't surface the .obj in the build output.
             var objs = new Dictionary<string, string>();
+            var missing = new List<string>();
             foreach (var entityId in RtsConfig.Buildings.Select(b => b.Id)
                                       .Concat(RtsConfig.Units.Select(u => u.Id)))
             {
                 try { objs[entityId] = await _assets.GetTextAsync($"assets/models/{entityId}.obj"); }
-                catch { /* fall back to procedural box for this entity */ }
+                catch (Exception modelEx) { missing.Add($"{entityId} ({modelEx.Message})"); }
             }
+            if (missing.Count > 0)
+                Trace($"WARNING: {missing.Count} model(s) missing, falling back to procedural box: {string.Join(", ", missing)}");
 
             Rts = new RtsRenderer(_gpu, RtsConfig, EngineConfig);
             await Rts.Setup(rtsShader, uiShader, lineShader, objs);
@@ -238,7 +244,9 @@ public sealed class EngineBootstrap
         var mesh = new PlanetMesh(
             subdivisions: config.Subdivisions,
             radius: config.Radius,
-            stepHeight: config.StepHeight);
+            stepHeight: config.StepHeight,
+            chamferInset: EngineConfig.Terrain.ChamferInset,
+            chamferDrop: EngineConfig.Terrain.ChamferDrop);
         mesh.GenerateFromNoise(
             seed: config.Generation.Seed,
             frequency: config.Generation.Frequency,

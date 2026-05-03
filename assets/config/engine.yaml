@@ -49,5 +49,9 @@ slopes:
   density: 0.45            # fraction of eligible border cells that become slopes
   seedOffset: 1337         # combined with planet seed for deterministic slope placement
 
+terrain:
+  chamferInset: 0.10       # fraction polygon vertex pulls toward cell center for top fan inner ring
+  chamferDrop:  0.005      # how far polygon vertex drops below level height (= bevel height, 0.3 × stepHeight)
+
 debug:
-  showUnitPaths: false     # draw each unit's remaining A* path as a line strip on the surface
+  showUnitPaths: true     # draw each unit's remaining A* path as a line strip on the surface

@@ -89,6 +89,7 @@ public sealed class RtsRenderer : IDisposable
     private const int MaxPathSegments = 8192;
     // Each segment is a line-list pair: 2 verts × 3 floats.
     private readonly float[] _pathVertScratch = new float[MaxPathSegments * 2 * 3];
+    private int _lastLoggedPathSegs = -1;
 
     public RtsRenderer(IGPU gpu, RtsConfig config, EngineConfig engineConfig)
     {
@@ -374,32 +375,37 @@ public sealed class RtsRenderer : IDisposable
     }
 
     /// <summary>When debug.showUnitPaths is on, emit a line-list pair for
-    /// every remaining segment in each unit's path: start = the unit's
-    /// current world position, then each upcoming cell center lifted to its
-    /// surface height. One uniform write + one indexed line draw per frame
-    /// regardless of unit count.</summary>
+    /// every segment in each unit's queued path. Shows the full route from
+    /// start to goal cell — MovementSystem leaves <c>unit.Path</c> on the
+    /// unit even after arrival (the consumed-state signal is PathIndex >=
+    /// Count) so the debug viz keeps drawing the route until the next move
+    /// order replaces it. One uniform write + one indexed line draw per
+    /// frame regardless of unit count.</summary>
     private void DrawUnitPaths(RtsState state, PlanetMesh mesh, float[] planetMvp)
     {
-        // Lift the line slightly above the surface so it isn't z-fought by
-        // terrain. Same trick the selection disc uses.
-        const float SurfaceLift = 0.003f;
+        // Lift each segment endpoint a fraction of a step-height above its
+        // own cell's surface — small enough to read as "on the ground", big
+        // enough to clear the chamfer + slope geometry without z-fighting.
+        // Mustn't be a full-radius lift: at RTS distance the camera sits at
+        // ~1.15× radius, so anything lifted beyond that ends up behind the
+        // camera for cells near the subcamera point and gets clipped.
+        float lift = mesh.StepHeight * 0.5f;
 
         int segs = 0;
         foreach (var u in state.Units)
         {
             var path = u.Path;
-            if (path == null || path.Count == 0) continue;
-            int next = u.PathIndex;
-            if (next >= path.Count) continue;
+            if (path == null || path.Count < 2) continue;
 
-            // First segment: from the unit's live position to the next
-            // waypoint center. Subsequent segments connect waypoint centers.
-            Vector3 prev = u.SurfacePoint + u.SurfaceUp * SurfaceLift;
-            for (int k = next; k < path.Count; k++)
+            // Draw the whole route — start cell, every waypoint, goal.
+            var startUp = mesh.GetCellCenter(path[0]);
+            float startR = mesh.Radius + mesh.GetLevel(path[0]) * mesh.StepHeight + lift;
+            Vector3 prev = startUp * startR;
+            for (int k = 1; k < path.Count; k++)
             {
                 if (segs >= MaxPathSegments) break;
                 var cellUp = mesh.GetCellCenter(path[k]);
-                float surfaceR = mesh.Radius + mesh.GetLevel(path[k]) * mesh.StepHeight + SurfaceLift;
+                float surfaceR = mesh.Radius + mesh.GetLevel(path[k]) * mesh.StepHeight + lift;
                 var here = cellUp * surfaceR;
                 int o = segs * 6;
                 _pathVertScratch[o + 0] = prev.X;
@@ -412,6 +418,25 @@ public sealed class RtsRenderer : IDisposable
                 prev = here;
             }
             if (segs >= MaxPathSegments) break;
+        }
+
+        // Diagnostic: surface segment count + first/last endpoint per frame
+        // so we can tell whether the buffer is empty (no paths queued, no
+        // pathfinder output) vs populated-but-not-drawing. Throttled because
+        // it runs every frame.
+        if (segs != _lastLoggedPathSegs)
+        {
+            _lastLoggedPathSegs = segs;
+            if (segs > 0)
+            {
+                Console.Error.WriteLine(
+                    $"[paths] segs={segs} first=({_pathVertScratch[0]:F3},{_pathVertScratch[1]:F3},{_pathVertScratch[2]:F3}) " +
+                    $"last=({_pathVertScratch[(segs-1)*6+3]:F3},{_pathVertScratch[(segs-1)*6+4]:F3},{_pathVertScratch[(segs-1)*6+5]:F3})");
+            }
+            else
+            {
+                Console.Error.WriteLine("[paths] segs=0 (no unit has an active path)");
+            }
         }
 
         if (segs == 0) return;
