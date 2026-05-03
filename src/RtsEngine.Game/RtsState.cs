@@ -29,6 +29,12 @@ public sealed class RtsState
     /// the rect.</summary>
     public HashSet<int> SelectedUnitInstanceIds { get; } = new();
 
+    /// <summary>Entity currently under the mouse cursor, or -1. Drives the
+    /// on-hover HP bar overlay alongside selected entities — set by
+    /// PlanetEditMode.OnMove via the picker.</summary>
+    public int HoveredUnitInstanceId { get; set; } = -1;
+    public int HoveredBuildingInstanceId { get; set; } = -1;
+
     /// <summary>Convenience: first selected unit id, or -1.</summary>
     public int SelectedUnitInstanceId =>
         SelectedUnitInstanceIds.Count > 0 ? SelectedUnitInstanceIds.First() : -1;

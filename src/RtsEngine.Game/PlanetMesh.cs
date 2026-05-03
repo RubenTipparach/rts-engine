@@ -194,8 +194,13 @@ public sealed class PlanetMesh
     /// <summary>
     /// Surface height at one of this cell's polygon vertices, accounting
     /// for slope tilt. For non-slope cells this is just the cell's level
-    /// height; for slope cells it interpolates linearly between the low
-    /// and high neighbor levels along the slope axis.
+    /// height. For slope cells the two polygon vertices flanking the low
+    /// edge are pinned to <c>lowH</c> and the two flanking the high edge
+    /// to <c>highH</c>, so the slope's rims sit flush against the adjacent
+    /// flat cells (otherwise irregular Goldberg hexes leave a small ε gap
+    /// because the corner vertices project at unequal axial extents).
+    /// Remaining "perpendicular" vertices interpolate linearly along the
+    /// axis between the two edge midpoints.
     /// </summary>
     public float GetVertexHeight(int cell, int vertIndex)
     {
@@ -206,27 +211,41 @@ public sealed class PlanetMesh
         float lowH = Radius + _levels[slope.LowNeighbor] * StepHeight;
         float highH = Radius + _levels[slope.HighNeighbor] * StepHeight;
 
-        // Slope axis: tangent to the cell, pointing low → high. Project the
-        // vertex's offset from the cell center onto the axis to get a
-        // signed scalar t. Map t ∈ [-extent, +extent] to height ∈ [low, high].
-        Vector3 cellNormal = _centers[cell];
-        Vector3 axis = _centers[slope.HighNeighbor] - _centers[slope.LowNeighbor];
-        axis -= cellNormal * Vector3.Dot(axis, cellNormal);
-        if (axis.LengthSquared() < 1e-8f) return baseH;
-        axis = Vector3.Normalize(axis);
+        var nbrs = _neighbors[cell];
+        int n = nbrs.Length;
+        int lowIdx = -1, highIdx = -1;
+        for (int i = 0; i < n; i++)
+        {
+            if (nbrs[i] == slope.LowNeighbor) lowIdx = i;
+            if (nbrs[i] == slope.HighNeighbor) highIdx = i;
+        }
+        if (lowIdx < 0 || highIdx < 0) return baseH;
+
+        // Polygon edge facing nbrs[k] is bordered by polyVerts[k-1] and
+        // polyVerts[k]; both are corners of that edge.
+        int lowA = (lowIdx - 1 + n) % n;
+        int lowB = lowIdx;
+        int highA = (highIdx - 1 + n) % n;
+        int highB = highIdx;
+
+        if (vertIndex == lowA || vertIndex == lowB) return lowH;
+        if (vertIndex == highA || vertIndex == highB) return highH;
 
         var verts = _polyVerts[cell];
+        Vector3 cellNormal = _centers[cell];
+        Vector3 lowMid = (verts[lowA] + verts[lowB]) * 0.5f;
+        Vector3 highMid = (verts[highA] + verts[highB]) * 0.5f;
+        Vector3 axis = highMid - lowMid;
+        axis -= cellNormal * Vector3.Dot(axis, cellNormal);
+        if (axis.LengthSquared() < 1e-8f) return (lowH + highH) * 0.5f;
+        axis = Vector3.Normalize(axis);
+
+        float lowProj = Vector3.Dot(lowMid - cellNormal, axis);
+        float highProj = Vector3.Dot(highMid - cellNormal, axis);
+        float range = highProj - lowProj;
+        if (MathF.Abs(range) < 1e-8f) return (lowH + highH) * 0.5f;
         float vt = Vector3.Dot(verts[vertIndex] - cellNormal, axis);
-        float minT = float.MaxValue, maxT = float.MinValue;
-        for (int i = 0; i < verts.Length; i++)
-        {
-            float ti = Vector3.Dot(verts[i] - cellNormal, axis);
-            if (ti < minT) minT = ti;
-            if (ti > maxT) maxT = ti;
-        }
-        float range = maxT - minT;
-        if (range < 1e-8f) return baseH;
-        float u = (vt - minT) / range;
+        float u = Math.Clamp((vt - lowProj) / range, 0f, 1f);
         return lowH + (highH - lowH) * u;
     }
 
@@ -366,13 +385,16 @@ public sealed class PlanetMesh
         }
         else
         {
-            // Use rock texture (level 3) for slope cells so they read as
-            // walkable cliff faces rather than blending into the surface.
-            byte topLevel = slope == null ? level : (byte)3;
-            EmitCellFanCustom(verts, idx, cell, vertH, centerH, cellNormal, topLevel);
+            // Slope tops inherit the cell's own level texture — a grass
+            // cell's slope is still grass on top, the way real terrain
+            // grows over a hillside. The vertical cliff walls below stay
+            // rock-textured (handled in the wall loop) so the cliff face
+            // still reads as exposed rock.
+            EmitCellFanCustom(verts, idx, cell, vertH, centerH, cellNormal, level);
         }
 
         var nbrs = _neighbors[cell];
+        float nominalH = Radius + level * StepHeight;
         for (int k = 0; k < nbrs.Length; k++)
         {
             byte nLevel = _levels[nbrs[k]];
@@ -383,27 +405,52 @@ public sealed class PlanetMesh
             float topAH = vertH[pA];
             float topBH = vertH[pB];
 
-            // Skip walls where the cell's surface at this edge already meets
-            // the neighbor at or below its surface — happens at the slope's
-            // low side and on flat cells with same/higher neighbor.
-            if (topAH <= nh + 1e-5f && topBH <= nh + 1e-5f) continue;
+            // Boundary height the wall meets at this edge:
+            //   - flat cells: the neighbor's flat top (nh).
+            //   - slope cells: capped at the cell's own nominal level so that
+            //     higher neighbors (which already emit their own wall down to
+            //     nominal) don't cause overlapping geometry. For lower
+            //     neighbors this still resolves to nh.
+            float bdyH = slope == null ? nh : MathF.Min(nh, nominalH);
 
-            Vector3 topA = _polyVerts[cell][pA] * topAH;
-            Vector3 topB = _polyVerts[cell][pB] * topBH;
-            Vector3 botA = _polyVerts[cell][pA] * MathF.Min(nh, topAH);
-            Vector3 botB = _polyVerts[cell][pB] * MathF.Min(nh, topBH);
+            // For flat cells, suppress the wall when our edge sits below the
+            // neighbor — the higher neighbor handles that wall and we'd
+            // otherwise z-fight. Slope cells must emit walls in both
+            // directions because perpendicular flat neighbors don't know
+            // about the tilt and won't emit a gap-fill wall on their side.
+            if (slope == null && topAH < bdyH - 1e-5f && topBH < bdyH - 1e-5f) continue;
 
-            Vector3 cliffMid = Vector3.Normalize((topA + topB) * 0.5f);
-            Vector3 cliffNormal = Vector3.Normalize(cliffMid - cellNormal * Vector3.Dot(cliffMid, cellNormal));
-            if (cliffNormal.LengthSquared() < 1e-6f) cliffNormal = cellNormal;
+            // Wall spans [vertH, bdyH] per corner — top is whichever is
+            // higher, bottom whichever is lower. The two-sided index winding
+            // below renders correctly regardless of which side is up.
+            float aHi = MathF.Max(topAH, bdyH);
+            float aLo = MathF.Min(topAH, bdyH);
+            float bHi = MathF.Max(topBH, bdyH);
+            float bLo = MathF.Min(topBH, bdyH);
+            if (aHi - aLo < 1e-5f && bHi - bLo < 1e-5f) continue;
+
+            Vector3 topA = _polyVerts[cell][pA] * aHi;
+            Vector3 topB = _polyVerts[cell][pB] * bHi;
+            Vector3 botA = _polyVerts[cell][pA] * aLo;
+            Vector3 botB = _polyVerts[cell][pB] * bLo;
+
+            // Per-corner smooth normals — the wall's two end columns sit on
+            // polygon vertices that are shared by three cells in the
+            // Goldberg dual (this cell + nbrs[idx] + nbrs[idx+1]). Using
+            // the same 3-cell average as the top fan keeps lighting
+            // continuous across the polygon edge where wall meets fan,
+            // and removes the flat-shaded "one normal per wall" look that
+            // made wall brightness flicker face by face.
+            Vector3 nA = SmoothNormalAtCorner(cell, pA);
+            Vector3 nB = SmoothNormalAtCorner(cell, pB);
 
             byte cliffLevel = 3;
 
             uint b = (uint)(verts.Count / VertexFloats);
-            EmitVert(verts, topA, cliffNormal, cliffLevel);
-            EmitVert(verts, topB, cliffNormal, cliffLevel);
-            EmitVert(verts, botB, cliffNormal, cliffLevel);
-            EmitVert(verts, botA, cliffNormal, cliffLevel);
+            EmitVert(verts, topA, nA, cliffLevel);
+            EmitVert(verts, topB, nB, cliffLevel);
+            EmitVert(verts, botB, nB, cliffLevel);
+            EmitVert(verts, botA, nA, cliffLevel);
 
             idx.Add(b); idx.Add(b + 2); idx.Add(b + 1);
             idx.Add(b); idx.Add(b + 3); idx.Add(b + 2);
@@ -421,51 +468,86 @@ public sealed class PlanetMesh
     }
 
     /// <summary>
-    /// Triangle-fan emit with per-vertex heights. Used by both flat cells
-    /// (uniform height) and slope cells (heights varying along the slope
-    /// axis). Normal is computed flat for flat fans; slope fans use the
-    /// face normal of the tilted plane so lighting matches the geometry.
+    /// Smoothed normal at one of this cell's polygon corners. The corner
+    /// is shared by three cells in the Goldberg dual (this cell, nbrs[i]
+    /// and nbrs[i+1] — the same three centroids that defined polyVerts[i]
+    /// in the constructor), so the smooth normal is the mean of those
+    /// three cells' face normals. All three cells compute the same value
+    /// at the shared corner, which is what makes lighting continuous
+    /// across the polygon edge between any pair of adjacent surfaces —
+    /// fan-to-fan at flat boundaries, and now fan-to-wall at cliff tops.
+    /// </summary>
+    private Vector3 SmoothNormalAtCorner(int cell, int cornerIdx)
+    {
+        var nbrs = _neighbors[cell];
+        int n = nbrs.Length;
+        Vector3 cellN = ComputeFaceNormal(cell);
+        Vector3 nA = ComputeFaceNormal(nbrs[cornerIdx]);
+        Vector3 nB = ComputeFaceNormal(nbrs[(cornerIdx + 1) % n]);
+        Vector3 sum = cellN + nA + nB;
+        return sum.LengthSquared() > 1e-8f ? Vector3.Normalize(sum) : cellN;
+    }
+
+    /// <summary>
+    /// Cell-wide face normal: cellNormal for flat cells, the averaged
+    /// triangle normal of the tilted top for slope cells. Used both for
+    /// the cell's own center vertex and as one of three samples in the
+    /// per-corner smoothing average at shared polygon vertices.
+    /// </summary>
+    private Vector3 ComputeFaceNormal(int cell)
+    {
+        var slope = _slopes[cell];
+        Vector3 cellNormal = _centers[cell];
+        if (slope == null) return cellNormal;
+
+        int n = _polyVerts[cell].Length;
+        float centerH = GetCenterHeight(cell);
+        Vector3 c = cellNormal * centerH;
+        Vector3 sum = Vector3.Zero;
+        for (int i = 0; i < n; i++)
+        {
+            int j = (i + 1) % n;
+            Vector3 a = _polyVerts[cell][i] * GetVertexHeight(cell, i);
+            Vector3 b = _polyVerts[cell][j] * GetVertexHeight(cell, j);
+            Vector3 nrm = Vector3.Cross(a - c, b - c);
+            if (nrm.LengthSquared() > 1e-10f) sum += Vector3.Normalize(nrm);
+        }
+        return sum.LengthSquared() > 1e-8f ? Vector3.Normalize(sum) : cellNormal;
+    }
+
+    /// <summary>
+    /// Triangle-fan emit with per-vertex heights. Each polygon vertex is
+    /// shared by three cells (this cell + the two neighbors flanking the
+    /// vertex on the Goldberg dual graph), so its smoothed normal is the
+    /// mean of those three cells' face normals — guaranteeing all three
+    /// cells write an identical normal at the shared point and the
+    /// lighting transitions smoothly across cell boundaries.
     /// </summary>
     private void EmitCellFanCustom(List<float> verts, List<uint> idx, int cell,
         float[] vertHeights, float centerH, Vector3 fallbackNormal, byte level)
     {
         int n = _polyVerts[cell].Length;
         Vector3 cellNormal = _centers[cell];
+        var nbrs = _neighbors[cell];
 
-        // Detect "is this slope tilted?" by checking height variance — if
-        // all vertex heights match within a tiny epsilon, the fan is flat
-        // and we can use the cell normal as before.
-        float minH = vertHeights[0], maxH = vertHeights[0];
-        for (int i = 1; i < n; i++)
-        {
-            if (vertHeights[i] < minH) minH = vertHeights[i];
-            if (vertHeights[i] > maxH) maxH = vertHeights[i];
-        }
-        bool tilted = (maxH - minH) > 1e-5f;
-
-        Vector3 faceNormal = fallbackNormal;
-        if (tilted)
-        {
-            // Average vertex normal across the fan: each triangle (center,
-            // vi, vj) has its own normal; the cell-wide normal is good enough
-            // for cheap Lambert shading on slopes.
-            Vector3 sum = Vector3.Zero;
-            Vector3 c = cellNormal * centerH;
-            for (int i = 0; i < n; i++)
-            {
-                int j = (i + 1) % n;
-                Vector3 a = _polyVerts[cell][i] * vertHeights[i];
-                Vector3 b = _polyVerts[cell][j] * vertHeights[j];
-                Vector3 nrm = Vector3.Cross(a - c, b - c);
-                if (nrm.LengthSquared() > 1e-10f) sum += Vector3.Normalize(nrm);
-            }
-            if (sum.LengthSquared() > 1e-8f) faceNormal = Vector3.Normalize(sum);
-        }
+        // The cell's own face normal — used for the center vertex (where
+        // there's no neighbor to average with) and as one of the three
+        // samples per polygon corner.
+        Vector3 cellFaceNormal = ComputeFaceNormal(cell);
 
         uint ci = (uint)(verts.Count / VertexFloats);
-        EmitVert(verts, cellNormal * centerH, faceNormal, level);
+        EmitVert(verts, cellNormal * centerH, cellFaceNormal, level);
         for (int i = 0; i < n; i++)
-            EmitVert(verts, _polyVerts[cell][i] * vertHeights[i], faceNormal, level);
+        {
+            // polyVerts[i] is the centroid of (cell, nbrs[i], nbrs[i+1]),
+            // so those two neighbors are the cells sharing this vertex.
+            Vector3 nA = ComputeFaceNormal(nbrs[i]);
+            Vector3 nB = ComputeFaceNormal(nbrs[(i + 1) % n]);
+            Vector3 smooth = cellFaceNormal + nA + nB;
+            if (smooth.LengthSquared() > 1e-8f) smooth = Vector3.Normalize(smooth);
+            else smooth = cellFaceNormal;
+            EmitVert(verts, _polyVerts[cell][i] * vertHeights[i], smooth, level);
+        }
         for (int i = 0; i < n; i++)
         {
             int j = (i + 1) % n;

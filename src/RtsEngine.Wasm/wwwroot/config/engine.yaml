@@ -39,7 +39,7 @@ planetEditView:
 # a tilted, traditional-RTS view.
 rtsCamera:
   groundClearance: 0.15        # camera floor altitude above surface (radius units)
-  lookAhead: 0.25              # forward look-at offset along surface tangent (radius units, ~30° tilt at ground)
+  maxTiltDegrees: 59.0         # tilt angle from straight-down at full RTS view (=> ~31° below horizon)
   tiltStartZoomPercent: 0.70   # zoom % (log-altitude) at which the RTS tilt starts engaging
   tiltFullZoomPercent: 1.00    # zoom % at which the RTS tilt is fully engaged
   scrollIncrement: 0.002       # altitude change per scroll-delta unit, as a fraction of current altitude
@@ -48,3 +48,6 @@ rtsCamera:
 slopes:
   density: 0.45            # fraction of eligible border cells that become slopes
   seedOffset: 1337         # combined with planet seed for deterministic slope placement
+
+debug:
+  showUnitPaths: false     # draw each unit's remaining A* path as a line strip on the surface

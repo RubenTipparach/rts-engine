@@ -4,13 +4,12 @@ using RtsEngine.Core;
 namespace RtsEngine.Game;
 
 /// <summary>
-/// Screen-to-world hit-testing for the planet edit view. Pure projection:
-/// given canvas-space coords, returns the unit / cell / set of units that
-/// the cursor lands on. Owns no selection state - callers decide what to do
-/// with the result. Depends on <see cref="PlanetCamera"/> for the MVP, the
-/// renderer for canvas dims, and provider delegates for the live mesh +
-/// unit list (so it doesn't couple to <c>PlanetRenderer</c> or
-/// <c>RtsState</c>).
+/// Screen→world hit-testing for the planet edit view. Pure projection: given
+/// canvas-space coords, returns the unit / cell / set of units that the ray
+/// hits. Owns no selection state — callers decide what to do with the result.
+/// Depends on <see cref="PlanetCamera"/> for the MVP, the renderer for canvas
+/// dims, and provider delegates for the live mesh + unit list (so it doesn't
+/// couple to <c>PlanetRenderer</c> or <c>RtsState</c>).
 /// </summary>
 public sealed class PlanetPicker
 {
@@ -61,39 +60,68 @@ public sealed class PlanetPicker
         return best;
     }
 
-    /// <summary>Nearest mesh cell (by screen distance) to the given canvas
-    /// coords, or null if the cursor lands fully off the planet's disc.
-    /// Restored from commit 3189e12 where the same scan lived inline in
-    /// GameEngine - this version is what reliably tracks the cursor in
-    /// edit-mode highlighting and build-placement preview. Back-facing
-    /// cells are culled so clicks don't tunnel through to the antipode.</summary>
+    /// <summary>Cell whose center is closest to the world-space point where
+    /// the camera ray through the cursor pixel lands on the planet sphere.
+    /// Returns null if the ray misses the sphere entirely (cursor over empty
+    /// space at the silhouette / off the planet's disc).
+    ///
+    /// This used to be a screen-space minimum-distance scan, which silently
+    /// picked behind-horizon cells whose projected centers happened to land
+    /// near the cursor — fine at orbit altitude where the planet fills the
+    /// screen, but it flickered badly under RTS tilt because perspective
+    /// foreshortening crowds far cells near the horizon line. Casting an
+    /// actual ray against the sphere is both more correct and more stable.
+    /// </summary>
     public int? PickCell(float canvasX, float canvasY)
     {
-        float w = _app.CanvasWidth, h = _app.CanvasHeight;
-        if (w < 1 || h < 1) return null;
-
-        var mvp = FloatsToMatrix(_camera.BuildMvp(w / h));
-        var camDir = Vector3.Normalize(_camera.Position());
         var mesh = _meshProvider();
+        if (!TryRaycastSurface(canvasX, canvasY, mesh.Radius, out var hitDir))
+            return null;
 
-        float bestDist = float.MaxValue;
-        int bestCell = -1;
-
+        // Closest cell to the hit direction = max dot product against the
+        // unit-length cell-center direction. O(N) over cells; ~5k cells is
+        // a few µs, fine on a per-pointer-move budget.
+        int best = -1;
+        float bestDot = float.MinValue;
         for (int i = 0; i < mesh.CellCount; i++)
         {
-            if (Vector3.Dot(mesh.GetCellCenter(i), camDir) < -0.05f) continue;
-
-            float cellH = mesh.Radius + mesh.GetLevel(i) * mesh.StepHeight;
-            var center = mesh.GetCellCenter(i) * cellH;
-            var clip = Vector4.Transform(new Vector4(center, 1f), mvp);
-            if (clip.W <= 0.001f) continue;
-
-            float sx = (clip.X / clip.W * 0.5f + 0.5f) * w;
-            float sy = (0.5f - clip.Y / clip.W * 0.5f) * h;
-            float d = (sx - canvasX) * (sx - canvasX) + (sy - canvasY) * (sy - canvasY);
-            if (d < bestDist) { bestDist = d; bestCell = i; }
+            float d = Vector3.Dot(mesh.GetCellCenter(i), hitDir);
+            if (d > bestDot) { bestDot = d; best = i; }
         }
-        return bestCell >= 0 ? bestCell : null;
+        return best >= 0 ? best : null;
+    }
+
+    /// <summary>Cast a ray from the camera through the cursor pixel and
+    /// intersect it with a sphere of <paramref name="radius"/> centered at
+    /// the planet origin. Returns the surface direction (normalized hit
+    /// point) on success. Used by both cell picking and any screen→world
+    /// query that needs a stable surface point under camera tilt.</summary>
+    private bool TryRaycastSurface(float canvasX, float canvasY, float radius, out Vector3 hitDir)
+    {
+        hitDir = Vector3.Zero;
+        float w = _app.CanvasWidth, h = _app.CanvasHeight;
+        if (w < 1f || h < 1f) return false;
+
+        // Orthonormalize the camera basis from Forward+Up — Up() is a hint,
+        // not guaranteed perpendicular to forward at nonzero tilt.
+        var fwd = Vector3.Normalize(_camera.Forward());
+        var right = Vector3.Normalize(Vector3.Cross(fwd, _camera.Up()));
+        var up = Vector3.Cross(right, fwd);
+        float tan = MathF.Tan(_camera.FovYDegrees * MathF.PI / 360f);
+
+        var rayDir = Vector3.Normalize(fwd
+            + (2f * canvasX / w - 1f) * tan * (w / h) * right
+            + (1f - 2f * canvasY / h) * tan * up);
+
+        // Ray-sphere: |camPos + t·rayDir|² = radius².
+        var camPos = _camera.Position();
+        float b = Vector3.Dot(camPos, rayDir);
+        float disc = b * b - camPos.LengthSquared() + radius * radius;
+        if (disc < 0f) return false;
+        float t = -b - MathF.Sqrt(disc);
+        if (t < 0f) return false;
+        hitDir = Vector3.Normalize(camPos + rayDir * t);
+        return true;
     }
 
     /// <summary>Project every spawned unit through the current planet MVP and

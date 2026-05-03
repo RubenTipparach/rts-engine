@@ -160,15 +160,32 @@ fn fs_main(
     // Always sample terrain atlas unconditionally (uniform flow)
     let terrainBase = triplanarTile(worldPos, N, level);
 
+    // Detect walls vs top fans by how aligned the surface normal is to
+    // the radial direction. Top fans (and gentle slopes) have N close
+    // to radial → wallness ≈ 0, full Lambert. Cliff walls have N
+    // tangent to the sphere → wallness ≈ 1, a flatter curve so
+    // visually-similar walls at different planet positions don't shade
+    // wildly differently from each other (Lambert + tangent normals
+    // amplify directional differences across the sphere; that's what
+    // produced the silver-vs-black "same angle" disparity).
+    let radial = normalize(worldPos);
+    let radialAlign = abs(dot(radial, N));
+    let wallness = 1.0 - smoothstep(0.4, 0.85, radialAlign);
+    let topCurve = 0.25 + NdotL * 0.9;
+    let wallCurve = 0.55 + NdotL * 0.25;
+    let lambert = mix(topCurve, wallCurve, wallness);
+
     var lit: vec3f;
     if (level < 0.5) {
         lit = waterShader(worldPos, N, V, L);
     } else {
-        lit = terrainBase * (0.25 + NdotL * 0.9);
+        lit = terrainBase * lambert;
     }
 
-    // Rim atmosphere glow
-    let rim = pow(1.0 - max(dot(N, V), 0.0), 3.5);
+    // Rim atmosphere glow at the planet's actual silhouette, not on
+    // any tangent-normal surface — gate on dot(radial, V) so cliffs
+    // inside the visible disc stay clear of the bluish glow.
+    let rim = pow(1.0 - max(dot(radial, V), 0.0), 3.5);
     let dayFactor = smoothstep(-0.1, 0.3, NdotL);
     lit = lit + vec3f(0.35, 0.55, 0.95) * rim * 0.35 * dayFactor;
 

@@ -243,18 +243,51 @@ public sealed class PlanetEditMode : IEditorMode
 
     public void OnMove(float canvasX, float canvasY)
     {
-        // Only show the hex hover highlight while editing, so the planet looks
-        // clean by default.
-        if (_hud.EditMode)
-            _hoveredCell = _picker.PickCell(canvasX, canvasY) ?? -1;
-        else if (_hoveredCell != -1)
-            _hoveredCell = -1;
+        // Track the cell under the cursor unconditionally — used by the hex
+        // highlight (edit mode only), the building-placement ghost (placement
+        // mode), and the building HP bar hover lookup. Whether to *show*
+        // those is decided downstream.
+        _hoveredCell = _picker.PickCell(canvasX, canvasY) ?? -1;
+
+        // Hover-pick units and buildings so the HP bar overlay can show on
+        // hover (in addition to selection). Cheap — units are few, building
+        // lookup is a single dictionary probe off the cell index.
+        _state.HoveredUnitInstanceId = _picker.PickUnit(canvasX, canvasY);
+        _state.HoveredBuildingInstanceId = _hoveredCell >= 0
+            ? (_state.BuildingAtCell(_hoveredCell)?.InstanceId ?? -1)
+            : -1;
     }
 
     public void OnKey(string key)
     {
-        if (key == "Tab" || key == "Backspace" || key == "Escape")
+        // Tab / Backspace = leave the planet, back to the solar system view.
+        // Escape = cancel the current in-progress action (placement, pending
+        // unit order, selection). It only ever exits to the solar system if
+        // there's nothing left to cancel — and even then, not at all here:
+        // exiting on plain Esc is too easy to do accidentally mid-build.
+        if (key == "Tab" || key == "Backspace")
+        {
             ExitRequested?.Invoke();
+            return;
+        }
+        if (key == "Escape")
+        {
+            if (_state.PlacementBuildingId != null)
+            {
+                _state.PlacementBuildingId = null;
+                _hud.RefreshRtsButtons();
+            }
+            else if (_pendingUnitOrder != null)
+            {
+                _pendingUnitOrder = null;
+            }
+            else if (_state.SelectedBuildingInstanceId != -1 || _state.SelectedUnitInstanceIds.Count > 0)
+            {
+                _state.SelectedBuildingInstanceId = -1;
+                _state.SelectedUnitInstanceIds.Clear();
+                _hud.RefreshRtsButtons();
+            }
+        }
     }
 
     public async Task RenderTick(float elapsed)
@@ -281,7 +314,9 @@ public sealed class PlanetEditMode : IEditorMode
         var cam = _camera.Position();
         planet.SetCameraPosition(cam.X, cam.Y, cam.Z);
         planet.SetTime(elapsed);
-        planet.SetHighlightCell(_hoveredCell);
+        // Hex outline highlight only shows up while terrain editing — keeps
+        // the planet looking clean during normal RTS play.
+        planet.SetHighlightCell(_hud.EditMode ? _hoveredCell : -1);
         await planet.SyncOutline();
 
         // Advance any units that have a path queued. Frame-bounded dt so
@@ -336,7 +371,7 @@ public sealed class PlanetEditMode : IEditorMode
         {
             _rts.SetSunDirection(selfPos.LengthSquared() > 1e-6f
                 ? -Vector3.Normalize(selfPos) : new Vector3(0.5f, 0.7f, 0.5f));
-            _rts.Draw(_state, planet.Mesh, planetMvp, cam);
+            _rts.Draw(_state, planet.Mesh, planetMvp, cam, _app.CanvasWidth, _app.CanvasHeight, _hoveredCell);
         }
 
         // Orbit rings start invisible up close, fade in as we zoom out so
@@ -385,9 +420,11 @@ public sealed class PlanetEditMode : IEditorMode
         spawned.Heading = tangentA;
     }
 
-    /// <summary>Right-click handler: queue A* paths to the clicked cell for
-    /// every currently-selected unit. No-op if nothing's selected or the
-    /// click missed the surface.</summary>
+    /// <summary>Right-click handler: distribute selected units across distinct
+    /// arrival cells around the click target so they don't pile up on the
+    /// same hex. The click target is slot 0; further slots come from a BFS
+    /// outward, skipping cells with buildings on them. Each unit is greedily
+    /// paired with its nearest unclaimed slot before A*ing a path to it.</summary>
     private void HandleMoveCommand(float canvasX, float canvasY)
     {
         if (_rtsConfig == null) return;
@@ -397,17 +434,62 @@ public sealed class PlanetEditMode : IEditorMode
         if (targetCell == null) return;
 
         var planet = _planetProvider();
-        foreach (var unit in _state.SelectedUnits)
+        var movingUnits = _state.SelectedUnits
+            .Where(u => _rtsConfig.GetUnit(u.TypeId) != null)
+            .ToList();
+        if (movingUnits.Count == 0) return;
+
+        var slots = PickArrivalSlots(planet.Mesh, targetCell.Value, movingUnits.Count);
+        if (slots.Count == 0) return;
+
+        // Greedy nearest-unit assignment: for each slot in order (closest to
+        // target first), claim the still-unassigned unit nearest to it.
+        // Keeps groups of units from crossing each other's paths and the
+        // first selected unit ends up on the click cell.
+        var pool = new List<SpawnedUnit>(movingUnits);
+        foreach (var slot in slots)
         {
-            var def = _rtsConfig.GetUnit(unit.TypeId);
-            if (def == null) continue;
+            if (pool.Count == 0) break;
+            var slotPos = planet.Mesh.GetCellCenter(slot);
+            int bestIdx = 0;
+            float bestDist = Vector3.DistanceSquared(pool[0].SurfacePoint, slotPos);
+            for (int i = 1; i < pool.Count; i++)
+            {
+                float d = Vector3.DistanceSquared(pool[i].SurfacePoint, slotPos);
+                if (d < bestDist) { bestDist = d; bestIdx = i; }
+            }
+            var unit = pool[bestIdx];
+            pool.RemoveAt(bestIdx);
 
-            var path = Pathfinding.FindPath(planet.Mesh, unit.CellIndex, targetCell.Value, def.CanHop);
+            var def = _rtsConfig.GetUnit(unit.TypeId)!;
+            var path = Pathfinding.FindPath(planet.Mesh, unit.CellIndex, slot, def.CanHop);
             if (path == null) continue;
-
             unit.Path = path;
             unit.PathIndex = path.Count > 0 && path[0] == unit.CellIndex ? 1 : 0;
         }
+    }
+
+    /// <summary>BFS outward from <paramref name="target"/> collecting up to
+    /// <paramref name="count"/> distinct cells suitable as arrival slots.
+    /// Cells with buildings on them are skipped (units can't share a hex
+    /// with a structure), but their neighbors are still visited so the
+    /// expansion routes around obstacles. Returned in BFS order — slot 0
+    /// is the click target, later slots radiate outward.</summary>
+    private List<int> PickArrivalSlots(PlanetMesh mesh, int target, int count)
+    {
+        var slots = new List<int>(count);
+        var visited = new HashSet<int> { target };
+        var queue = new Queue<int>();
+        queue.Enqueue(target);
+        while (slots.Count < count && queue.Count > 0)
+        {
+            int c = queue.Dequeue();
+            if (_state.BuildingAtCell(c) == null)
+                slots.Add(c);
+            foreach (var n in mesh.GetNeighbors(c))
+                if (visited.Add(n)) queue.Enqueue(n);
+        }
+        return slots;
     }
 
     /// <summary>Replace (don't append to) the multi-select set with every unit

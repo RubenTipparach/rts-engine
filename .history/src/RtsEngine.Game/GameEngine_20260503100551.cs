@@ -274,12 +274,12 @@ public class GameEngine
             {
                 var (upDotY, upDotR) = _camera.UpDots();
                 var up = _camera.Up();
-                // Console.Error.WriteLine(
-                //     $"[camera] pitch={pitch:F2}° dist={_camera.Distance:F2} " +
-                //     $"zoom={(int)MathF.Round(_camera.ZoomPercent()*100)}% " +
-                //     $"tilt={(_camera.TiltBlend()*100):F1}% " +
-                //     $"up=({up.X:+0.00;-0.00},{up.Y:+0.00;-0.00},{up.Z:+0.00;-0.00}) " +
-                //     $"up·Y={upDotY:F2} up·radial={upDotR:F2}");
+                Console.Error.WriteLine(
+                    $"[camera] pitch={pitch:F2}° dist={_camera.Distance:F2} " +
+                    $"zoom={(int)MathF.Round(_camera.ZoomPercent()*100)}% " +
+                    $"tilt={(_camera.TiltBlend()*100):F1}% " +
+                    $"up=({up.X:+0.00;-0.00},{up.Y:+0.00;-0.00},{up.Z:+0.00;-0.00}) " +
+                    $"up·Y={upDotY:F2} up·radial={upDotR:F2}");
                 _lastLoggedPitch = pitch;
             }
         }

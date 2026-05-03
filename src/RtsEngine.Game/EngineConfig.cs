@@ -12,6 +12,7 @@ public sealed class EngineConfig
     public PlanetEditViewConfig PlanetEditView { get; set; } = new();
     public RtsCameraConfig RtsCamera { get; set; } = new();
     public SlopeConfig Slopes { get; set; } = new();
+    public DebugConfig Debug { get; set; } = new();
 
     public static EngineConfig FromYaml(string yaml)
     {
@@ -98,10 +99,13 @@ public sealed class RtsCameraConfig
     /// minimum orbit distance becomes radius * (1 + GroundClearance).</summary>
     public float GroundClearance { get; set; } = 0.15f;
 
-    /// <summary>How far ahead (along the surface, radius units) the look-at
-    /// target sits when fully tilted. Tuned so that altitude/lookAhead gives
-    /// roughly a 30° downward tilt at the ground floor.</summary>
-    public float LookAhead { get; set; } = 0.25f;
+    /// <summary>Camera tilt at full RTS view, measured as the angle from
+    /// straight-down (looking at planet center) toward the horizon.
+    /// 0° = always looking at planet center (no RTS tilt). 90° = looking
+    /// horizontally along the surface. The default 59° corresponds to the
+    /// previous design's "~30° below horizon" RTS pose
+    /// (90° − 31° = 59°).</summary>
+    public float MaxTiltDegrees { get; set; } = 59f;
 
     /// <summary>Zoom percentage (log-altitude space, 0 = max zoom out, 1 =
     /// max zoom in) at which the RTS tilt starts engaging. Below this the
@@ -124,4 +128,17 @@ public sealed class RtsCameraConfig
     /// motion without explicit easing curves; rate 12 = ~98% of the way in
     /// 0.3 seconds.</summary>
     public float ZoomLerpRate { get; set; } = 12.0f;
+}
+
+/// <summary>
+/// Visualization toggles. Off in shipped builds; flip on in engine.yaml when
+/// you need to see what the gameplay systems are doing under the hood.
+/// </summary>
+public sealed class DebugConfig
+{
+    /// <summary>Render each unit's queued path as a line strip from its
+    /// current cell along the remaining waypoints to the destination, plus a
+    /// small marker on the destination cell. Useful for debugging A* output
+    /// and movement-system bugs.</summary>
+    public bool ShowUnitPaths { get; set; } = false;
 }

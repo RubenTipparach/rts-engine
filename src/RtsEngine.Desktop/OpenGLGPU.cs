@@ -388,6 +388,19 @@ internal sealed class OpenGLGPU : IGPU, IDisposable
             p.CullFront = true;
         });
 
+    public Task<int> CreateRenderPipelineMarker(int shaderModuleId, object[] vertexBufferLayouts)
+        => MakePipeline(shaderModuleId, vertexBufferLayouts, p =>
+        {
+            // World-space markers (HP bars, selection discs): alpha blend,
+            // depth test on (so they get occluded by terrain in front), no
+            // depth write, and cull-none so flat quads render regardless of
+            // facing the camera.
+            p.BlendAlpha = true;
+            p.DepthWrite = false;
+            p.CullBack = false;
+            p.CullFront = false;
+        });
+
     public Task<int> CreateRenderPipelineUI(int shaderModuleId, object[] vertexBufferLayouts)
         => MakePipeline(shaderModuleId, vertexBufferLayouts, p =>
         {

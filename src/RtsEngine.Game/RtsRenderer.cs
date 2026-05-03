@@ -19,6 +19,7 @@ public sealed class RtsRenderer : IDisposable
 
     private readonly IGPU _gpu;
     private readonly RtsConfig _config;
+    private readonly EngineConfig _engineConfig;
 
     private int _pipeline;
     private int _markerPipeline;   // alpha-blend variant for selection discs / HP bars
@@ -58,19 +59,46 @@ public sealed class RtsRenderer : IDisposable
         team >= 0 && team < TeamColors.Length ? TeamColors[team] : TeamColors[0];
 
     // Shared marker geometry. Disc is a 24-segment fan in the local XZ plane
-    // (Y up = surface normal). Quad is a unit rectangle in the local XY plane,
-    // centered on (0,0) — for HP bars we billboard via a model matrix built
-    // from camera right/up.
+    // (Y up = surface normal). HP bars now render screen-space via _hpVbo, so
+    // there's no per-instance world-space quad mesh.
     private Mesh _discMesh;
-    private Mesh _quadMesh;
 
-    public RtsRenderer(IGPU gpu, RtsConfig config)
+    // Screen-space HP bar pass — separate from world-space markers because
+    // bars need to stay axis-aligned with the screen regardless of camera
+    // tilt, and stay a constant pixel size at every zoom. Uses the colour-
+    // only ui.wgsl pipeline. The vertex/index buffers are sized for
+    // <see cref="MaxHpBars"/> bars and rewritten in place each frame via
+    // queue.writeBuffer rather than recreated, so there's no per-frame
+    // allocation churn.
+    private int _hpPipeline;
+    private int _hpVbo, _hpIbo;
+    private const int MaxHpBars = 256;
+    // Two quads per entity (background + fill), each quad = 4 verts and 6
+    // indices. Vert layout matches ui.wgsl: vec2 pos + vec4 color = 6 floats.
+    private const int VertsPerBar = 8;
+    private const int IndicesPerBar = 12;
+    private const int FloatsPerVert = 6;
+    private readonly float[] _hpVertScratch = new float[MaxHpBars * VertsPerBar * FloatsPerVert];
+
+    // Path-debug pass — draws each unit's queued A* path as a line strip on
+    // the planet surface when EngineConfig.Debug.ShowUnitPaths is on. Reuses
+    // outline.wgsl (uniform mvp + color, vertex = pos3 only). Streaming
+    // vertex buffer pre-sized for the max we'd ever care to draw at once.
+    private int _pathPipeline;
+    private int _pathVbo, _pathIbo, _pathUbo, _pathBindGroup;
+    private const int MaxPathSegments = 8192;
+    // Each segment is a line-list pair: 2 verts × 3 floats.
+    private readonly float[] _pathVertScratch = new float[MaxPathSegments * 2 * 3];
+
+    public RtsRenderer(IGPU gpu, RtsConfig config, EngineConfig engineConfig)
     {
         _gpu = gpu;
         _config = config;
+        _engineConfig = engineConfig;
     }
 
-    public async Task Setup(string shaderCode, Dictionary<string, string>? objs = null)
+    public async Task Setup(string shaderCode, string uiShaderCode, string lineShaderCode,
+        Dictionary<string, string>? objs = null)
     {
         var shader = await _gpu.CreateShaderModule(shaderCode);
         _pipeline = await _gpu.CreateRenderPipeline(shader, new object[]
@@ -87,8 +115,12 @@ public sealed class RtsRenderer : IDisposable
         _ubo = await _gpu.CreateUniformBuffer(UniformSize);
         _sampler = await _gpu.CreateSampler("nearest", "repeat");
 
-        // Alpha-blend variant of the same shader for translucent markers.
-        _markerPipeline = await _gpu.CreateRenderPipelineAlphaBlend(shader, new object[]
+        // Marker pipeline (alpha blend, no depth write, cull-none) for
+        // translucent overlays — selection discs, HP bars, future build/move
+        // ghosts. NOT the alpha-blend pipeline used by the atmosphere; that
+        // one culls front faces for inside-out shells, which would hide
+        // these flat quads from any normal camera angle.
+        _markerPipeline = await _gpu.CreateRenderPipelineMarker(shader, new object[]
         {
             new {
                 arrayStride = VertexStride,
@@ -101,7 +133,6 @@ public sealed class RtsRenderer : IDisposable
         });
 
         _discMesh = await BuildDiscMesh(24);
-        _quadMesh = await BuildQuadMesh();
 
         foreach (var b in _config.Buildings)
         {
@@ -116,11 +147,68 @@ public sealed class RtsRenderer : IDisposable
             _bindGroups[u.Id] = await BuildBindGroup(u.Id);
         }
 
-        // Markers (selection disc, HP bar) sample the texture too — the result
-        // is mixed away by sunDir.w=1 in the fragment shader, but the binding
-        // still has to be valid. Reuse any entity's bind group; the first
-        // building works fine.
+        // Markers (selection disc, future build ghost) sample the texture too
+        // — the result is mixed away by sunDir.w=1 in the fragment shader, but
+        // the binding still has to be valid. Reuse any entity's bind group;
+        // the first building works fine.
         _markerBindGroup = _bindGroups.Values.FirstOrDefault();
+
+        // Screen-space HP bar pass. ui.wgsl takes vec2 NDC + vec4 color, no
+        // uniforms. Vertex buffer is allocated once at MaxHpBars capacity and
+        // rewritten in place each frame; the index buffer is static.
+        var uiShader = await _gpu.CreateShaderModule(uiShaderCode);
+        _hpPipeline = await _gpu.CreateRenderPipelineUI(uiShader, new object[]
+        {
+            new {
+                arrayStride = FloatsPerVert * 4,
+                attributes = new object[]
+                {
+                    new { format = "float32x2", offset = 0, shaderLocation = 0 },
+                    new { format = "float32x4", offset = 8, shaderLocation = 1 },
+                }
+            }
+        });
+        _hpVbo = await _gpu.CreateVertexBuffer(_hpVertScratch);
+        var hpIdx = new ushort[MaxHpBars * IndicesPerBar];
+        for (int i = 0; i < MaxHpBars; i++)
+        {
+            int v = i * VertsPerBar;
+            int o = i * IndicesPerBar;
+            // Background quad (verts v..v+3) and fill quad (verts v+4..v+7),
+            // each two triangles in (0,1,2)+(0,2,3) order.
+            hpIdx[o + 0] = (ushort)(v + 0);
+            hpIdx[o + 1] = (ushort)(v + 1);
+            hpIdx[o + 2] = (ushort)(v + 2);
+            hpIdx[o + 3] = (ushort)(v + 0);
+            hpIdx[o + 4] = (ushort)(v + 2);
+            hpIdx[o + 5] = (ushort)(v + 3);
+            hpIdx[o + 6] = (ushort)(v + 4);
+            hpIdx[o + 7] = (ushort)(v + 5);
+            hpIdx[o + 8] = (ushort)(v + 6);
+            hpIdx[o + 9] = (ushort)(v + 4);
+            hpIdx[o + 10] = (ushort)(v + 6);
+            hpIdx[o + 11] = (ushort)(v + 7);
+        }
+        _hpIbo = await _gpu.CreateIndexBuffer(hpIdx);
+
+        // Path-debug pass. outline.wgsl uses pos3 + uniform { mvp, color }.
+        var lineShader = await _gpu.CreateShaderModule(lineShaderCode);
+        _pathPipeline = await _gpu.CreateRenderPipelineLines(lineShader, new object[]
+        {
+            new {
+                arrayStride = 12,
+                attributes = new object[] { new { format = "float32x3", offset = 0, shaderLocation = 0 } }
+            }
+        });
+        _pathUbo = await _gpu.CreateUniformBuffer(80);
+        _pathBindGroup = await _gpu.CreateBindGroup(_pathPipeline, 0, new object[]
+        {
+            new { binding = 0, bufferId = _pathUbo },
+        });
+        _pathVbo = await _gpu.CreateVertexBuffer(_pathVertScratch);
+        var pathIdx = new ushort[MaxPathSegments * 2];
+        for (int i = 0; i < pathIdx.Length; i++) pathIdx[i] = (ushort)i;
+        _pathIbo = await _gpu.CreateIndexBuffer(pathIdx);
 
         _ready = true;
     }
@@ -198,46 +286,18 @@ public sealed class RtsRenderer : IDisposable
         return new Mesh { Vbo = vbo, Ibo = ibo, IndexCount = idx.Count };
     }
 
-    /// <summary>Unit quad in local XY plane (X = -0.5..0.5, Y = 0..1, Z = 0).
-    /// Used for HP bars; the model matrix billboards it via camera basis.</summary>
-    private async Task<Mesh> BuildQuadMesh()
-    {
-        float[] verts = {
-            // pos, normal — normal points at +Z so face culling treats us
-            // like a normal forward-facing quad.
-            -0.5f, 0f, 0f,   0f, 0f, 1f,
-             0.5f, 0f, 0f,   0f, 0f, 1f,
-             0.5f, 1f, 0f,   0f, 0f, 1f,
-            -0.5f, 1f, 0f,   0f, 0f, 1f,
-        };
-        ushort[] idx = { 0, 1, 2, 0, 2, 3 };
-        int vbo = await _gpu.CreateVertexBuffer(verts);
-        int ibo = await _gpu.CreateIndexBuffer(idx);
-        return new Mesh { Vbo = vbo, Ibo = ibo, IndexCount = idx.Length };
-    }
-
     /// <summary>
     /// Draw all placed buildings and spawned units. <paramref name="planetMvp"/>
     /// is the same MVP used to render the planet (planet center = origin in
     /// the source space). Each instance gets a model matrix that places its
     /// base on the surface and aligns its Y axis with the cell's outward radial.
     /// </summary>
-    public void Draw(RtsState state, PlanetMesh mesh, float[] planetMvp, Vector3 cameraPosLocal)
+    public void Draw(RtsState state, PlanetMesh mesh, float[] planetMvp,
+        Vector3 cameraPosLocal, float canvasW, float canvasH, int hoveredCell)
     {
         if (!_ready) return;
 
         var planetMvpMat = RawToMat(planetMvp);
-
-        // Camera basis in planet-local frame, used to billboard HP bars so
-        // they always face the screen no matter which side of the planet the
-        // entity sits on. Forward = camera looking at planet origin.
-        var camFwd = cameraPosLocal.LengthSquared() > 1e-8f
-            ? -Vector3.Normalize(cameraPosLocal)
-            : new Vector3(0, 0, -1);
-        var camRight = Vector3.Cross(camFwd, new Vector3(0, 1, 0));
-        if (camRight.LengthSquared() < 1e-6f) camRight = new Vector3(1, 0, 0);
-        camRight = Vector3.Normalize(camRight);
-        var camUp = Vector3.Normalize(Vector3.Cross(camRight, camFwd));
 
         // Pass 1: building + unit meshes (lit, opaque).
         foreach (var b in state.Buildings)
@@ -283,25 +343,234 @@ public sealed class RtsRenderer : IDisposable
             DrawSelectionDisc(u.SurfacePoint, u.SurfaceUp, def.HalfWidth * 1.6f, planetMvpMat);
         }
 
-        // Pass 3: HP bars — billboarded above each entity. Rendered for every
-        // entity so the player can see relative HP at a glance.
-        foreach (var b in state.Buildings)
-        {
-            var def = _config.GetBuilding(b.TypeId); if (def == null) continue;
-            var up = mesh.GetCellCenter(b.CellIndex);
-            float surfaceR = mesh.Radius + mesh.GetLevel(b.CellIndex) * mesh.StepHeight;
-            var center = up * (surfaceR + def.Height + 0.015f);
-            DrawHealthBar(center, camRight, camUp, def.HalfWidth * 2.2f,
-                MathF.Max(0f, b.Hp / b.MaxHp), planetMvpMat);
-        }
+        // Pass 2.5: building placement ghost — when a build is queued, draw
+        // a translucent copy of the chosen building on the cell under the
+        // cursor. Tinted green for valid, red for occupied, so the player
+        // knows whether the click will land.
+        DrawPlacementGhost(state, mesh, planetMvpMat, hoveredCell);
+
+        // Pass 2.7: move-order destination markers — small disc on each
+        // selected unit's path goal, so the player can see where they'll end
+        // up. Only shown for selected units to keep the screen clean when
+        // many units are moving at once.
         foreach (var u in state.Units)
         {
+            if (!state.SelectedUnitInstanceIds.Contains(u.InstanceId)) continue;
+            if (u.Path == null || u.Path.Count == 0) continue;
+            int destCell = u.Path[u.Path.Count - 1];
             var def = _config.GetUnit(u.TypeId); if (def == null) continue;
-            var center = u.SurfacePoint + u.SurfaceUp * (def.Height + 0.012f);
-            DrawHealthBar(center, camRight, camUp, def.HalfWidth * 2.2f,
-                MathF.Max(0f, u.Hp / u.MaxHp), planetMvpMat);
+            var up = mesh.GetCellCenter(destCell);
+            float surfaceR = mesh.Radius + mesh.GetLevel(destCell) * mesh.StepHeight;
+            DrawMoveDestMarker(up * surfaceR, up, def.HalfWidth * 1.4f, planetMvpMat);
         }
+
+        // Pass 3: HP bars — screen-space, only over selected/hovered entities.
+        DrawHealthBars(state, mesh, planetMvpMat, cameraPosLocal, canvasW, canvasH);
+
+        // Pass 4 (debug only): unit paths — straight line strips from each
+        // moving unit's current position along its remaining waypoints.
+        if (_engineConfig.Debug.ShowUnitPaths)
+            DrawUnitPaths(state, mesh, planetMvp);
     }
+
+    /// <summary>When debug.showUnitPaths is on, emit a line-list pair for
+    /// every remaining segment in each unit's path: start = the unit's
+    /// current world position, then each upcoming cell center lifted to its
+    /// surface height. One uniform write + one indexed line draw per frame
+    /// regardless of unit count.</summary>
+    private void DrawUnitPaths(RtsState state, PlanetMesh mesh, float[] planetMvp)
+    {
+        // Lift the line slightly above the surface so it isn't z-fought by
+        // terrain. Same trick the selection disc uses.
+        const float SurfaceLift = 0.003f;
+
+        int segs = 0;
+        foreach (var u in state.Units)
+        {
+            var path = u.Path;
+            if (path == null || path.Count == 0) continue;
+            int next = u.PathIndex;
+            if (next >= path.Count) continue;
+
+            // First segment: from the unit's live position to the next
+            // waypoint center. Subsequent segments connect waypoint centers.
+            Vector3 prev = u.SurfacePoint + u.SurfaceUp * SurfaceLift;
+            for (int k = next; k < path.Count; k++)
+            {
+                if (segs >= MaxPathSegments) break;
+                var cellUp = mesh.GetCellCenter(path[k]);
+                float surfaceR = mesh.Radius + mesh.GetLevel(path[k]) * mesh.StepHeight + SurfaceLift;
+                var here = cellUp * surfaceR;
+                int o = segs * 6;
+                _pathVertScratch[o + 0] = prev.X;
+                _pathVertScratch[o + 1] = prev.Y;
+                _pathVertScratch[o + 2] = prev.Z;
+                _pathVertScratch[o + 3] = here.X;
+                _pathVertScratch[o + 4] = here.Y;
+                _pathVertScratch[o + 5] = here.Z;
+                segs++;
+                prev = here;
+            }
+            if (segs >= MaxPathSegments) break;
+        }
+
+        if (segs == 0) return;
+
+        // Uniform: same layout as outline.wgsl — mvp(64) + color(16).
+        // 80 bytes total; padded to a 4-float color vec4. Magenta @ 0.85 alpha.
+        var uni = new float[20];
+        for (int i = 0; i < 16; i++) uni[i] = planetMvp[i];
+        uni[16] = 1.00f; uni[17] = 0.20f; uni[18] = 0.85f; uni[19] = 0.85f;
+
+        _gpu.WriteBuffer(_pathUbo, uni);
+        _gpu.WriteBuffer(_pathVbo, _pathVertScratch);
+        _gpu.RenderAdditional(_pathPipeline, _pathVbo, _pathIbo, _pathBindGroup, segs * 2);
+    }
+
+    /// <summary>Build a per-frame batch of screen-space HP bars for the
+    /// entities that should currently show one (selected ∪ hovered), project
+    /// each anchor world position into NDC, emit two coloured quads per bar
+    /// into the streaming vertex buffer, and dispatch a single indexed draw.
+    /// Skips back-facing entities and ones whose anchor lands behind the
+    /// near plane so we don't pop bars onto the screen at the horizon.</summary>
+    private void DrawHealthBars(RtsState state, PlanetMesh mesh,
+        Matrix4X4<float> planetMvp, Vector3 cameraPosLocal,
+        float canvasW, float canvasH)
+    {
+        if (canvasW < 1f || canvasH < 1f || _hpVbo == 0) return;
+
+        // Sized to look the same at any zoom level. Tuned by eye against a
+        // 1080p canvas — feel free to lift to engine.yaml if it ever needs
+        // to vary by platform.
+        const float BarWidthPx = 48f;
+        const float BarHeightPx = 6f;
+        // Lift the bar above the entity's silhouette in screen space — the
+        // anchor is the model's top in world; this offset just gives some
+        // breathing room before the bar.
+        const float BarOffsetPx = 12f;
+
+        int barCount = 0;
+        var camDir = cameraPosLocal.LengthSquared() > 1e-8f
+            ? Vector3.Normalize(cameraPosLocal) : new Vector3(0, 1, 0);
+
+        // Collect entities that should display a bar, then project each.
+        // Buildings.
+        foreach (var b in state.Buildings)
+        {
+            bool show = b.InstanceId == state.SelectedBuildingInstanceId
+                     || b.InstanceId == state.HoveredBuildingInstanceId;
+            if (!show) continue;
+            if (barCount >= MaxHpBars) break;
+
+            var def = _config.GetBuilding(b.TypeId); if (def == null) continue;
+            var up = mesh.GetCellCenter(b.CellIndex);
+            // Cull if facing away from camera — projection would still place
+            // the bar on screen via the back of the planet, which looks bad.
+            if (Vector3.Dot(up, camDir) < -0.05f) continue;
+            float surfaceR = mesh.Radius + mesh.GetLevel(b.CellIndex) * mesh.StepHeight;
+            var anchor = up * (surfaceR + def.Height);
+            if (TryEmitBar(barCount, anchor, planetMvp, canvasW, canvasH,
+                BarWidthPx, BarHeightPx, BarOffsetPx,
+                MathF.Max(0f, b.Hp / b.MaxHp))) barCount++;
+        }
+        // Units.
+        foreach (var u in state.Units)
+        {
+            bool show = state.SelectedUnitInstanceIds.Contains(u.InstanceId)
+                     || u.InstanceId == state.HoveredUnitInstanceId;
+            if (!show) continue;
+            if (barCount >= MaxHpBars) break;
+
+            var def = _config.GetUnit(u.TypeId); if (def == null) continue;
+            if (Vector3.Dot(u.SurfaceUp, camDir) < -0.05f) continue;
+            var anchor = u.SurfacePoint + u.SurfaceUp * def.Height;
+            if (TryEmitBar(barCount, anchor, planetMvp, canvasW, canvasH,
+                BarWidthPx, BarHeightPx, BarOffsetPx,
+                MathF.Max(0f, u.Hp / u.MaxHp))) barCount++;
+        }
+
+        if (barCount == 0) return;
+        _gpu.WriteBuffer(_hpVbo, _hpVertScratch);
+        _gpu.RenderNoBind(_hpPipeline, _hpVbo, _hpIbo, barCount * IndicesPerBar);
+    }
+
+    /// <summary>Project an anchor into NDC, emit the bg + fill quads for a
+    /// single HP bar at <paramref name="slot"/>. Returns false (and writes
+    /// nothing) if the anchor is behind the camera or off-screen by enough
+    /// that the bar would be invisible.</summary>
+    private bool TryEmitBar(int slot, Vector3 anchorWorld, Matrix4X4<float> planetMvp,
+        float canvasW, float canvasH,
+        float widthPx, float heightPx, float offsetPx, float hpFrac)
+    {
+        var clip = Vector4.Transform(new Vector4(anchorWorld, 1f),
+            ToSysMat(planetMvp));
+        if (clip.W <= 1e-3f) return false;
+
+        // NDC after perspective divide. WebGPU: x ∈ [-1,1] right, y ∈ [-1,1]
+        // up, z ∈ [0,1]. Bar X is centered on anchor; bar Y sits 'offsetPx'
+        // above anchor (so it stays clear of the model in screen space).
+        float ndcX = clip.X / clip.W;
+        float ndcY = clip.Y / clip.W;
+        if (ndcX < -1.5f || ndcX > 1.5f || ndcY < -1.5f || ndcY > 1.5f) return false;
+
+        // Pixel → NDC scale. NDC spans 2 across the canvas.
+        float halfWNdc = widthPx / canvasW;       // (widthPx/2)/canvasW * 2 = widthPx/canvasW
+        float heightNdc = heightPx * 2f / canvasH;
+        float offsetNdc = offsetPx * 2f / canvasH;
+
+        // Bottom of the bar sits 'offsetPx' above the anchor.
+        float yBot = ndcY + offsetNdc;
+        float yTop = yBot + heightNdc;
+        float xLeft = ndcX - halfWNdc;
+        float xRight = ndcX + halfWNdc;
+
+        // Background — dim red, full width.
+        var bg = new Vector4(0.45f, 0.05f, 0.05f, 0.85f);
+        // Fill — green-to-red gradient on hp%, max 0.95 alpha so it sits
+        // distinctly on top of the bg.
+        var fillRgb = hpFrac > 0.5f
+            ? Vector3.Lerp(new Vector3(0.95f, 0.85f, 0.10f), new Vector3(0.20f, 0.95f, 0.25f),
+                (hpFrac - 0.5f) * 2f)
+            : Vector3.Lerp(new Vector3(0.95f, 0.20f, 0.20f), new Vector3(0.95f, 0.85f, 0.10f),
+                hpFrac * 2f);
+        var fg = new Vector4(fillRgb, 0.95f);
+
+        // Fill width follows hp% from the left edge.
+        float xFillRight = xLeft + (xRight - xLeft) * hpFrac;
+        // Inset the fill quad vertically so the dim red bg shows around it
+        // (matches the original world-space bar's 0.85× height aesthetic).
+        float yBotInset = yBot + heightNdc * 0.075f;
+        float yTopInset = yTop - heightNdc * 0.075f;
+
+        int o = slot * VertsPerBar * FloatsPerVert;
+        // Background verts (CCW: bl, br, tr, tl).
+        WriteVert(o + 0 * FloatsPerVert, xLeft,  yBot, bg);
+        WriteVert(o + 1 * FloatsPerVert, xRight, yBot, bg);
+        WriteVert(o + 2 * FloatsPerVert, xRight, yTop, bg);
+        WriteVert(o + 3 * FloatsPerVert, xLeft,  yTop, bg);
+        // Fill verts (CCW), inset on Y, scaled on X by hp%.
+        WriteVert(o + 4 * FloatsPerVert, xLeft,     yBotInset, fg);
+        WriteVert(o + 5 * FloatsPerVert, xFillRight, yBotInset, fg);
+        WriteVert(o + 6 * FloatsPerVert, xFillRight, yTopInset, fg);
+        WriteVert(o + 7 * FloatsPerVert, xLeft,     yTopInset, fg);
+        return true;
+    }
+
+    private void WriteVert(int offset, float x, float y, Vector4 c)
+    {
+        _hpVertScratch[offset + 0] = x;
+        _hpVertScratch[offset + 1] = y;
+        _hpVertScratch[offset + 2] = c.X;
+        _hpVertScratch[offset + 3] = c.Y;
+        _hpVertScratch[offset + 4] = c.Z;
+        _hpVertScratch[offset + 5] = c.W;
+    }
+
+    private static System.Numerics.Matrix4x4 ToSysMat(Matrix4X4<float> m) => new(
+        m.M11, m.M12, m.M13, m.M14,
+        m.M21, m.M22, m.M23, m.M24,
+        m.M31, m.M32, m.M33, m.M34,
+        m.M41, m.M42, m.M43, m.M44);
 
     private void DrawInstance(Mesh m, int bindGroup, Matrix4X4<float> modelMvp, Vector3 color,
         Vector3 sunDirModelSpace, Vector3 teamColor, bool selected)
@@ -396,50 +665,50 @@ public sealed class RtsRenderer : IDisposable
         _gpu.RenderAdditional(_markerPipeline, _discMesh.Vbo, _discMesh.Ibo, _markerBindGroup, _discMesh.IndexCount);
     }
 
-    /// <summary>
-    /// HP bar billboarded against the camera basis. Two quads stacked: a
-    /// dim red background full-width, then a green fill scaled by hp%
-    /// rendered in front.
-    /// </summary>
-    private void DrawHealthBar(Vector3 center, Vector3 camRight, Vector3 camUp,
-        float widthWorld, float hpFrac, Matrix4X4<float> planetMvpMat)
+    /// <summary>Cyan disc on a unit's path destination cell. Slightly larger
+    /// and lifted higher than the selection disc so it doesn't z-fight with
+    /// it when the unit is standing on the goal.</summary>
+    private void DrawMoveDestMarker(Vector3 surfacePos, Vector3 surfaceUp, float radius,
+        Matrix4X4<float> planetMvpMat)
     {
-        const float HeightWorld = 0.012f;
+        var u = Vector3.Normalize(surfaceUp);
+        var fwd = ArbitraryTangent(u);
+        var right = Vector3.Normalize(Vector3.Cross(u, fwd));
+        var center = surfacePos + u * 0.0025f;
+        var basis = new Matrix4X4<float>(
+            right.X * radius, right.Y * radius, right.Z * radius, 0f,
+            u.X,              u.Y,              u.Z,              0f,
+            fwd.X * radius,   fwd.Y * radius,   fwd.Z * radius,   0f,
+            center.X,         center.Y,         center.Z,         1f);
+        var modelMvp = Matrix4X4.Multiply(basis, planetMvpMat);
+        WriteMarkerUniform(modelMvp, new Vector4(0.30f, 0.85f, 1.0f, 0.65f));
+        _gpu.RenderAdditional(_markerPipeline, _discMesh.Vbo, _discMesh.Ibo, _markerBindGroup, _discMesh.IndexCount);
+    }
 
-        // Background bar — dim red, full width. Quad mesh spans -0.5..0.5 in
-        // local X and 0..1 in local Y; basis maps that into a camera-aligned
-        // rect at `center`.
-        var bgBasis = new Matrix4X4<float>(
-            camRight.X * widthWorld, camRight.Y * widthWorld, camRight.Z * widthWorld, 0f,
-            camUp.X    * HeightWorld, camUp.Y    * HeightWorld, camUp.Z    * HeightWorld, 0f,
-            0f, 0f, 1f, 0f,
-            center.X, center.Y, center.Z, 1f);
-        var bgMvp = Matrix4X4.Multiply(bgBasis, planetMvpMat);
-        WriteMarkerUniform(bgMvp, new Vector4(0.45f, 0.05f, 0.05f, 0.85f));
-        _gpu.RenderAdditional(_markerPipeline, _quadMesh.Vbo, _quadMesh.Ibo, _markerBindGroup, _quadMesh.IndexCount);
+    /// <summary>Render a translucent build-preview when placement mode is
+    /// active and the cursor is over a cell. The mesh comes from the
+    /// queued building; the tint switches to red if the target cell is
+    /// already occupied, so the player can read placement validity at a
+    /// glance.</summary>
+    private void DrawPlacementGhost(RtsState state, PlanetMesh mesh,
+        Matrix4X4<float> planetMvpMat, int hoveredCell)
+    {
+        var typeId = state.PlacementBuildingId;
+        if (typeId == null || hoveredCell < 0) return;
+        if (!_buildingMeshes.TryGetValue(typeId, out var bm)) return;
+        if (!_bindGroups.TryGetValue(typeId, out var bg)) return;
 
-        // Foreground fill. Width scaled by hp%, anchored to the bar's left
-        // edge — that means the basis X column shrinks AND the translation
-        // shifts left by the missing width.
-        if (hpFrac <= 0f) return;
-        float fillWidth = widthWorld * hpFrac;
-        // bg goes -widthWorld/2 to +widthWorld/2 along camRight; we want
-        // fill to start at the same left edge. Center of fill quad:
-        //   leftEdge + fillWidth/2 = -widthWorld/2 + fillWidth/2
-        float offsetX = -widthWorld * 0.5f + fillWidth * 0.5f;
-        var fillCenter = center + camRight * offsetX;
-        var fgBasis = new Matrix4X4<float>(
-            camRight.X * fillWidth, camRight.Y * fillWidth, camRight.Z * fillWidth, 0f,
-            camUp.X    * HeightWorld * 0.85f, camUp.Y * HeightWorld * 0.85f, camUp.Z * HeightWorld * 0.85f, 0f,
-            0f, 0f, 1f, 0f,
-            fillCenter.X, fillCenter.Y, fillCenter.Z, 1f);
-        var fgMvp = Matrix4X4.Multiply(fgBasis, planetMvpMat);
-        // Green when healthy, sliding to red when low.
-        var fillColor = hpFrac > 0.5f
-            ? Vector3.Lerp(new Vector3(0.95f, 0.85f, 0.1f), new Vector3(0.2f, 0.95f, 0.25f), (hpFrac - 0.5f) * 2f)
-            : Vector3.Lerp(new Vector3(0.95f, 0.15f, 0.1f), new Vector3(0.95f, 0.85f, 0.1f), hpFrac * 2f);
-        WriteMarkerUniform(fgMvp, new Vector4(fillColor, 0.95f));
-        _gpu.RenderAdditional(_markerPipeline, _quadMesh.Vbo, _quadMesh.Ibo, _markerBindGroup, _quadMesh.IndexCount);
+        var up = mesh.GetCellCenter(hoveredCell);
+        float surfaceR = mesh.Radius + mesh.GetLevel(hoveredCell) * mesh.StepHeight;
+        var pos = up * surfaceR;
+
+        var (modelMvp, _) = BuildModelMvpAndSun(pos, up, planetMvpMat, _sunDir, heading: null);
+        bool valid = state.BuildingAtCell(hoveredCell) == null;
+        var ghostColor = valid
+            ? new Vector4(0.40f, 1.00f, 0.55f, 0.45f)   // green = clear to build
+            : new Vector4(1.00f, 0.40f, 0.40f, 0.45f);  // red   = blocked
+        WriteMarkerUniform(modelMvp, ghostColor);
+        _gpu.RenderAdditional(_markerPipeline, bm.Vbo, bm.Ibo, bg, bm.IndexCount);
     }
 
     /// <summary>Marker uniform: same 28-float layout as a normal entity but
@@ -516,6 +785,9 @@ public sealed class RtsRenderer : IDisposable
         foreach (var m in _buildingMeshes.Values) { _gpu.DestroyBuffer(m.Vbo); _gpu.DestroyBuffer(m.Ibo); }
         foreach (var m in _unitMeshes.Values)     { _gpu.DestroyBuffer(m.Vbo); _gpu.DestroyBuffer(m.Ibo); }
         if (_discMesh.Vbo > 0) { _gpu.DestroyBuffer(_discMesh.Vbo); _gpu.DestroyBuffer(_discMesh.Ibo); }
-        if (_quadMesh.Vbo > 0) { _gpu.DestroyBuffer(_quadMesh.Vbo); _gpu.DestroyBuffer(_quadMesh.Ibo); }
+        if (_hpVbo > 0) _gpu.DestroyBuffer(_hpVbo);
+        if (_hpIbo > 0) _gpu.DestroyBuffer(_hpIbo);
+        if (_pathVbo > 0) _gpu.DestroyBuffer(_pathVbo);
+        if (_pathIbo > 0) _gpu.DestroyBuffer(_pathIbo);
     }
 }

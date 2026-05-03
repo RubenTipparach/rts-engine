@@ -148,6 +148,8 @@ public sealed class EngineBootstrap
             var rtsYaml = await _assets.GetTextAsync("config/rts.yaml");
             RtsConfig = RtsConfig.FromYaml(rtsYaml);
             var rtsShader = await _assets.GetTextAsync("shaders/rts.wgsl");
+            var uiShader = await _assets.GetTextAsync("shaders/ui.wgsl");
+            var lineShader = await _assets.GetTextAsync("shaders/outline.wgsl");
 
             // Baked .obj models from assets/models/ replace the procedural
             // boxes when available; missing files just fall back to MakeBox.
@@ -159,8 +161,8 @@ public sealed class EngineBootstrap
                 catch { /* fall back to procedural box for this entity */ }
             }
 
-            Rts = new RtsRenderer(_gpu, RtsConfig);
-            await Rts.Setup(rtsShader, objs);
+            Rts = new RtsRenderer(_gpu, RtsConfig, EngineConfig);
+            await Rts.Setup(rtsShader, uiShader, lineShader, objs);
             Trace($"rts ready ({RtsConfig.Buildings.Count} buildings, {RtsConfig.Units.Count} units, {objs.Count} obj models)");
         }
         catch (Exception e)

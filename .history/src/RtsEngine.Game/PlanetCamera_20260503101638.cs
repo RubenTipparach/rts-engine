@@ -8,28 +8,21 @@ namespace RtsEngine.Game;
 /// Orbit camera for the planet edit view. Owns azimuth/elevation/distance
 /// state, scroll-target lerp, RTS tilt angle, and MVP construction.
 ///
-/// <b>Tilt model</b> — the RTS tilt rotates forward inside the meridian
-/// plane (spanned by camDir = radial-out and southTangent = downhill-toward-
-/// south). The signed tilt angle is <c>-TiltAngle(distance)</c>, i.e. tilt
-/// goes <i>negative</i> as zoom increases:
-///   θ = 0      →  forward = -camDir              (orbit, looking at center)
-///   θ = -θmax  →  forward = -camDir·cos θ + southTangent·sin θ
-///                 = -camDir·cos|θ| - southTangent·sin|θ|  (RTS pose,
-///                 tilted toward the *north* tangent)
+/// <b>Tilt model</b> — the RTS tilt is parameterized as an explicit angle
+/// θ from straight-down, in the camera's meridian plane (the plane spanned
+/// by the radial-up direction camDir and the south-tangent direction).
+///   θ = 0     →  forward = -camDir          (looking at planet center)
+///   θ = θmax  →  forward tilted toward southTangent (RTS view)
 ///
-/// The reason it tilts north and not south: southTangent.Y = -cos(elev) is
-/// negative across the usable elevation range, so tilting forward toward
-/// +southTangent rotates it into the world-down hemisphere — incompatible
-/// with a world-Y-up convention and an upside-down render across the
-/// orbit ↔ RTS handoff. Negating θ flips the tilt into the world-up
-/// hemisphere, matching the solar-system camera's orientation.
-///
-/// Up is constant: <c>up = -southTangent</c> (= world+Y at equator,
-/// projecting toward the north pole elsewhere — same convention as
-/// <see cref="SolarSystemRenderer"/>'s <c>(0,1,0)</c>). It doesn't need to
-/// rotate with tilt because <c>CreateLookAt</c> orthonormalizes against
-/// forward; passing the same north-tangent hint at every distance makes
-/// the zoom-out transition continuous with the orbit camera.
+/// At any θ, forward and screen-up are co-planar in the meridian plane and
+/// rotate together as a rigid frame:
+///   forward(θ) = -camDir·cos θ + southTangent·sin θ
+///   up(θ)      = -southTangent·cos θ + camDir·sin θ
+/// They're perpendicular by construction (verify: forward·up = 0 for all θ),
+/// so there's no gimbal lock, no slerp, no upHint reference for CreateLookAt
+/// to derive a basis from. The screen-up vector is *the* state the camera
+/// maintains — not something rederived per-frame from a reference that can
+/// drift parallel to forward.
 /// </summary>
 public sealed class PlanetCamera
 {
@@ -157,33 +150,27 @@ public sealed class PlanetCamera
             new Vector3(se * ca, -ce, se * sa));
     }
 
-    /// <summary>Forward direction at the given effective distance. The tilt
-    /// angle is negated so forward rotates toward the north tangent
-    /// (-southTangent) at full RTS zoom rather than the south tangent —
-    /// see the class docstring for why that matters. The distance parameter
-    /// lets transitions ask for the basis at a synthetic camera position
-    /// instead of the camera's stored <see cref="Distance"/>.</summary>
+    /// <summary>Forward direction at the given effective distance (used for
+    /// transitions where the renderer wants the basis at a synthetic
+    /// camera position, not the camera's current Distance).</summary>
     public Vector3 Forward(float distance)
     {
-        float theta = -TiltAngle(distance);
+        float theta = TiltAngle(distance);
         var (camDir, southTangent) = MeridianFrame();
         return -camDir * MathF.Cos(theta) + southTangent * MathF.Sin(theta);
     }
     public Vector3 Forward() => Forward(Distance);
 
-    /// <summary>Camera screen-up. Always the north tangent (-southTangent),
-    /// independent of distance and tilt — same convention as the solar-system
-    /// camera, so the orbit ↔ RTS handoff is continuous.
-    /// <c>CreateLookAt</c> orthonormalizes against forward, so the constant
-    /// hint is sufficient even though forward rotates with tilt. The
-    /// distance parameter is unused but kept for API symmetry with
-    /// <see cref="Forward"/>.</summary>
+    /// <summary>Camera screen-up at the given effective distance. Rotates in
+    /// lockstep with <see cref="Forward"/> in the meridian plane, so the
+    /// pair stays perpendicular without any reference-vector gymnastics.</summary>
     public Vector3 Up(float distance)
     {
-        var (_, southTangent) = MeridianFrame();
-        return -southTangent;
+        //float theta = TiltAngle(distance);
+        var (camDir, southTangent) = MeridianFrame();
+        return southTangent;//-southTangent * MathF.Cos(theta) + camDir * MathF.Sin(theta);
     }
-
+    
     public Vector3 Up() => Up(Distance);
 
     public float[] BuildMvp(float aspectRatio) => BuildMvpAt(Position(), aspectRatio);
@@ -212,7 +199,7 @@ public sealed class PlanetCamera
     ///   0°  = looking horizontally along the surface (max tilt of 90°)
     /// Default config caps at 59° tilt → 31° below horizon.</summary>
     public float PitchDegrees()
-        => 90f + TiltAngle() * (180f / MathF.PI);
+        => 90f - TiltAngle() * (180f / MathF.PI);
 
     /// <summary>Diagnostic — dot of the camera up axis with worldY + with
     /// the radial outward direction. Used to be a roll-flip detector when
