@@ -49,15 +49,18 @@ public sealed class SolarSystemRenderer : IRenderer, IDisposable
     }
     private readonly List<BodyRender> _bodies = new();
 
-    // Camera
-    private float _azimuth, _elevation = 0.6f, _distance = 80f;
+    // Camera. _distance is initialized from EngineConfig at construction so
+    // changing solarSystemView.defaultDistance in engine.yaml actually moves
+    // where the orbit camera starts.
+    private float _azimuth, _elevation = 0.6f, _distance;
     private float _time;
     private bool _dragging;
 
-    public SolarSystemRenderer(IGPU gpu, SolarSystemData system)
+    public SolarSystemRenderer(IGPU gpu, SolarSystemData system, EngineConfig config)
     {
         _gpu = gpu;
         _system = system;
+        _distance = config.SolarSystemView.DefaultDistance;
     }
 
     public async Task Setup(string shaderCode, string outlineShaderCode, string sunShaderCode,

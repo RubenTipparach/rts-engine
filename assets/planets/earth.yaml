@@ -1,8 +1,8 @@
 # Earth-like planet
 # To create a new planet: copy this file, tweak any fields, reference it in the host.
 name: Earth
-radius: 1.0
-subdivisions: 4    # 10 * 4^n + 2 cells:  1→42, 2→162, 3→642, 4→2562, 5→10242
+radius: 2.0
+subdivisions: 5    # 10 * 4^n + 2 cells:  1→42, 2→162, 3→642, 4→2562, 5→10242
 stepHeight: 0.04
 
 terrain:

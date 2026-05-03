@@ -16,9 +16,9 @@ import os
 # updated together when entity dimensions change.
 BUILDINGS = [
     # id,             half_w, height, color
-    ("command_center", 0.040, 0.070, (0.65, 0.70, 0.85)),
-    ("barracks",       0.035, 0.050, (0.55, 0.35, 0.25)),
-    ("factory",        0.045, 0.060, (0.40, 0.42, 0.48)),
+    ("command_center", 0.020, 0.035, (0.65, 0.70, 0.85)),
+    ("barracks",       0.0175,0.025, (0.55, 0.35, 0.25)),
+    ("factory",        0.0225,0.030, (0.40, 0.42, 0.48)),
 ]
 VEHICLES = [
     ("tank", 0.014, 0.014, (0.45, 0.45, 0.50)),

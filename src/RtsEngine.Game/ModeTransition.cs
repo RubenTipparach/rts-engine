@@ -108,8 +108,14 @@ public sealed class ModeTransition
     private bool RenderZoomIn(PlanetRenderer planet, float t, float smooth,
         float aspectRatio, float elapsed)
     {
-        // Solar system camera zooms toward planet
-        float ssDist = 80f * (1f - smooth) + 3f * smooth;
+        // Solar system camera zooms toward the planet, ending at the same
+        // distance the planet-edit camera will hand off to. Reading these
+        // from config keeps the transition continuous — when defaultDistance
+        // changed to scale with planet size, this used to be a hardcoded 3
+        // and the camera visibly popped backward at the moment of handoff.
+        float ssStart = _config.SolarSystemView.DefaultDistance;   // typically 80
+        float ssEnd = _camera.DefaultDistance;                     // hands off to planet edit
+        float ssDist = ssStart * (1f - smooth) + ssEnd * smooth;
         _solarSystem!.Distance = ssDist;
         _solarSystem.SetFocusTarget(PlanetWorldPos * smooth);
 
@@ -157,7 +163,7 @@ public sealed class ModeTransition
             _camera.TargetDistance = _camera.Distance;
             _camera.Azimuth = _solarSystem.Azimuth;
             _camera.Elevation = _solarSystem.Elevation;
-            _solarSystem.Distance = 80f;
+            _solarSystem.Distance = _config.SolarSystemView.DefaultDistance;
             _solarSystem.SetFocusTarget(Vector3.Zero);
             _solarSystem.HidePlanet(null);
             return true;
@@ -172,8 +178,11 @@ public sealed class ModeTransition
         // pulls back; the rest of the solar system (sun + other planets)
         // is rendered shifted by -planetPos so it visibly orbits past
         // while we zoom away. This matches planet-edit mode rendering,
-        // which is also "planet at origin, backdrop shifted".
-        float zoomDist = _zoomOutStartDist * (1f - smooth) + 80f * smooth;
+        // which is also "planet at origin, backdrop shifted". Target
+        // distance is the solar-system default so the handoff lands at
+        // the same orbital distance the user started from.
+        float zoomDist = _zoomOutStartDist * (1f - smooth)
+                       + _config.SolarSystemView.DefaultDistance * smooth;
         var camPos = new Vector3(
             zoomDist * MathF.Cos(_camera.Elevation) * MathF.Cos(_camera.Azimuth),
             zoomDist * MathF.Sin(_camera.Elevation),
@@ -203,12 +212,12 @@ public sealed class ModeTransition
         if (t >= 1f)
         {
             IsActive = false;
-            // The shifted-frame camera (origin = planet, distance = 80
-            // along _azimuth/_elevation) is the same world position as
-            // a solar-system camera at distance 80 focused on planetPos
-            // along the same angles. Carry those angles over so the
-            // viewing direction doesn't snap.
-            _solarSystem.Distance = 80f;
+            // The shifted-frame camera (origin = planet, distance =
+            // SolarSystemView.DefaultDistance along _azimuth/_elevation) is
+            // the same world position as a solar-system camera at the same
+            // distance focused on planetPos along the same angles. Carry
+            // those angles over so the viewing direction doesn't snap.
+            _solarSystem.Distance = _config.SolarSystemView.DefaultDistance;
             _solarSystem.Azimuth = _camera.Azimuth;
             _solarSystem.Elevation = _camera.Elevation;
             _solarSystem.SetFocusTarget(PlanetWorldPos);

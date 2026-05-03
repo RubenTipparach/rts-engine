@@ -29,8 +29,8 @@ solarSystemView:
   pickRadiusMultiplier: 3.0     # pick threshold = screenRadius × this
 
 planetEditView:
-  defaultDistance: 3.0
-  minDistance: 2.0
+  defaultDistance: 6.0
+  minDistance: 4.0
   maxDistance: 200.0          # camera distance clamp (radius units)
   autoZoomOutThreshold: 100.0 # distance above which we glide back to solar system
 

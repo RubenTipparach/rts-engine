@@ -85,12 +85,30 @@ public sealed class EngineBootstrap
         if (BuildAllRenderers)
         {
             Trace("loading solar system + star map shaders");
-            var solarData = SolarSystemData.CreateDefault();
+            // Solar system layout — orbit radii, display radii, sun size,
+            // noise params — comes from config/solarsystem.yaml. Per-planet
+            // LevelColors get patched in afterwards by reading each
+            // referenced planet config (so Glacius gets ice colors, Mars
+            // gets red rock, etc., without duplicating them in the solar
+            // system YAML).
+            SolarSystemData solarData;
+            try
+            {
+                var ssYaml = await _assets.GetTextAsync("config/solarsystem.yaml");
+                solarData = SolarSystemData.FromYaml(ssYaml);
+                await PatchSolarSystemLevelColors(solarData);
+                Trace($"solar system config loaded ({solarData.Planets.Count} planets)");
+            }
+            catch (Exception e)
+            {
+                Trace($"solarsystem.yaml load failed, using built-in default: {e.Message}");
+                solarData = SolarSystemData.CreateDefault();
+            }
             var solarShader = await _assets.GetTextAsync("shaders/solarsystem.wgsl");
             var outlineShader = await _assets.GetTextAsync("shaders/outline.wgsl");
             var sunShader = await _assets.GetTextAsync("shaders/sun.wgsl");
             var starfieldShader = await _assets.GetTextAsync("shaders/starfield.wgsl");
-            SolarSystem = new SolarSystemRenderer(_gpu, solarData);
+            SolarSystem = new SolarSystemRenderer(_gpu, solarData, EngineConfig);
             await SolarSystem.Setup(solarShader, outlineShader, sunShader, starfieldShader);
             Trace("solar system ready");
 
@@ -135,6 +153,42 @@ public sealed class EngineBootstrap
         Engine.Mode = BuildAllRenderers ? EditorMode.SolarSystem : EditorMode.PlanetEdit;
         Engine.SetupUI();
         Trace($"engine ready, mode={Engine.Mode}");
+    }
+
+    /// <summary>Walk every body in <paramref name="solar"/> (planets + their
+    /// moons) and replace its <c>LevelColors</c> with the colors pulled from
+    /// the body's per-planet YAML — keeps the solar-system noise sphere's
+    /// terrain palette in sync with the actual planet without duplicating
+    /// the colors in solarsystem.yaml.</summary>
+    private async Task PatchSolarSystemLevelColors(SolarSystemData solar)
+    {
+        foreach (var p in solar.Planets)
+        {
+            await PatchOne(p);
+            foreach (var m in p.Moons) await PatchOne(m);
+        }
+
+        async Task PatchOne(OrbitalBody body)
+        {
+            if (string.IsNullOrEmpty(body.ConfigFile)) return;
+            try
+            {
+                var py = await _assets.GetTextAsync(body.ConfigFile);
+                var cfg = PlanetConfig.FromYaml(py);
+                var levels = cfg.Terrain.Levels;
+                if (levels.Count == 0) return;
+                var arr = new System.Numerics.Vector3[levels.Count];
+                for (int i = 0; i < arr.Length; i++)
+                {
+                    var c = levels[i].Color;
+                    arr[i] = c.Count >= 3
+                        ? new System.Numerics.Vector3(c[0], c[1], c[2])
+                        : System.Numerics.Vector3.One;
+                }
+                body.LevelColors = arr;
+            }
+            catch { /* fall back to whatever LevelColors FromYaml left in place */ }
+        }
     }
 
     /// <summary>

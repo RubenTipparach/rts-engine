@@ -1,4 +1,6 @@
 using System.Numerics;
+using YamlDotNet.Serialization;
+using YamlDotNet.Serialization.NamingConventions;
 
 namespace RtsEngine.Game;
 
@@ -8,6 +10,116 @@ public sealed class SolarSystemData
     public Vector3 SunColor { get; set; } = new(1.0f, 0.95f, 0.8f);
     public float SunRadius { get; set; } = 3.0f;
     public List<OrbitalBody> Planets { get; } = new();
+
+    /// <summary>
+    /// Parse a solarsystem.yaml file into a populated <see cref="SolarSystemData"/>.
+    /// All orbital structure (orbits, display radii, sun size, noise params)
+    /// comes from the YAML; per-planet terrain LevelColors come from each
+    /// planet's own configFile via <paramref name="lookupPlanetYaml"/> when
+    /// provided, falling back to <see cref="PlanetMesh.LevelColors"/>
+    /// (Earth-like) if the lookup is null or returns null.
+    /// </summary>
+    public static SolarSystemData FromYaml(string yaml, Func<string, string?>? lookupPlanetYaml = null)
+    {
+        var d = new DeserializerBuilder()
+            .WithNamingConvention(CamelCaseNamingConvention.Instance)
+            .IgnoreUnmatchedProperties().Build();
+        var raw = d.Deserialize<YamlRoot>(yaml);
+        if (raw == null) return CreateDefault();
+
+        var sys = new SolarSystemData
+        {
+            Name = raw.Sun?.Name ?? "Sol",
+            SunColor = ToVec3(raw.Sun?.Color, new Vector3(1f, 0.95f, 0.8f)),
+            SunRadius = raw.Sun?.Radius ?? 3f,
+        };
+        if (raw.Planets != null)
+            foreach (var p in raw.Planets)
+                sys.Planets.Add(BuildBody(p, lookupPlanetYaml));
+        return sys;
+    }
+
+    private static OrbitalBody BuildBody(YamlPlanet p, Func<string, string?>? lookupPlanetYaml)
+    {
+        var body = new OrbitalBody
+        {
+            Name = p.Name ?? "",
+            ConfigFile = p.ConfigFile ?? "",
+            OrbitRadius = p.OrbitRadius,
+            OrbitSpeed = p.OrbitSpeed,
+            Phase = p.Phase,
+            DisplayRadius = p.DisplayRadius,
+            Color = ToVec3(p.Color, Vector3.One),
+            NoiseSeed = p.NoiseSeed,
+            NoiseFrequency = p.NoiseFrequency,
+            NoiseThresholds = p.NoiseThresholds?.ToArray() ?? new[] { 0.30f, 0.45f, 0.65f, 0.82f },
+        };
+
+        // Resolve LevelColors from the planet's own config file if we have a
+        // lookup. Lets Glacius get ice colors and Mars get red rock without
+        // duplicating them inside solarsystem.yaml.
+        if (lookupPlanetYaml != null && !string.IsNullOrEmpty(p.ConfigFile))
+        {
+            var planetYaml = lookupPlanetYaml(p.ConfigFile);
+            if (planetYaml != null)
+            {
+                var levels = ExtractLevelColors(planetYaml);
+                if (levels != null) body.LevelColors = levels;
+            }
+        }
+
+        if (p.Moons != null)
+            foreach (var m in p.Moons)
+                body.Moons.Add(BuildBody(m, lookupPlanetYaml));
+        return body;
+    }
+
+    private static Vector3[]? ExtractLevelColors(string planetYaml)
+    {
+        // Reuse PlanetConfig.FromYaml — it already pulls terrain.levels.
+        try
+        {
+            var cfg = PlanetConfig.FromYaml(planetYaml);
+            if (cfg.Terrain?.Levels == null || cfg.Terrain.Levels.Count == 0) return null;
+            var arr = new Vector3[cfg.Terrain.Levels.Count];
+            for (int i = 0; i < arr.Length; i++)
+            {
+                var c = cfg.Terrain.Levels[i].Color;
+                arr[i] = c != null && c.Count >= 3 ? new Vector3(c[0], c[1], c[2]) : Vector3.One;
+            }
+            return arr;
+        }
+        catch { return null; }
+    }
+
+    private static Vector3 ToVec3(List<float>? c, Vector3 fallback)
+        => c != null && c.Count >= 3 ? new Vector3(c[0], c[1], c[2]) : fallback;
+
+    private sealed class YamlRoot
+    {
+        public YamlSun? Sun { get; set; }
+        public List<YamlPlanet>? Planets { get; set; }
+    }
+    private sealed class YamlSun
+    {
+        public string? Name { get; set; }
+        public List<float>? Color { get; set; }
+        public float Radius { get; set; } = 3f;
+    }
+    private sealed class YamlPlanet
+    {
+        public string? Name { get; set; }
+        public string? ConfigFile { get; set; }
+        public float OrbitRadius { get; set; }
+        public float OrbitSpeed { get; set; }
+        public float Phase { get; set; }
+        public float DisplayRadius { get; set; } = 1f;
+        public List<float>? Color { get; set; }
+        public int NoiseSeed { get; set; } = 42;
+        public float NoiseFrequency { get; set; } = 2.5f;
+        public List<float>? NoiseThresholds { get; set; }
+        public List<YamlPlanet>? Moons { get; set; }
+    }
 
     public static SolarSystemData CreateDefault()
     {

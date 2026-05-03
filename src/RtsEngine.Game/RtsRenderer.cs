@@ -89,7 +89,6 @@ public sealed class RtsRenderer : IDisposable
     private const int MaxPathSegments = 8192;
     // Each segment is a line-list pair: 2 verts × 3 floats.
     private readonly float[] _pathVertScratch = new float[MaxPathSegments * 2 * 3];
-    private int _lastLoggedPathSegs = -1;
 
     public RtsRenderer(IGPU gpu, RtsConfig config, EngineConfig engineConfig)
     {
@@ -375,12 +374,14 @@ public sealed class RtsRenderer : IDisposable
     }
 
     /// <summary>When debug.showUnitPaths is on, emit a line-list pair for
-    /// every segment in each unit's queued path. Shows the full route from
-    /// start to goal cell — MovementSystem leaves <c>unit.Path</c> on the
-    /// unit even after arrival (the consumed-state signal is PathIndex >=
-    /// Count) so the debug viz keeps drawing the route until the next move
-    /// order replaces it. One uniform write + one indexed line draw per
-    /// frame regardless of unit count.</summary>
+    /// every segment in each <i>selected</i> unit's queued path. Showing
+    /// paths for unselected units clutters the screen during large group
+    /// orders; gating by selection keeps the debug viz scoped to "what am
+    /// I currently inspecting". MovementSystem leaves <c>unit.Path</c> on
+    /// the unit even after arrival (the consumed-state signal is PathIndex
+    /// >= Count) so the route stays drawn until the next move order
+    /// replaces it. One uniform write + one indexed line draw per frame
+    /// regardless of unit count.</summary>
     private void DrawUnitPaths(RtsState state, PlanetMesh mesh, float[] planetMvp)
     {
         // Lift each segment endpoint a fraction of a step-height above its
@@ -394,6 +395,7 @@ public sealed class RtsRenderer : IDisposable
         int segs = 0;
         foreach (var u in state.Units)
         {
+            if (!state.SelectedUnitInstanceIds.Contains(u.InstanceId)) continue;
             var path = u.Path;
             if (path == null || path.Count < 2) continue;
 
@@ -418,25 +420,6 @@ public sealed class RtsRenderer : IDisposable
                 prev = here;
             }
             if (segs >= MaxPathSegments) break;
-        }
-
-        // Diagnostic: surface segment count + first/last endpoint per frame
-        // so we can tell whether the buffer is empty (no paths queued, no
-        // pathfinder output) vs populated-but-not-drawing. Throttled because
-        // it runs every frame.
-        if (segs != _lastLoggedPathSegs)
-        {
-            _lastLoggedPathSegs = segs;
-            if (segs > 0)
-            {
-                Console.Error.WriteLine(
-                    $"[paths] segs={segs} first=({_pathVertScratch[0]:F3},{_pathVertScratch[1]:F3},{_pathVertScratch[2]:F3}) " +
-                    $"last=({_pathVertScratch[(segs-1)*6+3]:F3},{_pathVertScratch[(segs-1)*6+4]:F3},{_pathVertScratch[(segs-1)*6+5]:F3})");
-            }
-            else
-            {
-                Console.Error.WriteLine("[paths] segs=0 (no unit has an active path)");
-            }
         }
 
         if (segs == 0) return;
@@ -647,20 +630,33 @@ public sealed class RtsRenderer : IDisposable
             fwd = ArbitraryTangent(u);
         }
         var right = Vector3.Normalize(Vector3.Cross(u, fwd));
+        // Right-handed basis pair to local +Z. cross(u, fwd) gives the
+        // direction we'd traditionally call "left" in a +X-forward, +Y-up
+        // model frame; flipping it makes local +Z the model's right side.
+        var localZ = -right;
 
-        // Row-major basis: rows are right/up/fwd, then translation row.
+        // Row-major basis: rows are local +X / +Y / +Z axes mapped into
+        // world space, then the translation row. Every unit/building .obj
+        // in this project is authored with +X = forward (length / barrel
+        // axis), +Y = up, +Z = left side, so:
+        //   local +X → world fwd  (movement direction)
+        //   local +Y → world up   (surface radial)
+        //   local +Z → world -right (= cross(fwd, up), the model's left)
+        // Earlier this mapped local +X → right, which is why tanks rendered
+        // with their barrel sticking out perpendicular to their heading —
+        // they were broadsiding their destination instead of facing it.
         var basis = new Matrix4X4<float>(
-            right.X, right.Y, right.Z, 0f,
-            u.X,     u.Y,     u.Z,     0f,
-            fwd.X,   fwd.Y,   fwd.Z,   0f,
-            pos.X,   pos.Y,   pos.Z,   1f);
+            fwd.X,    fwd.Y,    fwd.Z,    0f,
+            u.X,      u.Y,      u.Z,      0f,
+            localZ.X, localZ.Y, localZ.Z, 0f,
+            pos.X,    pos.Y,    pos.Z,    1f);
 
         // Inverse-transpose of an orthonormal basis is the basis itself —
         // dotting world vectors with each row yields the model-space axes.
         var sunModel = new Vector3(
-            Vector3.Dot(sunWorld, right),
+            Vector3.Dot(sunWorld, fwd),
             Vector3.Dot(sunWorld, u),
-            Vector3.Dot(sunWorld, fwd));
+            Vector3.Dot(sunWorld, localZ));
 
         return (Matrix4X4.Multiply(basis, mvp), sunModel);
     }

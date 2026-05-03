@@ -128,6 +128,14 @@ public sealed class SpawnedUnit
     /// renderer to face the unit's model toward its next step.</summary>
     public Vector3 Heading { get; set; }
 
+    /// <summary>Current velocity in world coordinates (radius-units per
+    /// second). Maintained by <see cref="MovementSystem"/>: at the start of
+    /// each tick the desired path-following velocity is computed, ORCA picks
+    /// a collision-free velocity closest to it, and that velocity is both
+    /// integrated into <see cref="SurfacePoint"/> and stored here so other
+    /// agents can see this unit's motion when they run their own ORCA pass.</summary>
+    public Vector3 Velocity { get; set; }
+
     /// <summary>Team ownership — 0 = player, 1+ = enemies.</summary>
     public int Team { get; set; } = 0;
     public float MaxHp { get; set; } = 50f;
