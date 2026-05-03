@@ -135,6 +135,18 @@ public sealed class EngineUI
             if (!b.Visible) continue;
             var (x, y, w, h) = ResolvePixelRect(b.Css);
             EmitBgQuadPx(verts, idx, x, y, w, h, b.Css.BgColor);
+
+            // Optional outline. Drawn AFTER the fill so its opaque edge wins
+            // visually over the translucent fill in the same pixels.
+            if (b.Css.BorderColor.W > 0.001f && b.Css.BorderWidth > 0f)
+            {
+                float bw = b.Css.BorderWidth;
+                var col = b.Css.BorderColor;
+                EmitBgQuadPx(verts, idx, x,            y,            w,  bw, col); // top
+                EmitBgQuadPx(verts, idx, x,            y + h - bw,   w,  bw, col); // bottom
+                EmitBgQuadPx(verts, idx, x,            y + bw,       bw, h - 2 * bw, col); // left
+                EmitBgQuadPx(verts, idx, x + w - bw,   y + bw,       bw, h - 2 * bw, col); // right
+            }
         }
 
         if (verts.Count == 0 || idx.Count == 0) { _idxCount = 0; return; }
@@ -254,6 +266,8 @@ public sealed class EngineUI
         public float W, H;
         public Vector4 BgColor;
         public Vector4 FgColor;
+        public Vector4 BorderColor;   // alpha = 0 → no border drawn
+        public float BorderWidth;     // pixels, used when BorderColor.W > 0
         public bool HasExplicitDisplay;
         public bool DisplayBlock;
         public bool PointerEvents;
@@ -287,6 +301,8 @@ public sealed class EngineUI
                 case "height":  r.H      = ParsePx(val) ?? r.H; break;
                 case "background": r.BgColor = ParseColor(val, r.BgColor); break;
                 case "color":   r.FgColor = ParseColor(val, r.FgColor); break;
+                case "borderColor": r.BorderColor = ParseColor(val, r.BorderColor); break;
+                case "borderWidth": r.BorderWidth = ParsePx(val) ?? 1f; break;
                 case "display":
                     r.HasExplicitDisplay = true;
                     r.DisplayBlock = val == "block";

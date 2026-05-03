@@ -80,6 +80,26 @@ RtsEngine.Desktop (Silk.NET OpenGL host)
 - **Planet config:** YAML files in wwwroot/planets/ drive all planet parameters (radius, subdivisions, textures, atmosphere, noise). New planet = new YAML + texture set, no code changes.
 - **20-patch chunked rebuild:** Planet mesh is split into 20 icosahedron patches with independent VBO/IBO. Edits only rebuild affected patches (~5-15% of mesh).
 
+## Separation of Concerns (Keep GameEngine Thin)
+
+**Hard rule: `GameEngine` is an orchestration layer, not a kitchen sink.** It coordinates self-contained systems — it does not implement them. Each system below owns its own state, math, and lifecycle, exposes a small interface, and is added to GameEngine by composition. Think SRP and DIP: GameEngine depends on system abstractions; systems do not depend on GameEngine.
+
+When adding a feature, first ask **"is this orchestration, or is it its own system?"** If it has its own state, math, or lifecycle (camera transitions, hit-testing, selection sets, command queues, HUD layout, animation blending), it gets its own class — not another method on GameEngine. Touching GameEngine should mostly mean wiring a new system in, not adding logic to it.
+
+Systems that must live outside `GameEngine` (extract any of these on sight if you find them inline):
+
+- **Camera** — orbit/RTS state, zoom percent, tilt blend, pitch math, look-at resolution, MVP build, smooth lerp. Owns its own update tick. GameEngine asks it for an MVP and forwards input deltas; nothing more.
+- **Picking / hit-testing** — ray construction from canvas coords, unit picking, hex cell picking, screen→world unprojection. Pure functions of camera + scene; no rendering or UI knowledge.
+- **Input routing** — raw drag/click/scroll/move/key events come from `IRenderBackend`. A dedicated input router translates them into game intents (e.g. `SelectAt`, `MoveCommand`, `ZoomBy`) before GameEngine sees them. GameEngine should not contain `if (button == 0 && shift) ...` ladders.
+- **Selection** — selected units set, box-select rectangle, selection overlay. One owner, not scattered fields on GameEngine.
+- **Commands / orders** — move, attack, produce, build, place. Issued through a command interface; executed by the units/buildings systems. GameEngine doesn't mutate unit positions directly.
+- **UI controller** — button visibility, layout slots, zoom indicator, context menu state. `EngineUI` is the renderer; the controller is what decides *which* buttons are shown and what they do.
+- **Mode switching** — SolarSystem ↔ PlanetEdit ↔ StarMap. Each mode is a state object with its own enter/exit/tick/draw; GameEngine just holds the current one and forwards calls.
+
+What's left in `GameEngine` after extraction: hold the systems, route the per-frame tick (`Tick → input router → mode.Tick → camera.Update → renderer.Draw`), and own cross-system glue that genuinely belongs nowhere else. If a method on GameEngine could move to a system without GameEngine needing to know, **move it**.
+
+Rule of thumb: if `GameEngine.cs` is creeping past a few hundred lines or you find yourself adding another `private float SomeMath(...)` helper to it, stop and extract. New camera/picking/input math goes in its own file from the start.
+
 ## Config-Driven Design (NO HARDCODED MAGIC NUMBERS)
 
 **Hard rule: unless a value is an exact constant that will never be changed or modified, do not hardcode magic numbers in code. Always add the value to a config file somewhere.** This applies to every camera distance, threshold, blend percentage, LOD knob, transition duration, scroll factor, lerp rate, fade band, sphere segment count, lighting intensity, color, FOV, near/far plane, drag sensitivity, density, density factor, decay rate — anything a designer or future Claude run might want to tune.

@@ -91,6 +91,12 @@ public sealed class PlacedBuilding
     /// the ring-offset pattern so consecutive spawns don't stack on top of
     /// each other.</summary>
     public int UnitsSpawned { get; set; }
+    /// <summary>Team ownership — 0 = player, 1+ = enemies. Drives livery
+    /// (texture team-color swap) and friendly-vs-hostile selection rules.</summary>
+    public int Team { get; set; } = 0;
+    /// <summary>Hit points. Buildings start at MaxHp and don't regenerate.</summary>
+    public float MaxHp { get; set; } = 200f;
+    public float Hp { get; set; } = 200f;
 }
 
 public sealed class SpawnedUnit
@@ -115,4 +121,9 @@ public sealed class SpawnedUnit
     /// <summary>Heading vector along the surface (tangent), used by the
     /// renderer to face the unit's model toward its next step.</summary>
     public Vector3 Heading { get; set; }
+
+    /// <summary>Team ownership — 0 = player, 1+ = enemies.</summary>
+    public int Team { get; set; } = 0;
+    public float MaxHp { get; set; } = 50f;
+    public float Hp { get; set; } = 50f;
 }
