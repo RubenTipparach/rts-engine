@@ -244,25 +244,29 @@ public sealed class PlanetMesh
     /// </summary>
     /// <summary>
     /// Per-vertex height for cell <paramref name="cell"/>'s polygon corner
-    /// <paramref name="vertIndex"/>. Flat cells return the level height.
+    /// <paramref name="vertIndex"/>. Flat cells return the level height; slope
+    /// cells anchor their low-edge corners at the low-neighbor height and
+    /// their high-edge corners at the high-neighbor (= cell's nominal) height,
+    /// then handle the rest as follows:
     ///
-    /// Slope cells snap every perimeter corner to a canonical elevation:
-    ///   - Low-edge corners → <c>lowH = R + (L-1)*step</c>, matching the
-    ///     low neighbor exactly.
-    ///   - Every other corner → <c>highH = R + L*step</c>, the cell's
-    ///     nominal level (= the high neighbor's level), matching any
-    ///     same-level flat neighbor exactly.
+    /// Polygon vertex <c>polyVerts[i]</c> is shared with this cell, <c>nbrs[i]</c>,
+    /// and <c>nbrs[(i+1) mod n]</c>. For perpendicular corners (not on the low
+    /// or high edges) we want the slope cell's corner to align with the two
+    /// flat neighbors' tops where possible, so adjacent same-level cells meet
+    /// flush and no vertical "perpendicular wall" with cliff/rock texture is
+    /// needed to bridge the gap. Concretely, the corner sits at the higher of:
     ///
-    /// Snapping to canonical levels (rather than smooth axis interpolation)
-    /// means each polygon vertex sits on one of the global "elevation
-    /// spheres" at distance R + level*step from the core. All three cells
-    /// sharing a polygon vertex compute the height with the same
-    /// <c>byte * float + float</c> expression and get a bit-identical
-    /// result. The slope still tilts visibly — the tilt is confined to
-    /// the two triangles that touch the low edge — but the cell's
-    /// perimeter is fully canonical, so no perpendicular cliff strip
-    /// is needed to bridge an interp drop, and no orange seam appears
-    /// at the slope's perpendicular edges to same-level flat neighbors.
+    ///   1. the slope-axis interpolation between low and high edge midpoints
+    ///      (the original ramp tilt), and
+    ///   2. the higher of the two perpendicular flat neighbors' tops, clamped
+    ///      to the cell's nominal so the slope never pokes above its own ceiling.
+    ///
+    /// When both perpendicular neighbors sit at the slope's nominal level
+    /// (the common case — a slope is in a plateau region tilting down to one
+    /// neighbor), this clamps the corner UP to <c>highH</c>, which exactly
+    /// matches the flat neighbors and removes the seam wall entirely. When
+    /// a perpendicular neighbor is lower than nominal, the cliff wall on
+    /// that edge still emits — but that's a real cliff, not an artefact.
     /// </summary>
     public float GetVertexHeight(int cell, int vertIndex)
     {
@@ -275,18 +279,68 @@ public sealed class PlanetMesh
 
         var nbrs = _neighbors[cell];
         int n = nbrs.Length;
-        int lowIdx = -1;
+        int lowIdx = -1, highIdx = -1;
         for (int i = 0; i < n; i++)
-            if (nbrs[i] == slope.LowNeighbor) { lowIdx = i; break; }
-        if (lowIdx < 0) return baseH;
+        {
+            if (nbrs[i] == slope.LowNeighbor) lowIdx = i;
+            if (nbrs[i] == slope.HighNeighbor) highIdx = i;
+        }
+        if (lowIdx < 0 || highIdx < 0) return baseH;
 
         // Polygon edge facing nbrs[k] is bordered by polyVerts[k-1] and
-        // polyVerts[k]; both are corners of that edge. The two corners on
-        // the low edge sit at lowH; every other corner snaps up to highH.
+        // polyVerts[k]; both are corners of that edge.
         int lowA = (lowIdx - 1 + n) % n;
         int lowB = lowIdx;
+        int highA = (highIdx - 1 + n) % n;
+        int highB = highIdx;
+
         if (vertIndex == lowA || vertIndex == lowB) return lowH;
-        return highH;
+        if (vertIndex == highA || vertIndex == highB) return highH;
+
+        // Slope-axis interpolation: project this corner onto the axis from low
+        // edge midpoint to high edge midpoint and return lowH..highH at the
+        // projected fraction. Done in tangent space so the projection stays
+        // on the cell's surface plane regardless of the cell's orientation.
+        var verts = _polyVerts[cell];
+        Vector3 cellNormal = _centers[cell];
+        Vector3 lowMid = (verts[lowA] + verts[lowB]) * 0.5f;
+        Vector3 highMid = (verts[highA] + verts[highB]) * 0.5f;
+        Vector3 axis = highMid - lowMid;
+        axis -= cellNormal * Vector3.Dot(axis, cellNormal);
+        float interp;
+        if (axis.LengthSquared() < 1e-8f)
+        {
+            interp = (lowH + highH) * 0.5f;
+        }
+        else
+        {
+            axis = Vector3.Normalize(axis);
+            float lowProj = Vector3.Dot(lowMid - cellNormal, axis);
+            float highProj = Vector3.Dot(highMid - cellNormal, axis);
+            float range = highProj - lowProj;
+            if (MathF.Abs(range) < 1e-8f)
+            {
+                interp = (lowH + highH) * 0.5f;
+            }
+            else
+            {
+                float vt = Vector3.Dot(verts[vertIndex] - cellNormal, axis);
+                float u = Math.Clamp((vt - lowProj) / range, 0f, 1f);
+                interp = lowH + (highH - lowH) * u;
+            }
+        }
+
+        // Match the higher perpendicular neighbor's top when possible. Clamp
+        // to highH (cell's own ceiling) so a higher-elevation perpendicular
+        // neighbor still has its own cliff handled by its own wall pass — we
+        // never raise the slope's corner above the cell's nominal level.
+        int nbrLeft = nbrs[vertIndex];
+        int nbrRight = nbrs[(vertIndex + 1) % n];
+        float perpMax = MathF.Max(
+            Radius + _levels[nbrLeft] * StepHeight,
+            Radius + _levels[nbrRight] * StepHeight);
+        float perpClamped = MathF.Min(perpMax, highH);
+        return MathF.Max(interp, perpClamped);
     }
 
     /// <summary>Surface height at the cell's center — average of low and
@@ -523,20 +577,12 @@ public sealed class PlanetMesh
             //     neighbors this still resolves to nh.
             float bdyH = slope == null ? nh : MathF.Min(nh, nominalH);
 
-            // Suppress the wall when both corners sit at-or-below the
-            // neighbor's top — that means the neighbor (or some other
-            // adjacent cell sharing these corners) is the higher party
-            // on every part of this edge, and IT will emit the gap-fill
-            // wall. Without this check the lower cell's wall would
-            // overlap the higher cell's wall at the shared corners and
-            // z-fight. With canonical-elevation slope corners (snapped
-            // to lowH or highH), this rule applies uniformly to flat
-            // and slope cells: at a slope's perpendicular edge to a
-            // same-level flat neighbor, the slope's low corner is at
-            // lowH (shared with the low neighbor's lowH corner), and
-            // the perpendicular flat neighbor handles the cliff via
-            // its own wall to the low neighbor.
-            if (topAH <= bdyH + 1e-5f && topBH <= bdyH + 1e-5f) continue;
+            // For flat cells, suppress the wall when our edge sits below the
+            // neighbor — the higher neighbor handles that wall and we'd
+            // otherwise z-fight. Slope cells must emit walls in both
+            // directions because perpendicular flat neighbors don't know
+            // about the tilt and won't emit a gap-fill wall on their side.
+            if (slope == null && topAH < bdyH - 1e-5f && topBH < bdyH - 1e-5f) continue;
 
             // Wall spans [vertH, bdyH] per corner — top is whichever is
             // higher, bottom whichever is lower. The two-sided index winding
