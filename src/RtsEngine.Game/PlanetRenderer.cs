@@ -33,6 +33,9 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         // Venus, Moon, Glacius all keep this off so their basin tier
         // samples its atlas tile normally.
         _tUni[25] = config.Terrain.OceanLevel0 ? 1f : 0f;
+        // Water sphere visibility — start it on for Earth (OceanLevel0=true),
+        // off for everything else. The HUD's 🌊 Water button can override.
+        WaterVisible = config.Terrain.OceanLevel0;
         // params.z (slot 26) = water column thickness in world units.
         // Water surface at Radius + 0.75 * StepHeight (height 0.75 in
         // PlanetMesh.LevelH for level 0); seabed at Radius (height 0);
@@ -57,6 +60,14 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
     private int _aIndexCount;
     private readonly float[] _aUni = new float[AtmoUniFloats];
     private bool _atmoReady;
+
+    // Water — full-planet sphere at LevelH(0). Reuses the terrain pipeline
+    // and bind group; toggled on/off via WaterVisible. WaterVisible defaults
+    // to true; ApplyConfig overrides from PlanetConfig.Terrain.OceanLevel0
+    // so non-Earth planets (no liquid water) start with the sphere off.
+    private int _waterVbo, _waterIbo;
+    private int _waterIndexCount;
+    public bool WaterVisible { get; set; } = true;
 
     // Outline (hovered cell highlight — line-list mesh)
     private int _oPipeline, _oUbo, _oBindGroup;
@@ -146,6 +157,16 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
             new { binding = 3, textureViewId = _dudvTexId },
             new { binding = 4, textureViewId = _normalTexId },
         });
+
+        // Water sphere — single full-planet mesh at LevelH(0). Reuses the
+        // terrain pipeline + bind group; the fragment shader's wave-water
+        // branch is reached because every vertex has level=0 and the
+        // OceanLevel0 flag is set in params.y. Toggling water on/off in
+        // the HUD just flips _waterVisible — no mesh rebuild.
+        var (wv, wi) = Mesh.BuildWaterSphereMesh();
+        _waterVbo = await _gpu.CreateVertexBuffer(wv);
+        _waterIbo = await _gpu.CreateIndexBuffer(wi);
+        _waterIndexCount = wi.Length;
     }
 
     public async Task SetupAtmosphere(string atmosphereShader)
@@ -250,6 +271,17 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
             }
         }
 
+        // Water sphere — drawn after terrain so the depth test resolves
+        // land cells (poking above the water surface) on top, and the water
+        // surface covers the seabed and underwater portions of cliffs. Same
+        // pipeline + bind group as terrain; the fragment shader takes the
+        // wave-water branch because every vertex on this mesh has level=0
+        // and the OceanLevel0 flag is set.
+        if (WaterVisible && _waterIndexCount > 0)
+        {
+            _gpu.RenderAdditional(_tPipeline, _waterVbo, _waterIbo, _tBindGroup, _waterIndexCount);
+        }
+
         // Atmosphere — skip when far (saves ~32 ray-sphere intersections/pixel)
         if (_atmoReady && cameraDistance < 20f)
         {
@@ -286,14 +318,6 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
     {
         foreach (int p in Mesh.GetAffectedPatches(cell))
             _dirtyPatches.Add(p);
-    }
-
-    /// <summary>Mark every patch dirty. Used after a global mesh-emission
-    /// flag flips (EmitWaterSurface, etc.) where we don't know which cells
-    /// changed but the whole planet needs a rebuild.</summary>
-    public void MarkAllPatchesDirty()
-    {
-        for (int p = 0; p < PlanetMesh.PatchCount; p++) _dirtyPatches.Add(p);
     }
 
     /// <summary>Rebuild only dirty patches. Call once per frame before Draw.</summary>

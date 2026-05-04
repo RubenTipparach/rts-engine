@@ -93,15 +93,14 @@ public class GameEngine
         _hud.WaterToggled += OnWaterToggled;
     }
 
-    /// <summary>HUD's 🌊 Water button flipped. Push the new state into the
-    /// active planet's mesh and force a full patch rebuild — every level-0
-    /// cell needs to re-emit (and the seabed underneath was already there,
-    /// it just becomes the "top" of the cell when water is off).</summary>
+    /// <summary>HUD's 🌊 Water button flipped. Just sets the renderer's
+    /// WaterVisible flag — the water surface is its own sphere mesh built
+    /// once at planet load, so toggling is a one-bool flip with no GPU
+    /// work and no lag spike.</summary>
     private void OnWaterToggled()
     {
         if (_planet == null) return;
-        _planet.Mesh.EmitWaterSurface = _hud.WaterOn;
-        _planet.MarkAllPatchesDirty();
+        _planet.WaterVisible = _hud.WaterOn;
     }
 
     private void WireModes()

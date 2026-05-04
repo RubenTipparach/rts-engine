@@ -47,13 +47,6 @@ public sealed class PlanetMesh
     public float ChamferDrop { get; }
     public int CellCount => _centers.Length;
 
-    /// <summary>Emit the water-surface fan on level-0 cells. Disable to expose
-    /// the rocky seabed underneath for visual debugging — the fan toggles the
-    /// second EmitCellFan in EmitCellGeometry's water branch. Toggling this
-    /// requires rebuilding all patches (PlanetRenderer.MarkAllPatchesDirty +
-    /// RebuildDirtyPatches).</summary>
-    public bool EmitWaterSurface { get; set; } = true;
-
     private readonly Vector3[] _centers;
     private readonly int[][] _neighbors;
     private readonly Vector3[][] _polyVerts;
@@ -540,19 +533,15 @@ public sealed class PlanetMesh
         // appear at cliff borders, never below water.
         if (level == 0 && slope == null)
         {
-            // Three elevations on a water cell:
-            //   * Rock seabed at Radius (height 0) — the level-0 baseline.
-            //   * Water surface at Radius + 0.75 * StepHeight (height 0.75).
-            //   * Adjacent land cliff tops at Radius + 1 * StepHeight (height 1).
-            // Cliff walls down to the seabed come from adjacent land cells
-            // (their wall code special-cases water neighbours and runs the
-            // wall to Radius); water-to-water edges suppress (same-level
-            // top, no wall) so the basin floor is flush. The water surface
-            // fan can be toggled off for debugging via EmitWaterSurface.
+            // Level-0 cells emit ONLY the rock seabed at Radius (height 0).
+            // The water surface itself is no longer per-cell geometry — it's
+            // a separate full-planet sphere drawn by PlanetRenderer at
+            // LevelH(0) = Radius + 0.75 * StepHeight, so toggling water
+            // doesn't have to rebuild any cell patches. Cliff walls down
+            // to the seabed are handled by the wall loop below (water-
+            // neighbour case in nh).
             float seabedH = Radius;
             EmitCellFan(verts, idx, cell, seabedH, cellNormal, CliffLevel);
-            if (EmitWaterSurface)
-                EmitCellFan(verts, idx, cell, h, cellNormal, 0);
         }
         else
         {
@@ -880,6 +869,48 @@ public sealed class PlanetMesh
     }
 
     // ── Icosphere generation ────────────────────────────────────────
+
+    /// <summary>
+    /// Build a full-planet water sphere at <see cref="LevelH"/>(0) =
+    /// Radius + 0.75 * StepHeight. Returns interleaved vertices (pos3 +
+    /// normal3 + level1 = 7 floats per vertex, matching terrain.wgsl's
+    /// vertex layout) and ushort indices. The water shader runs on every
+    /// vertex because level=0 + the OceanLevel0 flag selects the wave
+    /// branch in the terrain fragment shader.
+    ///
+    /// The sphere is an icosphere subdivided to <paramref name="subdivisions"/>
+    /// — defaults to 4 (2562 vertices, 5120 triangles, 15360 indices,
+    /// fits in ushort). That's smooth enough for the water surface; no
+    /// reason to match the cell mesh's subdivision count exactly.
+    /// </summary>
+    public (float[] vertices, ushort[] indices) BuildWaterSphereMesh(int subdivisions = 4)
+    {
+        var (icoVerts, icoTris) = BuildIcosphere(subdivisions);
+        float r = LevelH(0);
+        const int floatsPerVert = 7;
+        var verts = new float[icoVerts.Count * floatsPerVert];
+        for (int i = 0; i < icoVerts.Count; i++)
+        {
+            Vector3 n = icoVerts[i]; // already unit-length from BuildIcosphere
+            int o = i * floatsPerVert;
+            verts[o + 0] = n.X * r;
+            verts[o + 1] = n.Y * r;
+            verts[o + 2] = n.Z * r;
+            verts[o + 3] = n.X;
+            verts[o + 4] = n.Y;
+            verts[o + 5] = n.Z;
+            verts[o + 6] = 0f; // level 0 = water → fragment shader's wave branch
+        }
+        var idx = new ushort[icoTris.Count * 3];
+        for (int t = 0; t < icoTris.Count; t++)
+        {
+            var (a, b, c) = icoTris[t];
+            idx[t * 3 + 0] = (ushort)a;
+            idx[t * 3 + 1] = (ushort)b;
+            idx[t * 3 + 2] = (ushort)c;
+        }
+        return (verts, idx);
+    }
 
     private static (List<Vector3> verts, List<(int a, int b, int c)> tris) BuildIcosphere(int subdivisions)
     {
