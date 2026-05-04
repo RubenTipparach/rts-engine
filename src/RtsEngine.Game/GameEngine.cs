@@ -99,10 +99,9 @@ public class GameEngine
     /// it just becomes the "top" of the cell when water is off).</summary>
     private void OnWaterToggled()
     {
-        var planet = _transition.PlanetRenderer;
-        if (planet == null) return;
-        planet.Mesh.EmitWaterSurface = _hud.WaterOn;
-        planet.MarkAllPatchesDirty();
+        if (_planet == null) return;
+        _planet.Mesh.EmitWaterSurface = _hud.WaterOn;
+        _planet.MarkAllPatchesDirty();
     }
 
     private void WireModes()
