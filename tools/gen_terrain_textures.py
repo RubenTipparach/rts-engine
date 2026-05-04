@@ -22,7 +22,9 @@ import numpy as np
 from PIL import Image
 
 SIZE = 256
-OUT_DIR = Path(__file__).resolve().parents[1] / "src" / "RtsEngine.Wasm" / "wwwroot" / "textures"
+# Shared assets live at /assets/ per CLAUDE.md — Wasm and Desktop both
+# read from here. The previous wwwroot path is no longer used.
+OUT_DIR = Path(__file__).resolve().parents[1] / "assets" / "textures"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -172,6 +174,34 @@ def gen_grass():
     save_rgb("grass.png", rgb)
 
 
+# ── Grass (dry / savanna) — second mid tier ────────────────────────
+def gen_grass_dry():
+    """Drier upland grass — yellower hue, less patchy than the lowland tile.
+    Different seeds so it isn't a recolored copy of grass.png; the small
+    scattering darker dots stand in for sparse blade clumps."""
+    patchy = fbm_tileable(SIZE, SIZE, 5, 4, seed=3501)
+    blades = fbm_tileable(SIZE, SIZE, 28, 3, seed=3502)
+    pattern = patchy * 0.55 + blades * 0.45
+
+    dark = np.array([0.32, 0.40, 0.15])
+    mid = np.array([0.55, 0.62, 0.28])
+    light = np.array([0.72, 0.78, 0.40])
+    rgb = np.empty((SIZE, SIZE, 3), dtype=np.float32)
+    for i in range(3):
+        lo = np.where(pattern < 0.5,
+                      lerp(dark[i], mid[i], pattern / 0.5),
+                      mid[i])
+        rgb[:, :, i] = np.where(pattern > 0.5,
+                                lerp(mid[i], light[i], (pattern - 0.5) / 0.5),
+                                lo)
+
+    rng = np.random.default_rng(3599)
+    clumps = rng.random((SIZE, SIZE)) > 0.992
+    rgb[clumps] = np.array([0.30, 0.32, 0.10])
+
+    save_rgb("grass_dry.png", rgb)
+
+
 # ── Rock ────────────────────────────────────────────────────────────
 def gen_rock():
     coarse = fbm_tileable(SIZE, SIZE, 2, 3, seed=4001)
@@ -220,9 +250,13 @@ def gen_snow():
 
 
 def gen_atlas():
-    """Composite the 5 terrain tiles into a 1280x256 horizontal atlas."""
-    atlas = Image.new("RGB", (SIZE * 5, SIZE))
-    for i, name in enumerate(["water", "sand", "grass", "rock", "snow"]):
+    """Composite the 6 terrain tiles into a 1536×256 horizontal atlas.
+    Each tile is visually distinct — the two mid tiers (lush grass +
+    dry grass) come from separate generators so elevation reads as a
+    real palette change, not a tinted copy."""
+    names = ["water", "sand", "grass", "grass_dry", "rock", "snow"]
+    atlas = Image.new("RGB", (SIZE * len(names), SIZE))
+    for i, name in enumerate(names):
         tile = Image.open(OUT_DIR / f"{name}.png")
         atlas.paste(tile, (i * SIZE, 0))
     atlas.save(OUT_DIR / "terrain_atlas.png")
@@ -263,10 +297,11 @@ def gen_water_normal():
 
 
 if __name__ == "__main__":
-    print(f"Generating terrain textures → {OUT_DIR}")
+    print(f"Generating terrain textures -> {OUT_DIR}")
     gen_water()
     gen_sand()
     gen_grass()
+    gen_grass_dry()
     gen_rock()
     gen_snow()
     gen_atlas()

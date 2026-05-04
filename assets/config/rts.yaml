@@ -35,6 +35,7 @@ units:
     height:    0.009
     speed:     0.040
     canHop:    true
+    perCellCapacity: 8
   - id: marine
     name: Marine
     color: [0.30, 0.65, 0.30]
@@ -42,6 +43,7 @@ units:
     height:    0.010
     speed:     0.050
     canHop:    true
+    perCellCapacity: 8
   - id: scout
     name: Scout
     color: [0.70, 0.65, 0.35]
@@ -49,6 +51,7 @@ units:
     height:    0.008
     speed:     0.080
     canHop:    true
+    perCellCapacity: 8
   - id: tank
     name: Tank
     color: [0.45, 0.45, 0.50]
@@ -56,6 +59,7 @@ units:
     height:    0.007
     speed:     0.030
     canHop:    false
+    perCellCapacity: 4
   - id: apc
     name: APC
     color: [0.50, 0.45, 0.30]
@@ -63,3 +67,4 @@ units:
     height:    0.0065
     speed:     0.060
     canHop:    false
+    perCellCapacity: 4

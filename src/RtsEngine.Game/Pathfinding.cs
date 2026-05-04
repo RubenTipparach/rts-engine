@@ -146,7 +146,8 @@ public static class Pathfinding
     /// take straight-line motion in open ground instead of zigzagging
     /// cell-to-cell along the raw A* output.
     /// </summary>
-    public static bool HasLineOfSight(PlanetMesh mesh, int from, int to, bool canHop)
+    public static bool HasLineOfSight(PlanetMesh mesh, int from, int to, bool canHop,
+        bool slopesTraversable)
     {
         if (from == to) return true;
         if (from < 0 || to < 0) return false;
@@ -193,7 +194,7 @@ public static class Pathfinding
 
             // The walk hit a non-traversable transition (cliff without
             // slope/hop) — line of sight blocked, raw A* must route around.
-            if (!CanTraverse(mesh, current, bestNbr, canHop)) return false;
+            if (!CanTraverse(mesh, current, bestNbr, canHop, slopesTraversable)) return false;
 
             current = bestNbr;
         }
@@ -209,7 +210,8 @@ public static class Pathfinding
     /// changes. Idempotent: smoothing an already-smoothed path returns it
     /// unchanged.
     /// </summary>
-    public static List<int> SmoothPath(PlanetMesh mesh, List<int> path, bool canHop)
+    public static List<int> SmoothPath(PlanetMesh mesh, List<int> path, bool canHop,
+        bool slopesTraversable)
     {
         if (path.Count <= 2) return path;
         var result = new List<int> { path[0] };
@@ -221,7 +223,7 @@ public static class Pathfinding
             // this hits on the first try most of the time. Worst case is
             // O(n) LOS checks per anchor, which is fine at n ~ a few hundred.
             int j = path.Count - 1;
-            while (j > i + 1 && !HasLineOfSight(mesh, path[i], path[j], canHop)) j--;
+            while (j > i + 1 && !HasLineOfSight(mesh, path[i], path[j], canHop, slopesTraversable)) j--;
             result.Add(path[j]);
             i = j;
         }

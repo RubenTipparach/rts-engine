@@ -13,7 +13,12 @@
       "Bash(git -C /c/Users/santi/repos/rts-engine grep -l \"PickCell\\\\|pickCell\\\\|RaycastSphere\\\\|RaySphere\\\\|raySphere\" 3189e12 -- \"src/\")",
       "Bash(git -C /c/Users/santi/repos/rts-engine show 3189e12:src/RtsEngine.Game/GameEngine.cs)",
       "Bash(awk 'NR>=63 && NR<=130' /c/Users/santi/repos/rts-engine/src/RtsEngine.Game/PlanetPicker.cs)",
-      "Bash(awk '/^v / {x=$2;y=$3;z=$4; if\\(x<minx||NR==1\\)minx=x; if\\(x>maxx||NR==1\\)maxx=x; if\\(y>maxy||NR==1\\)maxy=y} END {printf \"command_center: X extent %.4f, Y max %.4f\\\\n\", maxx-minx, maxy}' /c/Users/santi/repos/rts-engine/assets/models/command_center.obj)"
+      "Bash(awk '/^v / {x=$2;y=$3;z=$4; if\\(x<minx||NR==1\\)minx=x; if\\(x>maxx||NR==1\\)maxx=x; if\\(y>maxy||NR==1\\)maxy=y} END {printf \"command_center: X extent %.4f, Y max %.4f\\\\n\", maxx-minx, maxy}' /c/Users/santi/repos/rts-engine/assets/models/command_center.obj)",
+      "Bash(python tools/gen_terrain_textures.py)",
+      "Bash(python tools/gen_planet_textures.py)",
+      "PowerShell($env:PYTHONIOENCODING='utf-8'; python tools/gen_terrain_textures.py; if \\($?\\) { python tools/gen_planet_textures.py })",
+      "PowerShell($nagaCmd = Get-Command naga -ErrorAction SilentlyContinue; if \\($nagaCmd\\) { Write-Output \"naga-found: $\\($nagaCmd.Source\\)\"; & naga --version } else { Write-Output \"naga-not-installed\" }; $cargoCmd = Get-Command cargo -ErrorAction SilentlyContinue; if \\($cargoCmd\\) { Write-Output \"cargo-found: $\\($cargoCmd.Source\\)\" } else { Write-Output \"cargo-not-installed\" })",
+      "Bash(cargo install *)"
     ]
   }
 }

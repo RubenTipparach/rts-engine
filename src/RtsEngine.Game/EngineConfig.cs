@@ -163,14 +163,12 @@ public sealed class RtsCameraConfig
 /// </summary>
 public sealed class UnitArrivalConfig
 {
-    /// <summary>Max units that share one destination cell before BFS moves
-    /// to the next cell. 4 fits comfortably for current unit/cell sizing
-    /// (units ~ ¼ of a cell across).</summary>
-    public int PerCellCapacity { get; set; } = 4;
-
-    /// <summary>Distance from cell center to each sub-slot anchor, expressed
-    /// in unit-halfwidth multiples. 1.5 leaves enough breathing room that
-    /// arrived units don't immediately re-collide under ORCA jitter.</summary>
+    /// <summary>Minimum chord between adjacent sub-slot anchors on a cell's
+    /// packing ring, expressed in unit-halfwidth multiples. The ring
+    /// radius scales up as cell capacity grows so this chord stays the
+    /// same — 1.5× halfwidth keeps freshly-packed units clear of each
+    /// other under ORCA jitter without the ring spilling outside the
+    /// hex. Per-cell capacity is now a unit attribute (UnitDef.PerCellCapacity).</summary>
     public float SlotSpacingMultiplier { get; set; } = 1.5f;
 }
 

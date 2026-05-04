@@ -5,6 +5,10 @@ stepHeight: 0.03
 
 terrain:
   atlasUrl: textures/ice/terrain_atlas.png
+  # 6 levels: frozen_ocean, ice_shelf, tundra, snowfield, frozen_rock, glacier.
+  # Glacius's basin is frozen ocean — solid ice texture, NOT the wave-water
+  # shader. Earth is the only planet with liquid water.
+  oceanLevel0: false
   levels:
     - name: frozen_ocean
       color: [0.17, 0.24, 0.39]
@@ -12,6 +16,8 @@ terrain:
       color: [0.72, 0.78, 0.88]
     - name: tundra
       color: [0.42, 0.46, 0.40]
+    - name: snowfield
+      color: [0.65, 0.70, 0.72]
     - name: frozen_rock
       color: [0.44, 0.48, 0.58]
     - name: glacier
@@ -24,7 +30,7 @@ water:
 generation:
   seed: 5555
   frequency: 2.0
-  thresholds: [0.35, 0.50, 0.68, 0.85]
+  thresholds: [0.40, 0.50, 0.60, 0.74, 0.88]
 
 atmosphere:
   innerRadiusMul: 0.92

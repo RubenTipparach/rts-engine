@@ -5,6 +5,9 @@ stepHeight: 0.03
 
 terrain:
   atlasUrl: textures/venus/terrain_atlas.png
+  # 6 levels: lowland, volcanic, tessera, plateau, shield, maxwell.
+  # No water — Venus's basin is solidified lowland.
+  oceanLevel0: false
   levels:
     - name: lowland
       color: [0.42, 0.30, 0.12]
@@ -12,6 +15,8 @@ terrain:
       color: [0.78, 0.56, 0.22]
     - name: tessera
       color: [0.82, 0.66, 0.32]
+    - name: plateau
+      color: [0.68, 0.50, 0.20]
     - name: shield
       color: [0.38, 0.24, 0.10]
     - name: maxwell
@@ -24,7 +29,7 @@ water:
 generation:
   seed: 999
   frequency: 2.2
-  thresholds: [0.15, 0.38, 0.62, 0.85]
+  thresholds: [0.15, 0.30, 0.50, 0.68, 0.85]
 
 atmosphere:
   innerRadiusMul: 0.88

@@ -14,16 +14,31 @@ public sealed record SlopeInfo(int LowNeighbor, int HighNeighbor);
 /// </summary>
 public sealed class PlanetMesh
 {
-    public const int LevelCount = 5;
-    public const byte MaxLevel = 4;
+    public const int LevelCount = 6;
+    public const byte MaxLevel = 5;
 
+    /// <summary>Atlas tier used for vertical cliff/wall faces, regardless of
+    /// the elevations they connect. Sits one below MaxLevel so it indexes
+    /// the "rocky" tile in every planet's palette (rock on Earth, basalt
+    /// on Mars, frozen_rock on Glacius, etc.) — peaks at MaxLevel are
+    /// reserved for snow/ice caps. Hardcoded here because the convention
+    /// is structural across all planet palettes, not per-planet.</summary>
+    public const byte CliffLevel = MaxLevel - 1;
+
+    // Earth-themed default palette: 6 layers — 1 water + 1 sand + 2 grass
+    // tiers + 1 rock + 1 snow. Per-planet palettes override this via
+    // PlanetConfig.terrain.levels (each planet has a distinct texture for
+    // every layer, including its second mid-tier). Used as fallback when
+    // atlas sampling fails and for cells that don't go through the atlas
+    // pipeline (the in-orbit solar-system view's planet sphere).
     public static readonly Vector3[] LevelColors =
     {
         new(0.15f, 0.35f, 0.75f), // 0 water
         new(0.90f, 0.80f, 0.55f), // 1 sand
-        new(0.30f, 0.65f, 0.25f), // 2 grass
-        new(0.55f, 0.55f, 0.55f), // 3 rock
-        new(0.95f, 0.97f, 1.00f), // 4 snow
+        new(0.30f, 0.65f, 0.25f), // 2 grass (canonical meadow)
+        new(0.55f, 0.65f, 0.30f), // 3 grass_dry (yellower savanna)
+        new(0.55f, 0.55f, 0.55f), // 4 rock
+        new(0.95f, 0.97f, 1.00f), // 5 snow
     };
 
     public float Radius { get; }
@@ -306,7 +321,13 @@ public sealed class PlanetMesh
 
     public void GenerateFromNoise(int seed = 42, float frequency = 2.5f, float[]? thresholds = null)
     {
-        var th = thresholds ?? new[] { 0.30f, 0.45f, 0.65f, 0.82f };
+        // (LevelCount - 1) thresholds carve normalized noise into LevelCount
+        // buckets. Fallback is the Earth-tuned 6-level default — most
+        // callers pass an explicit array from per-planet config.
+        var th = thresholds ?? new[]
+        {
+            0.45f, 0.52f, 0.65f, 0.78f, 0.88f
+        };
         for (int i = 0; i < CellCount; i++)
         {
             Vector3 p = _centers[i];
@@ -314,8 +335,9 @@ public sealed class PlanetMesh
                 p.X * frequency, p.Y * frequency, p.Z * frequency,
                 4, 0.5f, seed);
             float t = (n + 1f) * 0.5f;
-            byte lvl = 4;
-            for (int k = 0; k < th.Length && k < 4; k++)
+            byte lvl = MaxLevel;
+            int cap = Math.Min(th.Length, LevelCount - 1);
+            for (int k = 0; k < cap; k++)
                 if (t < th[k]) { lvl = (byte)k; break; }
             _levels[i] = lvl;
         }
@@ -326,7 +348,7 @@ public sealed class PlanetMesh
     // Vertex layout: pos(3f) + normal(3f) + level(1f) = 7 floats, stride 28 bytes.
     // - pos: world-space position (planet at origin, no model transform)
     // - normal: outward surface normal (for Lambert lighting, triplanar weighting)
-    // - level: terrain tier 0..4 (selects atlas tile in fragment shader)
+    // - level: terrain tier 0..MaxLevel (selects atlas tile in fragment shader)
 
     public const int VertexFloats = 7;
     public const int VertexStrideBytes = 28;
@@ -512,13 +534,11 @@ public sealed class PlanetMesh
             Vector3 nA = SmoothNormalAtCorner(cell, pA);
             Vector3 nB = SmoothNormalAtCorner(cell, pB);
 
-            byte cliffLevel = 3;
-
             uint b = (uint)(verts.Count / VertexFloats);
-            EmitVert(verts, topA, nA, cliffLevel);
-            EmitVert(verts, topB, nB, cliffLevel);
-            EmitVert(verts, botB, nB, cliffLevel);
-            EmitVert(verts, botA, nA, cliffLevel);
+            EmitVert(verts, topA, nA, CliffLevel);
+            EmitVert(verts, topB, nB, CliffLevel);
+            EmitVert(verts, botB, nB, CliffLevel);
+            EmitVert(verts, botA, nA, CliffLevel);
 
             idx.Add(b); idx.Add(b + 2); idx.Add(b + 1);
             idx.Add(b); idx.Add(b + 3); idx.Add(b + 2);

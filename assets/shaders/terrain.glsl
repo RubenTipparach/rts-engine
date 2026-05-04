@@ -6,7 +6,10 @@ layout(std140, binding = 0) uniform U {
     mat4 mvp;
     vec4 sunDir;
     vec4 cameraPos;
-    float time;
+    // params.x = time
+    // params.y = oceanLevel0 (1.0 = level 0 uses wave-water shader, 0.0 = level 0
+    //            samples atlas like any other tier; only Earth flips this on)
+    vec4 params;
 } u;
 
 // Binding slots match the WGSL order. WGSL slot 1 holds a standalone sampler;
@@ -45,17 +48,22 @@ in vec3 vNormal;
 in float vLevel;
 out vec4 FragColor;
 
+// 6-level Earth-themed fallback. Used only when atlas sampling returns
+// pure black (texture failed to load). Per-planet palettes ride along
+// in the atlas itself; this is just a "you can still tell elevation
+// apart" backstop. Index = mesh level (0..5).
 vec3 levelColor(float level) {
     int lvl = int(level + 0.5);
-    if (lvl <= 0) return vec3(0.15, 0.35, 0.75);
-    if (lvl == 1) return vec3(0.90, 0.80, 0.55);
-    if (lvl == 2) return vec3(0.30, 0.65, 0.25);
-    if (lvl == 3) return vec3(0.55, 0.55, 0.55);
-    return vec3(0.95, 0.97, 1.00);
+    if (lvl <= 0) return vec3(0.15, 0.35, 0.75);   // water
+    if (lvl == 1) return vec3(0.90, 0.80, 0.55);   // sand
+    if (lvl == 2) return vec3(0.30, 0.65, 0.25);   // grass meadow
+    if (lvl == 3) return vec3(0.55, 0.65, 0.30);   // grass dry / savanna
+    if (lvl == 4) return vec3(0.55, 0.55, 0.55);   // rock
+    return vec3(0.95, 0.97, 1.00);                  // snow
 }
 
 vec3 sampleTile(vec2 uv, float level) {
-    float tileW = 0.2;
+    float tileW = 1.0 / 6.0;  // atlas has 6 horizontal tiles
     float au = level * tileW + fract(uv.x) * tileW;
     vec3 tex = textureLod(terrainAtlas, vec2(au, fract(uv.y)), 0.0).rgb;
     float brightness = tex.r + tex.g + tex.b;
@@ -73,7 +81,7 @@ vec3 triplanarTile(vec3 wp, vec3 N, float level) {
 }
 
 vec3 waterShader(vec3 wp, vec3 N, vec3 V, vec3 L) {
-    float t = u.time;
+    float t = u.params.x;
     float tiling = 6.0;
 
     vec3 b = max(abs(N), vec3(0.001));
@@ -133,8 +141,12 @@ void main() {
 
     vec3 terrainBase = triplanarTile(vWorldPos, N, vLevel);
 
+    // Wave-water shader is gated on the per-planet OceanLevel0 flag — only
+    // Earth has actual liquid water at level 0; Mars/Venus/Moon level 0 is
+    // solid ground, Glacius level 0 is frozen ocean ice. Those all sample
+    // the atlas like any other tier.
     vec3 lit;
-    if (vLevel < 0.5) {
+    if (vLevel < 0.5 && u.params.y > 0.5) {
         lit = waterShader(vWorldPos, N, V, L);
     } else {
         lit = terrainBase * (0.25 + NdotL * 0.9);

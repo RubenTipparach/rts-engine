@@ -5,6 +5,9 @@ stepHeight: 0.02
 
 terrain:
   atlasUrl: textures/moon/terrain_atlas.png
+  # 6 levels: crater_floor, regolith, highland, ridge, mountain, peak.
+  # No real water — the basin level is just dark crater regolith.
+  oceanLevel0: false
   levels:
     - name: crater_floor
       color: [0.18, 0.18, 0.18]
@@ -12,6 +15,8 @@ terrain:
       color: [0.36, 0.35, 0.34]
     - name: highland
       color: [0.52, 0.52, 0.52]
+    - name: ridge
+      color: [0.45, 0.43, 0.40]
     - name: mountain
       color: [0.62, 0.62, 0.62]
     - name: peak
@@ -24,7 +29,7 @@ water:
 generation:
   seed: 77
   frequency: 3.0
-  thresholds: [0.25, 0.45, 0.65, 0.85]
+  thresholds: [0.20, 0.35, 0.55, 0.72, 0.88]
 
 atmosphere:
   innerRadiusMul: 0.95

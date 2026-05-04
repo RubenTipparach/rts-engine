@@ -9,7 +9,9 @@ from PIL import Image
 from pathlib import Path
 
 SIZE = 256
-BASE_DIR = Path(__file__).resolve().parents[1] / "src" / "RtsEngine.Wasm" / "wwwroot" / "textures"
+# Shared assets live at /assets/ per CLAUDE.md — Wasm and Desktop both
+# read from here. The previous wwwroot path is no longer used.
+BASE_DIR = Path(__file__).resolve().parents[1] / "assets" / "textures"
 
 
 def value_noise_tileable(width, height, period, seed):
@@ -81,7 +83,14 @@ def gen_moon():
     rgb = np.stack([lerp(0.45, 0.58, n)] * 3, axis=-1)
     save_rgb(out, "highland.png", rgb)
 
-    # Level 3: mountain/rim (bright gray with cracks)
+    # Level 3: ridge (warmer brown-gray, second mid tier)
+    n = fbm(SIZE, SIZE, 4, 4, seed_base + 250)
+    streak = fbm(SIZE, SIZE, 12, 3, seed_base + 251)
+    base = lerp(0.40, 0.52, n) + (streak - 0.5) * 0.06
+    rgb = np.stack([base * 1.04, base, base * 0.94], axis=-1)
+    save_rgb(out, "ridge.png", rgb)
+
+    # Level 4: mountain/rim (bright gray with cracks)
     n = fbm(SIZE, SIZE, 3, 3, seed_base + 300)
     cracks = fbm(SIZE, SIZE, 8, 4, seed_base + 301)
     base = lerp(0.55, 0.70, n)
@@ -90,12 +99,15 @@ def gen_moon():
     rgb = np.stack([base] * 3, axis=-1)
     save_rgb(out, "mountain.png", rgb)
 
-    # Level 4: peak (bright white-gray)
+    # Level 5: peak (bright white-gray)
     n = fbm(SIZE, SIZE, 4, 3, seed_base + 400)
     rgb = np.stack([lerp(0.72, 0.82, n)] * 3, axis=-1)
     save_rgb(out, "peak.png", rgb)
 
-    make_atlas(out, ["crater_floor", "regolith", "highland", "mountain", "peak"])
+    # 6 tiles, all distinct.
+    make_atlas(out, ["crater_floor", "regolith",
+                     "highland", "ridge",
+                     "mountain", "peak"])
     print("  Moon textures done")
 
 
@@ -123,17 +135,27 @@ def gen_mars():
     r = lerp(0.72, 0.85, n); g = lerp(0.42, 0.55, n); b = lerp(0.25, 0.32, n)
     save_rgb(out, "plains.png", np.stack([r, g, b], -1))
 
-    # 3: volcanic rock (dark basalt)
+    # 3: mesa (rust-red highland, second mid tier — between plains and basalt)
+    n = fbm(SIZE, SIZE, 4, 4, seed_base + 250)
+    cracks = fbm(SIZE, SIZE, 16, 3, seed_base + 251)
+    r = lerp(0.55, 0.72, n); g = lerp(0.28, 0.38, n); b = lerp(0.18, 0.24, n)
+    rgb = np.stack([r, g, b], -1)
+    crack_mask = np.abs(cracks - 0.5) < 0.025
+    rgb[crack_mask] = np.array([0.35, 0.18, 0.12])
+    save_rgb(out, "mesa.png", rgb)
+
+    # 4: volcanic rock (dark basalt)
     n = fbm(SIZE, SIZE, 3, 3, seed_base + 300)
     r = lerp(0.25, 0.38, n); g = lerp(0.20, 0.30, n); b = lerp(0.18, 0.25, n)
     save_rgb(out, "basalt.png", np.stack([r, g, b], -1))
 
-    # 4: ice cap (white with blue tinge)
+    # 5: ice cap (white with blue tinge)
     n = fbm(SIZE, SIZE, 4, 3, seed_base + 400)
     r = lerp(0.85, 0.95, n); g = lerp(0.88, 0.96, n); b = lerp(0.92, 1.00, n)
     save_rgb(out, "ice_cap.png", np.stack([r, g, b], -1))
 
-    make_atlas(out, ["canyon", "dust", "plains", "basalt", "ice_cap"])
+    # 6 tiles, all distinct.
+    make_atlas(out, ["canyon", "dust", "plains", "mesa", "basalt", "ice_cap"])
     print("  Mars textures done")
 
 
@@ -163,7 +185,15 @@ def gen_venus():
     rgb[crack_mask] = np.array([0.40, 0.30, 0.12])
     save_rgb(out, "tessera.png", rgb)
 
-    # 3: shield volcano (dark with lava streaks)
+    # 3: plateau (orange-sulfur, second mid tier — between tessera and shield)
+    n = fbm(SIZE, SIZE, 4, 4, seed_base + 250)
+    smear = fbm(SIZE, SIZE, 14, 3, seed_base + 251)
+    r = lerp(0.58, 0.72, n) + (smear - 0.5) * 0.05
+    g = lerp(0.42, 0.55, n)
+    b = lerp(0.18, 0.24, n)
+    save_rgb(out, "plateau.png", np.stack([r, g, b], -1))
+
+    # 4: shield volcano (dark with lava streaks)
     n = fbm(SIZE, SIZE, 3, 3, seed_base + 300)
     r = lerp(0.30, 0.45, n); g = lerp(0.18, 0.28, n); b = lerp(0.08, 0.12, n)
     # Lava veins
@@ -173,12 +203,13 @@ def gen_venus():
     rgb[lava_mask] = np.array([0.90, 0.35, 0.05])
     save_rgb(out, "shield.png", rgb)
 
-    # 4: maxwell peak (bright sulfur yellow)
+    # 5: maxwell peak (bright sulfur yellow)
     n = fbm(SIZE, SIZE, 4, 3, seed_base + 400)
     r = lerp(0.88, 0.95, n); g = lerp(0.82, 0.90, n); b = lerp(0.45, 0.55, n)
     save_rgb(out, "maxwell.png", np.stack([r, g, b], -1))
 
-    make_atlas(out, ["lowland", "volcanic", "tessera", "shield", "maxwell"])
+    # 6 tiles, all distinct.
+    make_atlas(out, ["lowland", "volcanic", "tessera", "plateau", "shield", "maxwell"])
     print("  Venus textures done")
 
 
@@ -208,17 +239,27 @@ def gen_ice():
     r = lerp(0.35, 0.48, n); g = lerp(0.40, 0.52, n); b = lerp(0.35, 0.45, n)
     save_rgb(out, "tundra.png", np.stack([r, g, b], -1))
 
-    # 3: frozen rock (blue-gray)
+    # 3: snowfield (paler, drifty white-blue, second mid tier — between tundra
+    # and frozen rock; reads as wind-packed snow over rock)
+    n = fbm(SIZE, SIZE, 4, 4, seed_base + 250)
+    drift = fbm(SIZE, SIZE, 18, 3, seed_base + 251)
+    p = n * 0.65 + drift * 0.35
+    r = lerp(0.58, 0.72, p); g = lerp(0.62, 0.76, p); b = lerp(0.66, 0.80, p)
+    save_rgb(out, "snowfield.png", np.stack([r, g, b], -1))
+
+    # 4: frozen rock (blue-gray)
     n = fbm(SIZE, SIZE, 3, 3, seed_base + 300)
     r = lerp(0.38, 0.50, n); g = lerp(0.42, 0.55, n); b = lerp(0.52, 0.65, n)
     save_rgb(out, "frozen_rock.png", np.stack([r, g, b], -1))
 
-    # 4: glacier peak (bright white-blue)
+    # 5: glacier peak (bright white-blue)
     n = fbm(SIZE, SIZE, 4, 3, seed_base + 400)
     r = lerp(0.85, 0.95, n); g = lerp(0.90, 0.98, n); b = lerp(0.95, 1.00, n)
     save_rgb(out, "glacier.png", np.stack([r, g, b], -1))
 
-    make_atlas(out, ["frozen_ocean", "ice_shelf", "tundra", "frozen_rock", "glacier"])
+    # 6 tiles, all distinct.
+    make_atlas(out, ["frozen_ocean", "ice_shelf", "tundra", "snowfield",
+                     "frozen_rock", "glacier"])
     print("  Ice planet textures done")
 
 

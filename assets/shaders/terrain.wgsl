@@ -6,7 +6,10 @@ struct Uniforms {
     mvp: mat4x4f,
     sunDir: vec4f,
     cameraPos: vec4f,
-    time: f32,
+    // params.x = time
+    // params.y = oceanLevel0 (1.0 = level 0 uses wave-water shader, 0.0 = level 0
+    //            samples atlas like any other tier; only Earth flips this on)
+    params: vec4f,
 }
 
 @binding(0) @group(0) var<uniform> u: Uniforms;
@@ -47,19 +50,24 @@ fn vs_main(
 
 // ── Fallback level colors ─────────────────────────────────────────
 
+// 6-level Earth-themed fallback. Used only when atlas sampling returns
+// pure black (texture failed to load). Per-planet palettes ride along
+// in the atlas itself; this is just a "you can still tell elevation
+// apart" backstop. Index = mesh level (0..5).
 fn levelColor(level: f32) -> vec3f {
     let lvl = i32(level + 0.5);
-    if (lvl <= 0) { return vec3f(0.15, 0.35, 0.75); }
-    if (lvl == 1) { return vec3f(0.90, 0.80, 0.55); }
-    if (lvl == 2) { return vec3f(0.30, 0.65, 0.25); }
-    if (lvl == 3) { return vec3f(0.55, 0.55, 0.55); }
-    return vec3f(0.95, 0.97, 1.00);
+    if (lvl <= 0) { return vec3f(0.15, 0.35, 0.75); }    // water
+    if (lvl == 1) { return vec3f(0.90, 0.80, 0.55); }    // sand
+    if (lvl == 2) { return vec3f(0.30, 0.65, 0.25); }    // grass meadow
+    if (lvl == 3) { return vec3f(0.55, 0.65, 0.30); }    // grass dry / savanna
+    if (lvl == 4) { return vec3f(0.55, 0.55, 0.55); }    // rock
+    return vec3f(0.95, 0.97, 1.00);                      // snow
 }
 
 // ── Atlas sampling ────────────────────────────────────────────────
 
 fn sampleTile(uv: vec2f, level: f32) -> vec3f {
-    let tileW = 0.2;
+    let tileW = 1.0 / 6.0;  // atlas has 6 horizontal tiles
     let au = level * tileW + fract(uv.x) * tileW;
     let tex = textureSampleLevel(terrainAtlas, samp, vec2f(au, fract(uv.y)), 0.0).rgb;
     let brightness = tex.r + tex.g + tex.b;
@@ -79,7 +87,7 @@ fn triplanarTile(wp: vec3f, N: vec3f, level: f32) -> vec3f {
 // ── Water (OpenGL-Water style: DuDv distortion + normal map) ──────
 
 fn waterShader(wp: vec3f, N: vec3f, V: vec3f, L: vec3f) -> vec3f {
-    let t = u.time;
+    let t = u.params.x;
     let tiling = 6.0;
 
     // Triplanar UV for sphere
@@ -175,8 +183,12 @@ fn fs_main(
     let wallCurve = 0.55 + NdotL * 0.25;
     let lambert = mix(topCurve, wallCurve, wallness);
 
+    // Wave-water shader is gated on the per-planet OceanLevel0 flag — only
+    // Earth has actual liquid water at level 0; Mars/Venus/Moon level 0 is
+    // solid ground (canyon/lowland/crater), Glacius level 0 is frozen ocean
+    // ice. All those sample the atlas like any other tier.
     var lit: vec3f;
-    if (level < 0.5) {
+    if (level < 0.5 && u.params.y > 0.5) {
         lit = waterShader(worldPos, N, V, L);
     } else {
         lit = terrainBase * lambert;

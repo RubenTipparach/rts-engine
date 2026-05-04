@@ -5,6 +5,9 @@ stepHeight: 0.05
 
 terrain:
   atlasUrl: textures/mars/terrain_atlas.png
+  # 6 levels: canyon, dust, plains, mesa, basalt, ice_cap.
+  # No water — Mars's basin is dry canyon floor.
+  oceanLevel0: false
   levels:
     - name: canyon
       color: [0.36, 0.15, 0.10]
@@ -12,6 +15,8 @@ terrain:
       color: [0.72, 0.36, 0.18]
     - name: plains
       color: [0.78, 0.48, 0.28]
+    - name: mesa
+      color: [0.65, 0.32, 0.20]
     - name: basalt
       color: [0.32, 0.25, 0.22]
     - name: ice_cap
@@ -24,7 +29,7 @@ water:
 generation:
   seed: 1337
   frequency: 2.8
-  thresholds: [0.20, 0.42, 0.68, 0.88]
+  thresholds: [0.20, 0.35, 0.50, 0.68, 0.85]
 
 atmosphere:
   innerRadiusMul: 0.92

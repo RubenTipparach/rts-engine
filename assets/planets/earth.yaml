@@ -7,8 +7,10 @@ stepHeight: 0.04
 
 terrain:
   atlasUrl: textures/terrain_atlas.png
-  # Ordered by elevation. Index = cliff level in the mesh.
-  # Color is the fallback shown if the atlas fails to load.
+  # 6 levels: 1 water + 1 sand + 2 grass + 1 rock + 1 snow.
+  # Index = cliff level in the mesh; color is the fallback shown if the
+  # atlas fails to load.
+  oceanLevel0: true
   levels:
     - name: water
       color: [0.15, 0.35, 0.75]
@@ -16,6 +18,8 @@ terrain:
       color: [0.90, 0.80, 0.55]
     - name: grass
       color: [0.30, 0.65, 0.25]
+    - name: grass_dry
+      color: [0.55, 0.65, 0.30]
     - name: rock
       color: [0.55, 0.55, 0.55]
     - name: snow
@@ -28,13 +32,14 @@ water:
 generation:
   seed: 42
   frequency: 2.5
-  # Four thresholds separating the five levels (applied to normalized noise ∈ [0,1]):
-  #   n < t0 → water      (ocean)
-  #   n < t1 → sand       (beach)
-  #   n < t2 → grass      (lowland)
-  #   n < t3 → rock       (highland)
-  #   else   → snow       (peak)
-  thresholds: [0.30, 0.45, 0.65, 0.82]
+  # Five thresholds separating the six levels (noise ∈ [0,1]):
+  #   n < t0 → water       (ocean — t0 high so most of Earth is sea)
+  #   n < t1 → sand        (beach band, narrow)
+  #   n < t2 → grass       (lowland meadow)
+  #   n < t3 → grass_dry   (savanna highlands)
+  #   n < t4 → rock
+  #   else   → snow
+  thresholds: [0.45, 0.52, 0.65, 0.78, 0.88]
 
 atmosphere:
   innerRadiusMul: 0.92

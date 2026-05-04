@@ -446,10 +446,13 @@ public sealed class PlanetEditMode : IEditorMode
     }
 
     /// <summary>Right-click handler: distribute selected units across arrival
-    /// cells around the click target. Up to <c>UnitArrival.PerCellCapacity</c>
-    /// units pack into the same hex (each landing on its own sub-slot anchor
-    /// inside the cell) before BFS spills the rest to neighboring cells.
-    /// Keeps groups tight at the destination instead of fanning out.</summary>
+    /// cells around the click target. Each unit type's PerCellCapacity sets
+    /// how many fit per hex; the moving group packs at the most-restrictive
+    /// member's capacity (so a mixed marine+tank order packs at vehicle
+    /// density). Existing units already standing at a destination cell are
+    /// counted, and the new arrivals start at the first un-taken sub-slot
+    /// so reinforcements don't snap onto the same anchor as the units
+    /// already there.</summary>
     private void HandleMoveCommand(float canvasX, float canvasY)
     {
         if (_rtsConfig == null) return;
@@ -464,27 +467,27 @@ public sealed class PlanetEditMode : IEditorMode
             .ToList();
         if (movingUnits.Count == 0) return;
 
-        int capacity = Math.Max(1, _engineConfig.UnitArrival.PerCellCapacity);
-        var slots = PickArrivalSlots(planet.Mesh, targetCell.Value, movingUnits.Count, capacity);
+        // Group capacity = MIN over the moving units' per-type caps. A pure
+        // infantry order packs 8/cell; a mixed group with one tank drops
+        // to vehicle density (4/cell) so the tank has room.
+        int capacity = movingUnits.Min(u => _rtsConfig.GetUnit(u.TypeId)?.PerCellCapacity ?? 4);
+        capacity = Math.Max(1, capacity);
+
+        var movingIds = new HashSet<int>(movingUnits.Select(u => u.InstanceId));
+        var slots = PickArrivalSlots(planet.Mesh, targetCell.Value,
+            movingUnits.Count, capacity, movingIds);
         if (slots.Count == 0) return;
 
-        // Greedy nearest-unit assignment, with sub-slot offsets for repeated
-        // cells. PickArrivalSlots emits each cell up to <capacity> consecutive
-        // times; we re-derive the sub-slot index by counting consecutive
-        // occurrences of the same cell. Each unit's anchor is the cell
-        // center plus a tangent-plane offset scaled by the unit's own
-        // halfwidth, so a tank in slot 1 packs further from center than a
-        // marine in slot 1 — neither type overlaps itself.
+        // Greedy nearest-unit assignment per slot. The sub-slot index in
+        // each (cell, subSlot) pair is already chosen by PickArrivalSlots
+        // to skip occupied positions; ComputeArrivalAnchor turns it into a
+        // world-space anchor on a ring sized by the group capacity.
         var pool = new List<SpawnedUnit>(movingUnits);
-        int prevCell = -1;
-        int subSlot = 0;
-        foreach (var slot in slots)
+        foreach (var (cell, subSlot) in slots)
         {
             if (pool.Count == 0) break;
-            if (slot != prevCell) { subSlot = 0; prevCell = slot; }
-            else subSlot++;
 
-            var slotPos = planet.Mesh.GetCellCenter(slot);
+            var slotPos = planet.Mesh.GetCellCenter(cell);
             int bestIdx = 0;
             float bestDist = Vector3.DistanceSquared(pool[0].SurfacePoint, slotPos);
             for (int i = 1; i < pool.Count; i++)
@@ -496,7 +499,8 @@ public sealed class PlanetEditMode : IEditorMode
             pool.RemoveAt(bestIdx);
 
             var def = _rtsConfig.GetUnit(unit.TypeId)!;
-            var rawPath = Pathfinding.FindPath(planet.Mesh, unit.CellIndex, slot, def.CanHop);
+            bool slopes = _engineConfig.UnitMovement.SlopesTraversable;
+            var rawPath = Pathfinding.FindPath(planet.Mesh, unit.CellIndex, cell, def.CanHop, slopes);
             if (rawPath == null) continue;
             // Any-angle string-pull on the cell-graph A* output. In open
             // ground this collapses to [start, goal], so units trace a
@@ -504,24 +508,25 @@ public sealed class PlanetEditMode : IEditorMode
             // ORCA still resolves contention with other units, and the
             // raw cell sequence reappears only where terrain forces a
             // detour around an obstacle.
-            var path = Pathfinding.SmoothPath(planet.Mesh, rawPath, def.CanHop);
+            var path = Pathfinding.SmoothPath(planet.Mesh, rawPath, def.CanHop, slopes);
             unit.Path = path;
             unit.PathIndex = path.Count > 0 && path[0] == unit.CellIndex ? 1 : 0;
-            unit.FinalArrivalPos = ComputeArrivalAnchor(planet.Mesh, slot, subSlot, def.HalfWidth);
+            unit.FinalArrivalPos = ComputeArrivalAnchor(planet.Mesh, cell, subSlot, capacity, def.HalfWidth);
         }
     }
 
-    /// <summary>BFS outward from <paramref name="target"/> producing arrival
-    /// slots, packing up to <paramref name="capacity"/> entries per cell so
-    /// groups stay tight on the destination hex. Cells with buildings on
-    /// them are skipped (units can't share a hex with a structure) but
-    /// their neighbors are still visited so the expansion routes around
-    /// obstacles. Same cell appears <paramref name="capacity"/> times in a
-    /// row before BFS moves outward — the consecutive run is what
-    /// HandleMoveCommand uses to assign sub-slot indices.</summary>
-    private List<int> PickArrivalSlots(PlanetMesh mesh, int target, int count, int capacity)
+    /// <summary>BFS outward from <paramref name="target"/> producing
+    /// (cell, sub-slot) arrival slots. Each cell can hold up to
+    /// <paramref name="capacity"/> units total — pre-existing units that
+    /// aren't part of the moving group occupy the low sub-slot indices,
+    /// new arrivals fill the next contiguous indices, and BFS spills to
+    /// neighbors once a cell is full. Cells with buildings on them are
+    /// skipped (units can't share a hex with a structure) but their
+    /// neighbors are still visited so the expansion routes around them.</summary>
+    private List<(int Cell, int SubSlot)> PickArrivalSlots(PlanetMesh mesh, int target,
+        int count, int capacity, HashSet<int> movingIds)
     {
-        var slots = new List<int>(count);
+        var slots = new List<(int, int)>(count);
         var visited = new HashSet<int> { target };
         var queue = new Queue<int>();
         queue.Enqueue(target);
@@ -530,8 +535,10 @@ public sealed class PlanetEditMode : IEditorMode
             int c = queue.Dequeue();
             if (_state.BuildingAtCell(c) == null)
             {
-                int packs = Math.Min(capacity, count - slots.Count);
-                for (int i = 0; i < packs; i++) slots.Add(c);
+                int existing = CountResidentsAt(c, movingIds);
+                int free = Math.Max(0, capacity - existing);
+                int packs = Math.Min(free, count - slots.Count);
+                for (int i = 0; i < packs; i++) slots.Add((c, existing + i));
             }
             foreach (var n in mesh.GetNeighbors(c))
                 if (visited.Add(n)) queue.Enqueue(n);
@@ -539,37 +546,51 @@ public sealed class PlanetEditMode : IEditorMode
         return slots;
     }
 
-    /// <summary>2×2 packing pattern in the cell's tangent plane. Anchor 0
-    /// lands at NE of cell center, then NW, SW, SE; anything past index 3
-    /// stacks at the cell center (caller is expected to have used capacity
-    /// ≤ 4, so this is just a safety fallback).</summary>
-    private static readonly (float u, float v)[] _subSlotOffsets =
+    /// <summary>Count units presently sitting at <paramref name="cell"/>
+    /// that are NOT part of the current move order. The result is treated
+    /// as the number of low-index sub-slots already taken — an
+    /// approximation, since we don't track each unit's actual sub-slot,
+    /// but a useful one because new arrivals get the next contiguous
+    /// indices and so end up at distinct ring angles from the residents.
+    /// MovementSystem's live cell tracker keeps CellIndex accurate even
+    /// when units have drifted under ORCA contention.</summary>
+    private int CountResidentsAt(int cell, HashSet<int> movingIds)
     {
-        ( 1f,  1f), (-1f,  1f), (-1f, -1f), ( 1f, -1f),
-    };
+        int n = 0;
+        foreach (var u in _state.Units)
+            if (u.CellIndex == cell && !movingIds.Contains(u.InstanceId)) n++;
+        return n;
+    }
 
-    /// <summary>World-space arrival anchor for a unit packing into a hex at
-    /// <paramref name="subSlotIndex"/>. The 2×2 offsets are scaled by the
-    /// unit's halfwidth × the configured spacing multiplier and projected
-    /// onto the cell's tangent plane via an arbitrary stable basis (an
-    /// out-of-plane tangent — the basis choice doesn't affect packing
-    /// quality, only the slot ordering's screen-orientation).</summary>
-    private Vector3 ComputeArrivalAnchor(PlanetMesh mesh, int cell, int subSlotIndex, float halfWidth)
+    /// <summary>World-space arrival anchor for a unit packing into a hex
+    /// at <paramref name="subSlotIndex"/> on a ring sized for
+    /// <paramref name="capacity"/> total units. The ring radius scales
+    /// with capacity so adjacent anchors stay at least
+    /// (halfwidth × spacingMultiplier) apart along the chord — capacity-4
+    /// rings are tight, capacity-8 rings widen out to keep that minimum
+    /// chord. A small angular phase keeps the pattern from aligning with
+    /// the cell's hex edges. Tangent basis is an arbitrary stable choice;
+    /// the basis only affects which screen direction is "slot 0," not the
+    /// packing quality.</summary>
+    private Vector3 ComputeArrivalAnchor(PlanetMesh mesh, int cell, int subSlotIndex,
+        int capacity, float halfWidth)
     {
         Vector3 up = mesh.GetCellCenter(cell);
         Vector3 cellPos = up * (mesh.Radius + mesh.GetLevel(cell) * mesh.StepHeight + 0.002f);
-        if (subSlotIndex < 0 || subSlotIndex >= _subSlotOffsets.Length) return cellPos;
+        if (capacity <= 0 || subSlotIndex < 0) return cellPos;
 
-        // Tangent basis at the cell — any in-plane axes work for placement.
         Vector3 worldUp = new(0, 1, 0);
         Vector3 right = Vector3.Cross(worldUp, up);
         if (right.LengthSquared() < 1e-5f) right = new Vector3(1, 0, 0);
         right = Vector3.Normalize(right);
         Vector3 fwd = Vector3.Normalize(Vector3.Cross(up, right));
 
-        var (u, v) = _subSlotOffsets[subSlotIndex];
+        // chord = 2R sin(π/N); want chord ≥ spacing → R ≥ spacing/sin(π/N).
         float spacing = halfWidth * mesh.Radius * _engineConfig.UnitArrival.SlotSpacingMultiplier;
-        return cellPos + (right * u + fwd * v) * spacing;
+        float ringR = spacing / MathF.Max(1e-3f, MathF.Sin(MathF.PI / capacity));
+        float angle = (subSlotIndex + 0.5f) * MathF.Tau / capacity;
+        float dx = MathF.Cos(angle), dy = MathF.Sin(angle);
+        return cellPos + (right * dx + fwd * dy) * ringR;
     }
 
     /// <summary>Replace (don't append to) the multi-select set with every unit
