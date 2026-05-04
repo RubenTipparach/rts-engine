@@ -87,10 +87,10 @@ public class GameEngine
         // Per-mode HUD events (build/produce/cancel/context/edit) are handled
         // inside the mode that uses them.
         _hud.BackSolarClicked += SwitchToSolarSystem;
-        // Water toggle is also cross-cutting — it affects the planet mesh
-        // (level-0 cells emit/skip the water surface fan) regardless of
-        // which mode we're in.
+        // Water and planet toggles are also cross-cutting — they're render
+        // flags on the active planet, regardless of which mode we're in.
         _hud.WaterToggled += OnWaterToggled;
+        _hud.PlanetToggled += OnPlanetToggled;
     }
 
     /// <summary>HUD's 🌊 Water button flipped. Just sets the renderer's
@@ -101,6 +101,17 @@ public class GameEngine
     {
         if (_planet == null) return;
         _planet.WaterVisible = _hud.WaterOn;
+    }
+
+    /// <summary>HUD's 🌍 Planet button flipped. Hide/show the terrain
+    /// patches; combined with WaterVisible the player can see the water
+    /// sphere on its own. PlanetRenderer's RenderPatch helper handles
+    /// the case where the water sphere becomes the first-rendered thing
+    /// this frame (it does the clear/overlay instead of the terrain).</summary>
+    private void OnPlanetToggled()
+    {
+        if (_planet == null) return;
+        _planet.PlanetVisible = _hud.PlanetOn;
     }
 
     private void WireModes()

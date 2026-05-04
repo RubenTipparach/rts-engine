@@ -33,9 +33,15 @@ public sealed class EngineHud
     /// listens to <see cref="WaterToggled"/> and rebuilds the planet mesh.</summary>
     public bool WaterOn { get; private set; } = true;
 
+    /// <summary>Planet-on toggle — true means the terrain patches render.
+    /// Defaults to true. Toggled by the "🌍 Planet" button; flip lets the
+    /// player see the water sphere by itself with the planet hidden.</summary>
+    public bool PlanetOn { get; private set; } = true;
+
     public event Action? BackSolarClicked;
     public event Action? EditToggled;
     public event Action? WaterToggled;
+    public event Action? PlanetToggled;
     public event Action<string>? BuildPlacementClicked;
     public event Action? PlacementCancelClicked;
     public event Action<string>? ProduceUnitClicked;
@@ -75,6 +81,7 @@ public sealed class EngineHud
         _app.CreateUIButton("back_solar", "⬅ Solar System", css);
         _app.CreateUIButton("edit_toggle", "✏ Edit", editCss);
         _app.CreateUIButton("water_toggle", "🌊 Water", WaterButtonCss(WaterOn));
+        _app.CreateUIButton("planet_toggle", "🌍 Planet", PlanetButtonCss(PlanetOn));
 
         // RTS build bar — one button per building type, laid out along the
         // bottom edge. Produce buttons (per selected building) and the
@@ -113,6 +120,7 @@ public sealed class EngineHud
         _app.ShowUIButton("back_solar", inPlanet);
         _app.ShowUIButton("edit_toggle", inPlanet);
         _app.ShowUIButton("water_toggle", inPlanet);
+        _app.ShowUIButton("planet_toggle", inPlanet);
         UpdateRtsButtonVisibility(inPlanet);
         UpdateZoomIndicator(inPlanet);
     }
@@ -221,6 +229,13 @@ public sealed class EngineHud
                 WaterButtonCss(WaterOn));
             WaterToggled?.Invoke();
         }
+        else if (id == "planet_toggle")
+        {
+            PlanetOn = !PlanetOn;
+            _app.CreateUIButton("planet_toggle", PlanetOn ? "🌍 Planet" : "🌍 Planet (off)",
+                PlanetButtonCss(PlanetOn));
+            PlanetToggled?.Invoke();
+        }
         else if (id == "cancel_placement") PlacementCancelClicked?.Invoke();
         else if (id.StartsWith("build_") && _rtsConfig != null)
             BuildPlacementClicked?.Invoke(id.Substring("build_".Length));
@@ -310,6 +325,24 @@ public sealed class EngineHud
         var col = on ? "#7df" : "#999";
         var border = on ? "#7df" : "#555";
         return @"{""top"":""10px"",""left"":""300px""," +
+               @"""padding"":""10px 20px"",""fontSize"":""16px""," +
+               @"""background"":""" + bg + @"""," +
+               @"""color"":""" + col + @"""," +
+               @"""border"":""1px solid " + border + @"""," +
+               @"""borderRadius"":""6px""," +
+               @"""cursor"":""pointer"",""display"":""none""," +
+               @"""fontFamily"":""monospace""}";
+    }
+
+    /// <summary>CSS for the 🌍 Planet button — sits to the right of the
+    /// Water button. Tinted green when the planet is rendering, dim grey
+    /// when hidden, so the player can see the water sphere by itself.</summary>
+    private static string PlanetButtonCss(bool on)
+    {
+        var bg = on ? "rgba(20,60,30,0.9)" : "rgba(30,30,30,0.85)";
+        var col = on ? "#9f6" : "#999";
+        var border = on ? "#9f6" : "#555";
+        return @"{""top"":""10px"",""left"":""440px""," +
                @"""padding"":""10px 20px"",""fontSize"":""16px""," +
                @"""background"":""" + bg + @"""," +
                @"""color"":""" + col + @"""," +
