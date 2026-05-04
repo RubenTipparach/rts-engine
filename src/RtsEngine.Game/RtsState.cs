@@ -124,6 +124,14 @@ public sealed class SpawnedUnit
     /// the next cell to step toward.</summary>
     public List<int>? Path { get; set; }
     public int PathIndex { get; set; }
+
+    /// <summary>Optional sub-cell anchor for the final waypoint, in world
+    /// coordinates. When set, the unit aims at this exact point on its last
+    /// path step instead of the destination cell's geometric center —
+    /// that's how multi-unit move orders pack several units into one hex
+    /// (each gets a different anchor inside the same cell). Null = use the
+    /// cell center as before.</summary>
+    public Vector3? FinalArrivalPos { get; set; }
     /// <summary>Heading vector along the surface (tangent), used by the
     /// renderer to face the unit's model toward its next step.</summary>
     public Vector3 Heading { get; set; }

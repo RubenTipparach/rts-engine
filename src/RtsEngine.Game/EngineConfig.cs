@@ -13,6 +13,8 @@ public sealed class EngineConfig
     public RtsCameraConfig RtsCamera { get; set; } = new();
     public SlopeConfig Slopes { get; set; } = new();
     public ChamferConfig Terrain { get; set; } = new();
+    public UnitArrivalConfig UnitArrival { get; set; } = new();
+    public UnitMovementConfig UnitMovement { get; set; } = new();
     public DebugConfig Debug { get; set; } = new();
 
     public static EngineConfig FromYaml(string yaml)
@@ -150,6 +152,49 @@ public sealed class RtsCameraConfig
     /// motion without explicit easing curves; rate 12 = ~98% of the way in
     /// 0.3 seconds.</summary>
     public float ZoomLerpRate { get; set; } = 12.0f;
+}
+
+/// <summary>
+/// Move-order packing. When several units are ordered to the same destination
+/// cell we pack up to <see cref="PerCellCapacity"/> of them into that cell
+/// using sub-slot offsets in the cell's tangent plane, then spill the rest
+/// into BFS-adjacent cells. Keeps groups tight instead of spreading every
+/// unit onto its own hex.
+/// </summary>
+public sealed class UnitArrivalConfig
+{
+    /// <summary>Max units that share one destination cell before BFS moves
+    /// to the next cell. 4 fits comfortably for current unit/cell sizing
+    /// (units ~ ¼ of a cell across).</summary>
+    public int PerCellCapacity { get; set; } = 4;
+
+    /// <summary>Distance from cell center to each sub-slot anchor, expressed
+    /// in unit-halfwidth multiples. 1.5 leaves enough breathing room that
+    /// arrived units don't immediately re-collide under ORCA jitter.</summary>
+    public float SlotSpacingMultiplier { get; set; } = 1.5f;
+}
+
+/// <summary>
+/// Per-tick unit movement tuning. The pathfinder picks which cells a unit
+/// crosses; this controls how its position resolves against the terrain
+/// underneath as it moves through them.
+/// </summary>
+public sealed class UnitMovementConfig
+{
+    /// <summary>Per-second exponential rate at which a unit's altitude
+    /// chases the surface height of the cell it's currently over. Higher =
+    /// snappier altitude response (units stick to the ground tightly across
+    /// slopes); lower = floatier (units take longer to settle to a new
+    /// elevation). 20 ≈ ~95% convergence in 0.15 s, which reads as "walking
+    /// up a ramp" rather than "snapping to each step."</summary>
+    public float AltitudeLerpRate { get; set; } = 20f;
+
+    /// <summary>Whether ground units may walk up slope cells to reach a
+    /// higher elevation band. Off pins every unit to its starting band
+    /// unless it's canHop-capable (infantry can still step a single level).
+    /// Off by default while slope geometry/AI is being reworked; flip on
+    /// in engine.yaml once slopes are ready to ship.</summary>
+    public bool SlopesTraversable { get; set; } = false;
 }
 
 /// <summary>

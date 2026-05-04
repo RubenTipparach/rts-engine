@@ -54,7 +54,8 @@ public static class MovementSystem
     private static Vector3[] _scratchChosenVel = System.Array.Empty<Vector3>();
     private static List<Orca.Line> _scratchLines = new();
 
-    public static void Tick(RtsState state, PlanetMesh mesh, RtsConfig config, float dt)
+    public static void Tick(RtsState state, PlanetMesh mesh, RtsConfig config,
+        EngineConfig engineConfig, float dt)
     {
         if (dt <= 0f) return;
 
@@ -81,12 +82,13 @@ public static class MovementSystem
             chosenVel[i] = SolveOrcaForUnit(i, units, mesh, config, dt, prefVel);
         }
 
-        // Pass 3: integrate. Apply each unit's chosen velocity, re-snap to
-        // surface, advance the path index when we reach a waypoint, and
-        // store the velocity for the next tick's neighbors to read.
+        // Pass 3: integrate. Apply each unit's chosen velocity, track which
+        // cell the unit is now over, chase that cell's surface height for
+        // smooth slope traversal, and advance the path index when a
+        // waypoint is reached.
         for (int i = 0; i < n; i++)
         {
-            IntegrateUnit(units[i], chosenVel[i], mesh, config, dt);
+            IntegrateUnit(units[i], chosenVel[i], mesh, config, engineConfig, dt);
         }
     }
 
@@ -105,9 +107,20 @@ public static class MovementSystem
         if (def == null) return Vector3.Zero;
 
         int targetCell = path[u.PathIndex];
-        Vector3 targetCenter = mesh.GetCellCenter(targetCell);
-        float targetH = mesh.GetCenterHeight(targetCell) + 0.002f;
-        Vector3 targetPos = targetCenter * targetH;
+        // Last waypoint with a sub-cell anchor: aim at the anchor exactly so
+        // multi-unit orders pack into one hex without piling onto the same
+        // point. Earlier waypoints always use the cell center.
+        Vector3 targetPos;
+        if (u.PathIndex == path.Count - 1 && u.FinalArrivalPos.HasValue)
+        {
+            targetPos = u.FinalArrivalPos.Value;
+        }
+        else
+        {
+            Vector3 targetCenter = mesh.GetCellCenter(targetCell);
+            float targetH = mesh.GetCenterHeight(targetCell) + 0.002f;
+            targetPos = targetCenter * targetH;
+        }
 
         Vector3 toTarget = targetPos - u.SurfacePoint;
         float dist = toTarget.Length();
@@ -208,7 +221,7 @@ public static class MovementSystem
     /// distance threshold; the path is advanced but never cleared (debug
     /// viz keeps showing the route after arrival).</summary>
     private static void IntegrateUnit(SpawnedUnit unit, Vector3 vel,
-        PlanetMesh mesh, RtsConfig config, float dt)
+        PlanetMesh mesh, RtsConfig config, EngineConfig engineConfig, float dt)
     {
         // Always store the velocity (even zero) so neighbors see fresh data.
         unit.Velocity = vel;
@@ -217,7 +230,8 @@ public static class MovementSystem
         {
             // Move along the chosen velocity, then re-snap to surface so the
             // tangent-plane integration doesn't drift the unit into the
-            // sphere. Radius preserved across the step.
+            // sphere. Radius preserved across the step — altitude follows
+            // the terrain in the dedicated pass below, not here.
             float r = unit.SurfacePoint.Length();
             var moved = unit.SurfacePoint + vel * dt;
             unit.SurfacePoint = Vector3.Normalize(moved) * r;
@@ -228,6 +242,31 @@ public static class MovementSystem
             unit.Heading = Vector3.Normalize(vel);
         }
 
+        // Track which cell the unit is currently over. Without this the
+        // unit's CellIndex stays whatever the last waypoint set it to, so
+        // altitude tracking (next step) and any-angle paths spanning many
+        // cells would never see the intermediate terrain. Hill-climbing
+        // from the previous CellIndex is cheap because per-tick motion is
+        // small relative to cell size — the loop converges in ≤ 1-2 hops.
+        unit.CellIndex = HillClimbToNearestCell(mesh, unit.CellIndex, unit.SurfacePoint);
+
+        // Altitude follow: chase the current cell's surface height with an
+        // exponential lerp. Slopes give a smooth ramp because GetCenterHeight
+        // returns the slope's midpoint and the cell pointer transitions
+        // through low-side → slope → high-side cells as the unit walks
+        // across them. Non-slope level changes (canHop one-step jumps) ease
+        // in the same way rather than snapping. Out-of-band cliffs aren't a
+        // concern because pathfinding never routes over them.
+        float targetR = mesh.GetCenterHeight(unit.CellIndex) + 0.002f;
+        float currentR = unit.SurfacePoint.Length();
+        if (MathF.Abs(targetR - currentR) > 1e-6f)
+        {
+            float alpha = 1f - MathF.Exp(-engineConfig.UnitMovement.AltitudeLerpRate * dt);
+            float newR = currentR + (targetR - currentR) * alpha;
+            unit.SurfacePoint = Vector3.Normalize(unit.SurfacePoint) * newR;
+            unit.SurfaceUp = Vector3.Normalize(unit.SurfacePoint);
+        }
+
         // Path arrival check. Use a generous epsilon so a unit slowed by
         // avoidance still registers arrival when it's "close enough" to
         // the waypoint center. Otherwise tight-clump destinations would
@@ -236,9 +275,19 @@ public static class MovementSystem
         if (path == null || unit.PathIndex >= path.Count) return;
 
         int targetCell = path[unit.PathIndex];
-        Vector3 targetCenter = mesh.GetCellCenter(targetCell);
-        float targetH = mesh.GetCenterHeight(targetCell) + 0.002f;
-        Vector3 targetPos = targetCenter * targetH;
+        // Mirror the targeting choice from ComputePreferredVelocity so the
+        // arrival snap lands where the preferred-velocity step was steering.
+        Vector3 targetPos;
+        if (unit.PathIndex == path.Count - 1 && unit.FinalArrivalPos.HasValue)
+        {
+            targetPos = unit.FinalArrivalPos.Value;
+        }
+        else
+        {
+            Vector3 targetCenter = mesh.GetCellCenter(targetCell);
+            float targetH = mesh.GetCenterHeight(targetCell) + 0.002f;
+            targetPos = targetCenter * targetH;
+        }
 
         var def = config.GetUnit(unit.TypeId);
         // Arrival threshold: half a unit halfWidth — once this close to the
@@ -250,12 +299,43 @@ public static class MovementSystem
         {
             unit.SurfacePoint = targetPos;
             unit.SurfaceUp = Vector3.Normalize(targetPos);
-            unit.CellIndex = targetCell;
+            // CellIndex is already maintained by the live hill-climb pass
+            // above; no need to reassert it here.
             unit.PathIndex++;
             // Reaching the final waypoint leaves Path on the unit so the
             // path-debug viz can still show the route. PathIndex == Count
             // is the "no more steps" signal the rest of the system reads.
         }
+    }
+
+    /// <summary>Walk the cell graph from <paramref name="start"/> to the cell
+    /// whose center is closest to <paramref name="pos"/>, projected onto the
+    /// unit sphere. Each iteration moves to a strictly-closer neighbor; the
+    /// search terminates as soon as no neighbor improves on the current
+    /// candidate. Per-tick motion is much smaller than a cell so this
+    /// resolves in 0-1 hops in steady state.</summary>
+    private static int HillClimbToNearestCell(PlanetMesh mesh, int start, Vector3 pos)
+    {
+        if (start < 0) return start;
+        var posUnit = pos.LengthSquared() > 1e-12f ? Vector3.Normalize(pos) : pos;
+        int current = start;
+        float bestDist = Vector3.DistanceSquared(mesh.GetCellCenter(current), posUnit);
+        // Loose safety bound — converges in O(cells crossed this tick).
+        int safety = 16;
+        while (safety-- > 0)
+        {
+            int better = -1;
+            float betterDist = bestDist;
+            foreach (int n in mesh.GetNeighbors(current))
+            {
+                float d = Vector3.DistanceSquared(mesh.GetCellCenter(n), posUnit);
+                if (d < betterDist) { betterDist = d; better = n; }
+            }
+            if (better < 0) return current;
+            current = better;
+            bestDist = betterDist;
+        }
+        return current;
     }
 
     // ── Helpers ───────────────────────────────────────────────────────

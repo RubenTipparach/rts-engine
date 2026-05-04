@@ -70,7 +70,7 @@ public class GameEngine
             () => _planet.Mesh.Radius, () => Mode, () => _transition.IsActive);
 
         _planetEditMode = new PlanetEditMode(_app, _camera, _picker, _hud,
-            _state, _rtsConfig, _rts, _solarSystem,
+            _state, _rtsConfig, _rts, _solarSystem, _config,
             () => _planet, () => SelectedPlanetConfig,
             () => Mode == EditorMode.PlanetEdit && !_transition.IsActive);
         if (_solarSystem != null) _solarSystemMode = new SolarSystemMode(_app, _solarSystem);
