@@ -39,8 +39,14 @@ public sealed class RtsRenderer : IDisposable
     private readonly Dictionary<string, Vector3> _buildingColors = new();
     private readonly Dictionary<string, Vector3> _unitColors = new();
     /// <summary>One bind group per entity type (UBO + sampler + texture).
-    /// Looked up at draw time so each instance samples its own surface texture.</summary>
+    /// Looked up at draw time so each instance samples its own surface texture.
+    /// Bound against <see cref="_pipeline"/>'s auto-layout.</summary>
     private readonly Dictionary<string, int> _bindGroups = new();
+    /// <summary>Parallel set bound against <see cref="_markerPipeline"/>.
+    /// Two `layout: 'auto'` pipelines produce incompatible bind group layouts
+    /// even with identical bindings, so marker-pipeline draws (selection disc,
+    /// move-destination marker, placement ghost) need their own bind groups.</summary>
+    private readonly Dictionary<string, int> _markerBindGroups = new();
 
     /// <summary>
     /// Map team id → livery color. Index 0 is the local player; everything
@@ -138,20 +144,24 @@ public sealed class RtsRenderer : IDisposable
         {
             _buildingMeshes[b.Id] = await BuildMesh(b.Id, objs, b.HalfWidth, b.Height);
             _buildingColors[b.Id] = ColorOf(b.Color);
-            _bindGroups[b.Id] = await BuildBindGroup(b.Id);
+            int tex = await LoadSurfaceTexture(b.Id);
+            _bindGroups[b.Id] = await BuildBindGroup(_pipeline, tex);
+            _markerBindGroups[b.Id] = await BuildBindGroup(_markerPipeline, tex);
         }
         foreach (var u in _config.Units)
         {
             _unitMeshes[u.Id] = await BuildMesh(u.Id, objs, u.HalfWidth, u.Height);
             _unitColors[u.Id] = ColorOf(u.Color);
-            _bindGroups[u.Id] = await BuildBindGroup(u.Id);
+            int tex = await LoadSurfaceTexture(u.Id);
+            _bindGroups[u.Id] = await BuildBindGroup(_pipeline, tex);
+            _markerBindGroups[u.Id] = await BuildBindGroup(_markerPipeline, tex);
         }
 
-        // Markers (selection disc, future build ghost) sample the texture too
-        // — the result is mixed away by sunDir.w=1 in the fragment shader, but
-        // the binding still has to be valid. Reuse any entity's bind group;
-        // the first building works fine.
-        _markerBindGroup = _bindGroups.Values.FirstOrDefault();
+        // Markers (selection disc, move-destination marker) sample whichever
+        // entity texture is handy — the result is mixed away by sunDir.w=1
+        // in the fragment shader, but the binding still has to be valid AND
+        // compatible with _markerPipeline's layout.
+        _markerBindGroup = _markerBindGroups.Values.FirstOrDefault();
 
         // Screen-space HP bar pass. ui.wgsl takes vec2 NDC + vec4 color, no
         // uniforms. Vertex buffer is allocated once at MaxHpBars capacity and
@@ -213,25 +223,27 @@ public sealed class RtsRenderer : IDisposable
         _ready = true;
     }
 
-    /// <summary>
-    /// Per-entity bind group: shared UBO at slot 0, shared sampler at slot 1,
-    /// the entity's surface texture at slot 2. Path matches the rest of the
-    /// engine: WASM serves /assets/textures/ at /textures/ via the csproj
-    /// link, and Desktop's resolver probes the repo-root /assets/ tree.
-    /// </summary>
-    private async Task<int> BuildBindGroup(string entityId)
+    /// <summary>Load the entity's surface texture from
+    /// <c>textures/surfaces/&lt;id&gt;.png</c>. WASM serves /assets/textures/
+    /// at /textures/ via the csproj link; Desktop's resolver probes the
+    /// repo-root /assets/ tree.</summary>
+    private async Task<int> LoadSurfaceTexture(string entityId)
     {
-        var texPath = $"textures/surfaces/{entityId}.png";
-        int tex;
-        try { tex = await _gpu.CreateTextureFromUrl(texPath); }
-        catch { tex = 0; }
-        return await _gpu.CreateBindGroup(_pipeline, 0, new object[]
+        try { return await _gpu.CreateTextureFromUrl($"textures/surfaces/{entityId}.png"); }
+        catch { return 0; }
+    }
+
+    /// <summary>Build a bind group at group 0 (UBO + sampler + texture) for
+    /// the given pipeline. Each `layout: 'auto'` pipeline has its own
+    /// independent layout, so this needs to be called once per (entity,
+    /// pipeline) pair we want to draw with.</summary>
+    private Task<int> BuildBindGroup(int pipelineId, int textureId) =>
+        _gpu.CreateBindGroup(pipelineId, 0, new object[]
         {
             new { binding = 0, bufferId = _ubo },
             new { binding = 1, samplerId = _sampler },
-            new { binding = 2, textureViewId = tex },
+            new { binding = 2, textureViewId = textureId },
         });
-    }
 
     /// <summary>
     /// Try the baked .obj first (canonical artifact under assets/models/),
@@ -716,7 +728,7 @@ public sealed class RtsRenderer : IDisposable
         var typeId = state.PlacementBuildingId;
         if (typeId == null || hoveredCell < 0) return;
         if (!_buildingMeshes.TryGetValue(typeId, out var bm)) return;
-        if (!_bindGroups.TryGetValue(typeId, out var bg)) return;
+        if (!_markerBindGroups.TryGetValue(typeId, out var bg)) return;
 
         var up = mesh.GetCellCenter(hoveredCell);
         float surfaceR = mesh.Radius + mesh.GetLevel(hoveredCell) * mesh.StepHeight;
