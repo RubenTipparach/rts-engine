@@ -516,8 +516,15 @@ public sealed class PlanetMesh
         // appear at cliff borders, never below water.
         if (level == 0 && slope == null)
         {
-            float sandH = Radius - StepHeight;
-            EmitCellFan(verts, idx, cell, sandH, cellNormal, 1);
+            // Seabed: rock at -3 steps below the water surface. Deeper than
+            // before (was sand at -1 step) so the water column has visible
+            // thickness for depth-FX in the water shader (color absorption
+            // by depth, shore foam where the column is shallow). CliffLevel
+            // points at the planet's "rocky" tile (rock/basalt/frozen_rock
+            // depending on the palette), which is the right read for what's
+            // visible through the water — exposed bedrock, not sand.
+            float seabedH = Radius - 3f * StepHeight;
+            EmitCellFan(verts, idx, cell, seabedH, cellNormal, CliffLevel);
             EmitCellFan(verts, idx, cell, h, cellNormal, 0);
         }
         else

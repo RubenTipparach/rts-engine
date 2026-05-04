@@ -33,6 +33,11 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         // Venus, Moon, Glacius all keep this off so their basin tier
         // samples its atlas tile normally.
         _tUni[25] = config.Terrain.OceanLevel0 ? 1f : 0f;
+        // params.z (slot 26) = water column thickness in world units. Water
+        // cells emit a rock seabed at Radius - 3*StepHeight, so this is
+        // 3 * StepHeight. The water shader uses it for depth-based color
+        // absorption and shore foam at shallow areas.
+        _tUni[26] = 3f * config.Terrain.StepHeight;
     }
 
     private readonly IGPU _gpu;

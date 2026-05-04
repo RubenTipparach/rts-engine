@@ -9,6 +9,10 @@ struct Uniforms {
     // params.x = time
     // params.y = oceanLevel0 (1.0 = level 0 uses wave-water shader, 0.0 = level 0
     //            samples atlas like any other tier; only Earth flips this on)
+    // params.z = water column thickness in world units (= 3 * stepHeight). The
+    //            seabed (rock tier) sits this far below the water surface, so
+    //            this is the maximum vertical depth a water-surface fragment
+    //            sees through the water before it hits rock.
     params: vec4f,
 }
 
@@ -125,22 +129,52 @@ fn waterShader(wp: vec3f, N: vec3f, V: vec3f, L: vec3f) -> vec3f {
     // Fresnel — more reflection at grazing angle
     let refractiveFactor = pow(max(dot(V, waveN), 0.0), 0.5);
 
-    // Depth scatter: view-dependent color for seeing "into" the water
-    let viewDepth = max(dot(N, V), 0.0);
-    let shallowColor = vec3f(0.20, 0.50, 0.55);
-    let deepColor = vec3f(0.02, 0.06, 0.15);
-    let refractColor = mix(deepColor, shallowColor, pow(viewDepth, 0.6));
+    // Sample the rock seabed beneath the water at the same world position.
+    // The seabed is on a sphere of radius (R - oceanDepth); its surface
+    // texture tile is CliffLevel = 4 (rock/basalt/etc.). We pretend the
+    // refracted view ray lands at the radial projection of `wp` onto that
+    // sphere — that's a fine approximation for shading colour, since the
+    // foam/depth signal we're computing dominates the visual.
+    let radial = normalize(wp);
+    let oceanDepth = u.params.z;
+    let seabedPoint = radial * (length(wp) - oceanDepth);
+    let seabedColor = triplanarTile(seabedPoint, radial, 4.0);
+
+    // Slab-thickness approximation: from a water surface fragment with
+    // outward normal N, the optical path through the water column to the
+    // seabed is oceanDepth / cos(viewAngleFromN). Clamp the cosine so
+    // grazing-angle pixels get a finite (long) path rather than infinite.
+    let viewCos = max(dot(N, V), 0.08);
+    let pathLen = oceanDepth / viewCos;
+
+    // Beer-Lambert absorption — water selectively absorbs red, then green,
+    // letting blue/cyan dominate the deeper the path. Tuned to roughly
+    // 1/e at one stepHeight of path length, so shallow shore reads warm
+    // and clear, mid-depth reads teal, deep ocean reads near-black blue.
+    let absorption = vec3f(8.0, 2.5, 1.0);
+    let transmittance = exp(-absorption * pathLen);
+    let waterTint = vec3f(0.05, 0.20, 0.32);
+    let throughWater = seabedColor * transmittance + waterTint * (vec3f(1.0) - transmittance);
+
+    // Shore foam — pre-foam mask is 1 where the water column is thinnest
+    // (fragment sits over a near-zero-depth seabed → coastline) and 0
+    // where the water is "open ocean" (path long enough to fully absorb
+    // the seabed). The DuDv-distorted UVs give the foam an animated,
+    // splotchy edge instead of a clean gradient.
+    let depthFoamMask = 1.0 - smoothstep(0.0, oceanDepth * 1.5, pathLen);
+    let foamPattern = textureSampleLevel(waterDuDv, samp, dudvUV2 * 0.5, 0.0).g;
+    let foamShape = smoothstep(0.35, 0.65, foamPattern + depthFoamMask * 0.5);
+    let foam = foamShape * smoothstep(0.0, 1.0, depthFoamMask);
 
     // Reflection: approximated sky gradient
     let R = reflect(-V, waveN);
     let skyGrad = R.y * 0.5 + 0.5;
     let reflectColor = mix(vec3f(0.30, 0.40, 0.50), vec3f(0.50, 0.65, 0.85), skyGrad);
 
-    // Blend refraction and reflection via Fresnel
-    let waterBase = mix(reflectColor, refractColor, refractiveFactor);
-
-    // Tint toward water blue
-    let tinted = mix(waterBase, vec3f(0.0, 0.3, 0.5), 0.2);
+    // Blend the through-water (seabed seen through the column) and the
+    // mirrored sky via Fresnel — head-on view gets refraction-dominant,
+    // grazing gets reflection-dominant.
+    let waterBase = mix(reflectColor, throughWater, refractiveFactor);
 
     // Sun specular on wave surface
     let reflectedLight = reflect(-L, waveN);
@@ -149,7 +183,11 @@ fn waterShader(wp: vec3f, N: vec3f, V: vec3f, L: vec3f) -> vec3f {
 
     // Lambert (gentle)
     let NdotL = max(dot(N, L), 0.0);
-    return tinted * (0.2 + NdotL * 0.4) + specHighlight;
+    let lit = waterBase * (0.4 + NdotL * 0.6) + specHighlight;
+
+    // Foam paints over everything else so the shoreline reads clearly
+    // even at grazing angles where reflection would otherwise dominate.
+    return mix(lit, vec3f(0.95, 0.97, 1.0), foam);
 }
 
 // ── Fragment ──────────────────────────────────────────────────────
