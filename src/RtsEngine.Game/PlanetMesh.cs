@@ -608,11 +608,24 @@ public sealed class PlanetMesh
             Vector3 nA = SmoothNormalAtCorner(cell, pA);
             Vector3 nB = SmoothNormalAtCorner(cell, pB);
 
+            // Per-corner texture: a "real" cliff face (cell sits ABOVE the
+            // neighbor at this corner) uses CliffLevel — the rocky/basalt
+            // tile that reads as a vertical cliff. A "tilt-fill" wall (cell
+            // sits BELOW the neighbor at this corner — only happens on
+            // slope cells where the slope's interp top has dipped below an
+            // adjacent flat neighbor) uses the cell's OWN level instead, so
+            // the wall reads as a soft tilted shoulder of the slope rather
+            // than a vertical cliff strip across what should be a smooth
+            // ramp. Per-corner so a single edge that's a real cliff at one
+            // end and a tilt-fill at the other gets the right texture on
+            // each side.
+            byte aLevel = (topAH > bdyH + 1e-5f) ? CliffLevel : level;
+            byte bLevel = (topBH > bdyH + 1e-5f) ? CliffLevel : level;
             uint b = (uint)(verts.Count / VertexFloats);
-            EmitVert(verts, topA, nA, CliffLevel);
-            EmitVert(verts, topB, nB, CliffLevel);
-            EmitVert(verts, botB, nB, CliffLevel);
-            EmitVert(verts, botA, nA, CliffLevel);
+            EmitVert(verts, topA, nA, aLevel);
+            EmitVert(verts, topB, nB, bLevel);
+            EmitVert(verts, botB, nB, bLevel);
+            EmitVert(verts, botA, nA, aLevel);
 
             idx.Add(b); idx.Add(b + 2); idx.Add(b + 1);
             idx.Add(b); idx.Add(b + 3); idx.Add(b + 2);
