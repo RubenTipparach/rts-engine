@@ -215,14 +215,13 @@ public sealed class RtsRenderer : IDisposable
 
     /// <summary>
     /// Per-entity bind group: shared UBO at slot 0, shared sampler at slot 1,
-    /// the entity's surface texture at slot 2. Texture lookup goes through
-    /// IGPU.CreateTextureFromUrl which on desktop reads from
-    /// assets/textures/surfaces/, on WASM via HttpClient against the same
-    /// path.
+    /// the entity's surface texture at slot 2. Path matches the rest of the
+    /// engine: WASM serves /assets/textures/ at /textures/ via the csproj
+    /// link, and Desktop's resolver probes the repo-root /assets/ tree.
     /// </summary>
     private async Task<int> BuildBindGroup(string entityId)
     {
-        var texPath = $"assets/textures/surfaces/{entityId}.png";
+        var texPath = $"textures/surfaces/{entityId}.png";
         int tex;
         try { tex = await _gpu.CreateTextureFromUrl(texPath); }
         catch { tex = 0; }
