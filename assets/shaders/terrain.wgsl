@@ -148,10 +148,13 @@ fn waterShader(wp: vec3f, N: vec3f, V: vec3f, L: vec3f) -> vec3f {
     let pathLen = oceanDepth / viewCos;
 
     // Beer-Lambert absorption — water selectively absorbs red, then green,
-    // letting blue/cyan dominate the deeper the path. Tuned to roughly
-    // 1/e at one stepHeight of path length, so shallow shore reads warm
-    // and clear, mid-depth reads teal, deep ocean reads near-black blue.
-    let absorption = vec3f(8.0, 2.5, 1.0);
+    // letting blue/cyan dominate the deeper the path. Coefficients are
+    // per-world-unit; tuned for a 0.75 * stepHeight (≈ 0.03) column so red
+    // drops fast (≈ 9% transmittance perpendicular), green moderate, blue
+    // mostly intact. Without this aggressive a falloff the column was so
+    // thin that the seabed showed through ~80% on every channel and the
+    // water read as a transparent window directly onto the rocks.
+    let absorption = vec3f(80.0, 25.0, 10.0);
     let transmittance = exp(-absorption * pathLen);
     let waterTint = vec3f(0.05, 0.20, 0.32);
     let throughWater = seabedColor * transmittance + waterTint * (vec3f(1.0) - transmittance);

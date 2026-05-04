@@ -129,9 +129,11 @@ vec3 waterShader(vec3 wp, vec3 N, vec3 V, vec3 L) {
     float viewCos = max(dot(N, V), 0.08);
     float pathLen = oceanDepth / viewCos;
 
-    // Beer-Lambert absorption: red drops fastest, blue last → the seabed
-    // shows true colour at the shoreline and fades to ocean-blue offshore.
-    vec3 absorption = vec3(8.0, 2.5, 1.0);
+    // Beer-Lambert absorption — coefficients per world unit, tuned for a
+    // 0.75*stepHeight (≈0.03) column. Without this aggressive a falloff
+    // the column is so thin the seabed shows through ~80% on every
+    // channel; high red absorption makes the water read as proper teal.
+    vec3 absorption = vec3(80.0, 25.0, 10.0);
     vec3 transmittance = exp(-absorption * pathLen);
     vec3 waterTint = vec3(0.05, 0.20, 0.32);
     vec3 throughWater = seabedColor * transmittance + waterTint * (vec3(1.0) - transmittance);
