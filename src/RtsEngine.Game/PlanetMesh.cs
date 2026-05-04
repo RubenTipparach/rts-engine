@@ -653,7 +653,13 @@ public sealed class PlanetMesh
         Vector3[] insetDirs, float[] vertHeights, bool[] edgeConvex, byte level)
     {
         int n = _polyVerts[cell].Length;
-        const byte rockLevel = 3;
+        // Bevel ring + seal triangles use the cliff-wall texture so they
+        // visually merge into the cliff face below them. Previously this
+        // was a hardcoded `3` (named "rockLevel"), which on Earth's
+        // 6-tier palette is `grass_dry` — a different tile from the
+        // cliff wall (CliffLevel=4=rock), producing a visible texture
+        // seam at every chamfered edge regardless of geometry alignment.
+        const byte bevelLevel = CliffLevel;
 
         // Per-CONVEX-edge ring quads. Non-convex edges get no geometry —
         // the top fan already runs straight to polyVerts on those sides,
@@ -672,10 +678,10 @@ public sealed class PlanetMesh
             Vector3 nB = SmoothNormalAtCorner(cell, pB);
 
             uint b = (uint)(verts.Count / VertexFloats);
-            EmitVert(verts, innerA, nA, rockLevel);
-            EmitVert(verts, innerB, nB, rockLevel);
-            EmitVert(verts, outerB, nB, rockLevel);
-            EmitVert(verts, outerA, nA, rockLevel);
+            EmitVert(verts, innerA, nA, bevelLevel);
+            EmitVert(verts, innerB, nB, bevelLevel);
+            EmitVert(verts, outerB, nB, bevelLevel);
+            EmitVert(verts, outerA, nA, bevelLevel);
 
             // Two-sided (front + back) so the bevel is visible from any angle.
             idx.Add(b); idx.Add(b + 1); idx.Add(b + 2);
@@ -706,9 +712,9 @@ public sealed class PlanetMesh
             Vector3 nrm = SmoothNormalAtCorner(cell, i);
 
             uint b = (uint)(verts.Count / VertexFloats);
-            EmitVert(verts, inner, nrm, rockLevel);
-            EmitVert(verts, outerNonConvex, nrm, rockLevel);
-            EmitVert(verts, outerConvex, nrm, rockLevel);
+            EmitVert(verts, inner, nrm, bevelLevel);
+            EmitVert(verts, outerNonConvex, nrm, bevelLevel);
+            EmitVert(verts, outerConvex, nrm, bevelLevel);
 
             // Two-sided like the ring quads.
             idx.Add(b); idx.Add(b + 1); idx.Add(b + 2);
