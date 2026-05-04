@@ -33,12 +33,12 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         // Venus, Moon, Glacius all keep this off so their basin tier
         // samples its atlas tile normally.
         _tUni[25] = config.Terrain.OceanLevel0 ? 1f : 0f;
-        // params.z (slot 26) = water column thickness in world units. Water
-        // surface sits at Radius + 0.75 * StepHeight (PlanetMesh.LevelH for
-        // level 0); seabed (rock) sits at Radius - 3 * StepHeight; the
-        // shader uses this delta for depth-based colour absorption and
-        // shore foam.
-        _tUni[26] = 3.75f * config.StepHeight;
+        // params.z (slot 26) = water column thickness in world units.
+        // Water surface at Radius + 0.75 * StepHeight (height 0.75 in
+        // PlanetMesh.LevelH for level 0); seabed at Radius (height 0);
+        // delta = 0.75 * StepHeight. The shader uses this for depth-based
+        // absorption and shore foam.
+        _tUni[26] = 0.75f * config.StepHeight;
     }
 
     private readonly IGPU _gpu;

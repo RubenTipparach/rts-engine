@@ -533,14 +533,17 @@ public sealed class PlanetMesh
         // appear at cliff borders, never below water.
         if (level == 0 && slope == null)
         {
-            // Seabed: rock at -3 steps below the water surface. Deeper than
-            // before (was sand at -1 step) so the water column has visible
-            // thickness for depth-FX in the water shader (color absorption
-            // by depth, shore foam where the column is shallow). CliffLevel
-            // points at the planet's "rocky" tile (rock/basalt/frozen_rock
-            // depending on the palette), which is the right read for what's
-            // visible through the water — exposed bedrock, not sand.
-            float seabedH = Radius - 3f * StepHeight;
+            // Three elevations on a water cell:
+            //   * Rock seabed at Radius (height 0) — the level-0 baseline.
+            //   * Water surface at Radius + 0.75 * StepHeight (height 0.75).
+            //   * Adjacent land cliff tops at Radius + 1 * StepHeight (height 1).
+            // The seabed and water surface are emitted as horizontal fans
+            // here; the cliff walls down to the seabed are emitted by the
+            // adjacent land cells (their wall code special-cases water
+            // neighbours and runs the wall all the way down to seabed
+            // instead of stopping at the water surface, so the rock
+            // visibly continues underwater).
+            float seabedH = Radius;
             EmitCellFan(verts, idx, cell, seabedH, cellNormal, CliffLevel);
             EmitCellFan(verts, idx, cell, h, cellNormal, 0);
         }
@@ -583,7 +586,13 @@ public sealed class PlanetMesh
         for (int k = 0; k < nbrs.Length; k++)
         {
             byte nLevel = _levels[nbrs[k]];
-            float nh = LevelH(nLevel);
+            // For walls toward a water neighbour, drop the wall all the way
+            // to the seabed (Radius) instead of stopping at the water
+            // surface (LevelH(0) = Radius + 0.75*step). That way the rock
+            // cliff continues underwater visibly as a vertical rock face,
+            // matching the elevation scheme: cliff top at height 1, water
+            // surface at 0.75, rocks at 0.
+            float nh = nLevel == 0 ? Radius : LevelH(nLevel);
 
             int pA = ((k - 1) + n) % n;
             int pB = k;
