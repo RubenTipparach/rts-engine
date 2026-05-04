@@ -66,7 +66,7 @@ public sealed class PlanetPicker
 
             // Project the building's footprint center (on the surface, not
             // the top) so an off-tilt cursor maps to the visible base.
-            float surfaceR = mesh.Radius + mesh.GetLevel(b.CellIndex) * mesh.StepHeight;
+            float surfaceR = mesh.LevelH(mesh.GetLevel(b.CellIndex));
             var center = up * surfaceR;
             var clip = Vector4.Transform(new Vector4(center, 1f), mvp);
             if (clip.W <= 0.001f) continue;
@@ -142,7 +142,7 @@ public sealed class PlanetPicker
         {
             if (Vector3.Dot(mesh.GetCellCenter(i), camDir) < minDot) continue;
 
-            float cellH = mesh.Radius + mesh.GetLevel(i) * mesh.StepHeight;
+            float cellH = mesh.LevelH(mesh.GetLevel(i));
             var center = mesh.GetCellCenter(i) * cellH;
             var clip = Vector4.Transform(new Vector4(center, 1f), mvp);
             if (clip.W <= 0.001f) continue;

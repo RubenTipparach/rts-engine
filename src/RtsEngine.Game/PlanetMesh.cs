@@ -173,6 +173,23 @@ public sealed class PlanetMesh
 
     public byte GetLevel(int cell) => _levels[cell];
 
+    /// <summary>
+    /// Distance-from-core for a given elevation tier. Levels 1..MaxLevel sit
+    /// at <c>Radius + level * StepHeight</c> as you'd expect, but level 0
+    /// (water) is offset to <c>Radius + 0.75 * StepHeight</c> so the water
+    /// surface sits visibly above the rocky cliff bottoms (which would
+    /// otherwise meet the water at the same height = Radius and read as
+    /// "the rock is poking up to the same level as the water"). The 0.75
+    /// fraction means the water column reads as a clear "puddle" of
+    /// elevation between the seabed (Radius - 3*step) and the
+    /// level-1-sand shoreline (Radius + step), without the surface
+    /// floating up so high it crosses over to land elevation.
+    /// </summary>
+    public float LevelH(byte level)
+        => level == 0
+            ? Radius + 0.75f * StepHeight
+            : Radius + level * StepHeight;
+
     public void SetLevel(int cell, byte level)
     {
         if (level > MaxLevel) level = MaxLevel;
@@ -271,11 +288,11 @@ public sealed class PlanetMesh
     public float GetVertexHeight(int cell, int vertIndex)
     {
         var slope = _slopes[cell];
-        float baseH = Radius + _levels[cell] * StepHeight;
+        float baseH = LevelH(_levels[cell]);
         if (slope == null) return baseH;
 
-        float lowH = Radius + _levels[slope.LowNeighbor] * StepHeight;
-        float highH = Radius + _levels[slope.HighNeighbor] * StepHeight;
+        float lowH = LevelH(_levels[slope.LowNeighbor]);
+        float highH = LevelH(_levels[slope.HighNeighbor]);
 
         var nbrs = _neighbors[cell];
         int n = nbrs.Length;
@@ -337,8 +354,8 @@ public sealed class PlanetMesh
         int nbrLeft = nbrs[vertIndex];
         int nbrRight = nbrs[(vertIndex + 1) % n];
         float perpMax = MathF.Max(
-            Radius + _levels[nbrLeft] * StepHeight,
-            Radius + _levels[nbrRight] * StepHeight);
+            LevelH(_levels[nbrLeft]),
+            LevelH(_levels[nbrRight]));
         float perpClamped = MathF.Min(perpMax, highH);
         return MathF.Max(interp, perpClamped);
     }
@@ -348,9 +365,9 @@ public sealed class PlanetMesh
     public float GetCenterHeight(int cell)
     {
         var slope = _slopes[cell];
-        if (slope == null) return Radius + _levels[cell] * StepHeight;
-        float lowH = Radius + _levels[slope.LowNeighbor] * StepHeight;
-        float highH = Radius + _levels[slope.HighNeighbor] * StepHeight;
+        if (slope == null) return LevelH(_levels[cell]);
+        float lowH = LevelH(_levels[slope.LowNeighbor]);
+        float highH = LevelH(_levels[slope.HighNeighbor]);
         return (lowH + highH) * 0.5f;
     }
 
@@ -362,7 +379,7 @@ public sealed class PlanetMesh
     public float[] BuildCellOutline(int cell)
     {
         byte level = _levels[cell];
-        float h = Radius + level * StepHeight + 0.003f; // slightly above to avoid z-fighting
+        float h = LevelH(level) + 0.003f; // slightly above to avoid z-fighting
         var poly = _polyVerts[cell];
         int n = poly.Length;
         var data = new float[n * 2 * 3];
@@ -456,7 +473,7 @@ public sealed class PlanetMesh
     private void EmitCellGeometry(List<float> verts, List<uint> idx, int cell)
     {
         byte level = _levels[cell];
-        float h = Radius + level * StepHeight;
+        float h = LevelH(level);
         Vector3 cellNormal = _centers[cell];
         int n = _polyVerts[cell].Length;
         var slope = _slopes[cell];
@@ -489,7 +506,7 @@ public sealed class PlanetMesh
         for (int k = 0; k < n; k++)
         {
             byte nLevelE = _levels[nbrs[k]];
-            float nhE = Radius + nLevelE * StepHeight;
+            float nhE = LevelH(nLevelE);
             int pAe = ((k - 1) + n) % n;
             int pBe = k;
             float ourMinH = MathF.Min(vertH[pAe], vertH[pBe]);
@@ -566,7 +583,7 @@ public sealed class PlanetMesh
         for (int k = 0; k < nbrs.Length; k++)
         {
             byte nLevel = _levels[nbrs[k]];
-            float nh = Radius + nLevel * StepHeight;
+            float nh = LevelH(nLevel);
 
             int pA = ((k - 1) + n) % n;
             int pB = k;

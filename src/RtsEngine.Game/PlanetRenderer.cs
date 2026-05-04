@@ -34,10 +34,11 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         // samples its atlas tile normally.
         _tUni[25] = config.Terrain.OceanLevel0 ? 1f : 0f;
         // params.z (slot 26) = water column thickness in world units. Water
-        // cells emit a rock seabed at Radius - 3*StepHeight, so this is
-        // 3 * StepHeight. The water shader uses it for depth-based color
-        // absorption and shore foam at shallow areas.
-        _tUni[26] = 3f * config.StepHeight;
+        // surface sits at Radius + 0.75 * StepHeight (PlanetMesh.LevelH for
+        // level 0); seabed (rock) sits at Radius - 3 * StepHeight; the
+        // shader uses this delta for depth-based colour absorption and
+        // shore foam.
+        _tUni[26] = 3.75f * config.StepHeight;
     }
 
     private readonly IGPU _gpu;

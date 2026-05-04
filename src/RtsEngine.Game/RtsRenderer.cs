@@ -318,7 +318,7 @@ public sealed class RtsRenderer : IDisposable
             var color = _buildingColors[b.TypeId];
 
             var up = mesh.GetCellCenter(b.CellIndex);
-            float surfaceR = mesh.Radius + mesh.GetLevel(b.CellIndex) * mesh.StepHeight;
+            float surfaceR = mesh.LevelH(mesh.GetLevel(b.CellIndex));
             var pos = up * surfaceR;
 
             var (modelMvp, sunModel) = BuildModelMvpAndSun(pos, up, planetMvpMat, _sunDir, heading: null);
@@ -344,7 +344,7 @@ public sealed class RtsRenderer : IDisposable
             if (b.InstanceId != state.SelectedBuildingInstanceId) continue;
             var def = _config.GetBuilding(b.TypeId); if (def == null) continue;
             var up = mesh.GetCellCenter(b.CellIndex);
-            float surfaceR = mesh.Radius + mesh.GetLevel(b.CellIndex) * mesh.StepHeight;
+            float surfaceR = mesh.LevelH(mesh.GetLevel(b.CellIndex));
             DrawSelectionDisc(up * surfaceR, up, def.HalfWidth * 1.6f, planetMvpMat);
         }
         foreach (var u in state.Units)
@@ -371,7 +371,7 @@ public sealed class RtsRenderer : IDisposable
             int destCell = u.Path[u.Path.Count - 1];
             var def = _config.GetUnit(u.TypeId); if (def == null) continue;
             var up = mesh.GetCellCenter(destCell);
-            float surfaceR = mesh.Radius + mesh.GetLevel(destCell) * mesh.StepHeight;
+            float surfaceR = mesh.LevelH(mesh.GetLevel(destCell));
             DrawMoveDestMarker(up * surfaceR, up, def.HalfWidth * 1.4f, planetMvpMat);
         }
 
@@ -412,13 +412,13 @@ public sealed class RtsRenderer : IDisposable
 
             // Draw the whole route — start cell, every waypoint, goal.
             var startUp = mesh.GetCellCenter(path[0]);
-            float startR = mesh.Radius + mesh.GetLevel(path[0]) * mesh.StepHeight + lift;
+            float startR = mesh.LevelH(mesh.GetLevel(path[0])) + lift;
             Vector3 prev = startUp * startR;
             for (int k = 1; k < path.Count; k++)
             {
                 if (segs >= MaxPathSegments) break;
                 var cellUp = mesh.GetCellCenter(path[k]);
-                float surfaceR = mesh.Radius + mesh.GetLevel(path[k]) * mesh.StepHeight + lift;
+                float surfaceR = mesh.LevelH(mesh.GetLevel(path[k])) + lift;
                 var here = cellUp * surfaceR;
                 int o = segs * 6;
                 _pathVertScratch[o + 0] = prev.X;
@@ -486,7 +486,7 @@ public sealed class RtsRenderer : IDisposable
             // Cull if facing away from camera — projection would still place
             // the bar on screen via the back of the planet, which looks bad.
             if (Vector3.Dot(up, camDir) < -0.05f) continue;
-            float surfaceR = mesh.Radius + mesh.GetLevel(b.CellIndex) * mesh.StepHeight;
+            float surfaceR = mesh.LevelH(mesh.GetLevel(b.CellIndex));
             var anchor = up * (surfaceR + def.Height);
             if (TryEmitBar(barCount, anchor, planetMvp, canvasW, canvasH,
                 BarWidthPx, BarHeightPx, BarOffsetPx,
@@ -731,7 +731,7 @@ public sealed class RtsRenderer : IDisposable
         if (!_markerBindGroups.TryGetValue(typeId, out var bg)) return;
 
         var up = mesh.GetCellCenter(hoveredCell);
-        float surfaceR = mesh.Radius + mesh.GetLevel(hoveredCell) * mesh.StepHeight;
+        float surfaceR = mesh.LevelH(mesh.GetLevel(hoveredCell));
         var pos = up * surfaceR;
 
         var (modelMvp, _) = BuildModelMvpAndSun(pos, up, planetMvpMat, _sunDir, heading: null);
