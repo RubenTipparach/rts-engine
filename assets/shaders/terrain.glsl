@@ -129,9 +129,12 @@ vec3 waterShader(vec3 wp, vec3 N, vec3 V, vec3 L) {
     float viewCos = max(dot(N, V), 0.08);
     float pathLen = oceanDepth / viewCos;
 
-    // Beer-Lambert absorption: red drops fastest, blue last → the seabed
-    // shows true colour at the shoreline and fades to ocean-blue offshore.
-    vec3 absorption = vec3(8.0, 2.5, 1.0);
+    // Beer-Lambert absorption — coefficients per world unit, tuned for a
+    // 0.75*stepHeight (≈0.03) column. Old (8, 2.5, 1) left 79-97% of the
+    // rock colour visible through the thin column at perpendicular view,
+    // so the water read as rock. (80, 25, 10) drops red to ≈9% at the
+    // same depth, green to ≈47% — the surface reads as teal head-on.
+    vec3 absorption = vec3(80.0, 25.0, 10.0);
     vec3 transmittance = exp(-absorption * pathLen);
     vec3 waterTint = vec3(0.05, 0.20, 0.32);
     vec3 throughWater = seabedColor * transmittance + waterTint * (vec3(1.0) - transmittance);
