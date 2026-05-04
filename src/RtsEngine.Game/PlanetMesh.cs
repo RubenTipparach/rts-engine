@@ -653,13 +653,18 @@ public sealed class PlanetMesh
         Vector3[] insetDirs, float[] vertHeights, bool[] edgeConvex, byte level)
     {
         int n = _polyVerts[cell].Length;
-        // Bevel ring + seal triangles use the cliff-wall texture so they
-        // visually merge into the cliff face below them. Previously this
-        // was a hardcoded `3` (named "rockLevel"), which on Earth's
-        // 6-tier palette is `grass_dry` — a different tile from the
-        // cliff wall (CliffLevel=4=rock), producing a visible texture
-        // seam at every chamfered edge regardless of geometry alignment.
-        const byte bevelLevel = CliffLevel;
+        // Bevel ring + seal triangles use the CELL'S OWN terrain level so
+        // they read as a soft rolloff of the cell top into the cliff edge,
+        // not a textured ring sitting on the cell. Previously this was
+        // hardcoded `3` (a fixed mid-tier tile like `grass_dry` on Earth)
+        // and then briefly `CliffLevel` (rock) — both produced a visible
+        // textured strip around every cliff-bordering hexagon's perimeter
+        // regardless of the cell's actual surface (sand, grass, mesa,
+        // etc.). Using the cell's own `level` makes the bevel disappear
+        // visually on flat-top areas — the cell extends a thin tilted
+        // shoulder into the cliff edge, and only the vertical wall below
+        // shows the cliff/rock texture.
+        byte bevelLevel = level;
 
         // Per-CONVEX-edge ring quads. Non-convex edges get no geometry —
         // the top fan already runs straight to polyVerts on those sides,
