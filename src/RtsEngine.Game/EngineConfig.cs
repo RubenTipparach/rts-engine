@@ -12,6 +12,10 @@ public sealed class EngineConfig
     public PlanetEditViewConfig PlanetEditView { get; set; } = new();
     public RtsCameraConfig RtsCamera { get; set; } = new();
     public SlopeConfig Slopes { get; set; } = new();
+    public ChamferConfig Terrain { get; set; } = new();
+    public UnitArrivalConfig UnitArrival { get; set; } = new();
+    public UnitMovementConfig UnitMovement { get; set; } = new();
+    public DebugConfig Debug { get; set; } = new();
 
     public static EngineConfig FromYaml(string yaml)
     {
@@ -71,6 +75,27 @@ public sealed class PlanetEditViewConfig
 }
 
 /// <summary>
+/// Geometric chamfer applied at every land cell's perimeter. Creates a
+/// small 45° bevel where cliff tops meet flat ground; concave edges (cliff
+/// bases) get a faint inverse bevel as a side-effect of uniform application,
+/// which reads as soft erosion rather than a hard step at typical RTS
+/// camera angles. Disabled for water cells (level 0) so the sea surface
+/// stays flat.
+/// </summary>
+public sealed class ChamferConfig
+{
+    /// <summary>Fraction of the way each polygon vertex is pulled toward
+    /// the cell center to form the top fan's "inner ring". 0 disables
+    /// the chamfer entirely. Typical: 0.10–0.20.</summary>
+    public float ChamferInset { get; set; } = 0.15f;
+
+    /// <summary>Drop in radius units that the perimeter polygon vertex
+    /// sits below the cell's nominal level height — this is the height of
+    /// the chamfer bevel. 0 disables the chamfer. Typical: ~0.3 × stepHeight.</summary>
+    public float ChamferDrop { get; set; } = 0.012f;
+}
+
+/// <summary>
 /// Procedural slope placement. Slopes ramp between adjacent cells of
 /// different levels and are the primary way ground units traverse cliffs.
 /// </summary>
@@ -98,10 +123,13 @@ public sealed class RtsCameraConfig
     /// minimum orbit distance becomes radius * (1 + GroundClearance).</summary>
     public float GroundClearance { get; set; } = 0.15f;
 
-    /// <summary>How far ahead (along the surface, radius units) the look-at
-    /// target sits when fully tilted. Tuned so that altitude/lookAhead gives
-    /// roughly a 30° downward tilt at the ground floor.</summary>
-    public float LookAhead { get; set; } = 0.25f;
+    /// <summary>Camera tilt at full RTS view, measured as the angle from
+    /// straight-down (looking at planet center) toward the horizon.
+    /// 0° = always looking at planet center (no RTS tilt). 90° = looking
+    /// horizontally along the surface. The default 59° corresponds to the
+    /// previous design's "~30° below horizon" RTS pose
+    /// (90° − 31° = 59°).</summary>
+    public float MaxTiltDegrees { get; set; } = 59f;
 
     /// <summary>Zoom percentage (log-altitude space, 0 = max zoom out, 1 =
     /// max zoom in) at which the RTS tilt starts engaging. Below this the
@@ -124,4 +152,58 @@ public sealed class RtsCameraConfig
     /// motion without explicit easing curves; rate 12 = ~98% of the way in
     /// 0.3 seconds.</summary>
     public float ZoomLerpRate { get; set; } = 12.0f;
+}
+
+/// <summary>
+/// Move-order packing. When several units are ordered to the same destination
+/// cell we pack up to <see cref="PerCellCapacity"/> of them into that cell
+/// using sub-slot offsets in the cell's tangent plane, then spill the rest
+/// into BFS-adjacent cells. Keeps groups tight instead of spreading every
+/// unit onto its own hex.
+/// </summary>
+public sealed class UnitArrivalConfig
+{
+    /// <summary>Minimum chord between adjacent sub-slot anchors on a cell's
+    /// packing ring, expressed in unit-halfwidth multiples. The ring
+    /// radius scales up as cell capacity grows so this chord stays the
+    /// same — 1.5× halfwidth keeps freshly-packed units clear of each
+    /// other under ORCA jitter without the ring spilling outside the
+    /// hex. Per-cell capacity is now a unit attribute (UnitDef.PerCellCapacity).</summary>
+    public float SlotSpacingMultiplier { get; set; } = 1.5f;
+}
+
+/// <summary>
+/// Per-tick unit movement tuning. The pathfinder picks which cells a unit
+/// crosses; this controls how its position resolves against the terrain
+/// underneath as it moves through them.
+/// </summary>
+public sealed class UnitMovementConfig
+{
+    /// <summary>Per-second exponential rate at which a unit's altitude
+    /// chases the surface height of the cell it's currently over. Higher =
+    /// snappier altitude response (units stick to the ground tightly across
+    /// slopes); lower = floatier (units take longer to settle to a new
+    /// elevation). 20 ≈ ~95% convergence in 0.15 s, which reads as "walking
+    /// up a ramp" rather than "snapping to each step."</summary>
+    public float AltitudeLerpRate { get; set; } = 20f;
+
+    /// <summary>Whether ground units may walk up slope cells to reach a
+    /// higher elevation band. Off pins every unit to its starting band
+    /// unless it's canHop-capable (infantry can still step a single level).
+    /// Off by default while slope geometry/AI is being reworked; flip on
+    /// in engine.yaml once slopes are ready to ship.</summary>
+    public bool SlopesTraversable { get; set; } = false;
+}
+
+/// <summary>
+/// Visualization toggles. Off in shipped builds; flip on in engine.yaml when
+/// you need to see what the gameplay systems are doing under the hood.
+/// </summary>
+public sealed class DebugConfig
+{
+    /// <summary>Render each unit's queued path as a line strip from its
+    /// current cell along the remaining waypoints to the destination, plus a
+    /// small marker on the destination cell. Useful for debugging A* output
+    /// and movement-system bugs.</summary>
+    public bool ShowUnitPaths { get; set; } = false;
 }

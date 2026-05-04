@@ -1,13 +1,15 @@
-using System.Numerics;
-using RtsEngine.Core;
 using RtsEngine.Game;
-using Silk.NET.Input;
 using Silk.NET.Maths;
 using Silk.NET.OpenGL;
 using Silk.NET.Windowing;
 
 namespace RtsEngine.Desktop;
 
+/// <summary>
+/// Desktop host — the equivalent of WASM Home.razor. Brings up a Silk.NET
+/// window + GL context, then defers to the shared EngineBootstrap so game
+/// setup logic stays in one place.
+/// </summary>
 public static class Program
 {
     public static void Main()
@@ -15,413 +17,108 @@ public static class Program
         var opts = WindowOptions.Default;
         opts.Size = new Vector2D<int>(1280, 720);
         opts.Title = "RTS Engine - Silk.NET Desktop";
-        opts.API = new GraphicsAPI(ContextAPI.OpenGL, new APIVersion(3, 3));
+        // 4.2 lets us use `layout(binding = N)` qualifiers on UBOs and
+        // sampler uniforms — matches WebGPU's binding-slot model 1:1 without
+        // per-program glUniformBlockBinding/glUniform1i boilerplate.
+        opts.API = new GraphicsAPI(ContextAPI.OpenGL, new APIVersion(4, 2));
 
         var window = Window.Create(opts);
         OpenGLGPU? gpu = null;
-        PlanetRenderer? renderer = null;
         DesktopAppBackend? backend = null;
-        GameEngine? engine = null;
+        EngineBootstrap? boot = null;
 
         window.Load += async () =>
         {
-            var gl = window.CreateOpenGL();
-
-            gpu = new OpenGLGPU(gl);
-
-            // Desktop: load YAML from the published wwwroot copy next to the exe,
-            // or fall back to defaults if the file isn't there.
-            PlanetConfig config = new();
             try
             {
-                var yamlPath = Path.Combine(AppContext.BaseDirectory, "planets", "earth.yaml");
-                if (File.Exists(yamlPath))
-                    config = PlanetConfig.FromYaml(File.ReadAllText(yamlPath));
+                Console.Error.WriteLine("[boot] window.Load");
+                var gl = window.CreateOpenGL();
+                Console.Error.WriteLine($"[boot] GL ready, vendor={gl.GetStringS(StringName.Vendor)} renderer={gl.GetStringS(StringName.Renderer)} version={gl.GetStringS(StringName.Version)}");
+
+                gpu = new OpenGLGPU(gl);
+                backend = new DesktopAppBackend(window);
+
+                // Asset roots: prefer wwwroot copied next to the exe (build-run.bat
+                // does this), but fall back to the WASM project's wwwroot for
+                // `dotnet run` from source. Add the repo-root /assets too because
+                // .obj/.png models live there outside wwwroot — the WASM csproj
+                // surfaces them at runtime via <Content Include="..\..\assets">,
+                // which Desktop has to mimic at the asset-source level.
+                var assetRoots = ResolveAssetRoots();
+                foreach (var r in assetRoots) Console.Error.WriteLine($"[boot] asset root: {r}");
+                var assets = new FileAssetSource(assetRoots);
+
+                // FontStash needs a real TTF — try Consolas, fall back to a
+                // few Windows monospace defaults. If none match we silently
+                // run without text (backgrounds still render).
+                FontStashTextRenderer? text = null;
+                foreach (var p in new[]
+                {
+                    "C:/Windows/Fonts/consola.ttf",
+                    "C:/Windows/Fonts/cour.ttf",
+                    "C:/Windows/Fonts/segoeui.ttf",
+                })
+                {
+                    if (File.Exists(p))
+                    {
+                        try { text = new FontStashTextRenderer(gl, p); Console.Error.WriteLine($"[boot] text font: {p}"); break; }
+                        catch (Exception e) { Console.Error.WriteLine($"[boot] font {p} init failed: {e.Message}"); }
+                    }
+                }
+
+                boot = new EngineBootstrap(gpu, backend, assets)
+                {
+                    // Desktop has no HTML overlay — render UI buttons via
+                    // EngineUI's GPU pipeline. WASM keeps using DOM buttons.
+                    BuildEngineUI = true,
+                    // Wire EngineUI + text renderer the moment EngineUI is
+                    // built, BEFORE GameEngine.SetupUI runs and starts
+                    // emitting CreateUIButton calls.
+                    OnEngineUIBuilt = ui =>
+                    {
+                        backend.AttachEngineUI(ui);
+                        ui.Text = text;
+                    },
+                };
+                Console.Error.WriteLine("[boot] EngineBootstrap.SetupAsync starting");
+                await boot.SetupAsync();
+                // Subscribes to Engine.OnFrameRendered so clicking a planet in
+                // the solar system view flips _planetReady=true / hot-swaps the
+                // PlanetRenderer to the new planet. Without this the zoom-in
+                // transition never completes (t reaches 1 but _planetReady stays
+                // false) and inputs appear to freeze because KeyDown is gated
+                // on _transitioning.
+                boot.HookPlanetHotSwap();
+                Console.Error.WriteLine("[boot] SetupAsync done; engine.Run");
+                boot.Engine!.Run();
             }
-            catch { /* use defaults */ }
-
-            var mesh = new PlanetMesh(
-                subdivisions: config.Subdivisions,
-                radius: config.Radius,
-                stepHeight: config.StepHeight);
-            mesh.GenerateFromNoise(
-                seed: config.Generation.Seed,
-                frequency: config.Generation.Frequency,
-                thresholds: config.Generation.Thresholds.ToArray());
-
-            renderer = new PlanetRenderer(gpu, mesh);
-            renderer.ApplyConfig(config);
-            await renderer.Setup(OpenGLGPU.TerrainShaderGLSL);
-
-            EngineConfig engineConfig = new();
-            try
+            catch (Exception e)
             {
-                var engineYamlPath = Path.Combine(AppContext.BaseDirectory, "config", "engine.yaml");
-                if (File.Exists(engineYamlPath))
-                    engineConfig = EngineConfig.FromYaml(File.ReadAllText(engineYamlPath));
+                Console.Error.WriteLine($"[boot] FAILED: {e.Message}");
+                Console.Error.WriteLine(e.StackTrace);
             }
-            catch { /* use defaults */ }
-
-            backend = new DesktopAppBackend(window);
-            engine = new GameEngine(backend, gpu, renderer, null, null, engineConfig);
-            engine.Run();
         };
 
-        window.Render += _ => backend?.Tick();
+        long frame = 0;
+        window.Render += _ =>
+        {
+            backend?.Tick();
+            gpu?.EndFrame();
+            if (frame == 0 || frame == 60 || frame == 300)
+                Console.Error.WriteLine($"[host] frame {frame} rendered, size={window.Size.X}x{window.Size.Y}");
+            frame++;
+        };
         window.Closing += () => gpu?.Dispose();
         window.Run();
     }
 
-}
-
-/// <summary>
-/// OpenGL implementation of IGPU — same interface as WebGPU, backed by Silk.NET.
-/// PlanetRenderer in Game calls IGPU methods; this translates them to GL calls.
-/// </summary>
-internal sealed class OpenGLGPU : IGPU, IDisposable
-{
-    private readonly GL _gl;
-
-    // Handle tables (mirroring the JS proxy pattern)
-    private readonly List<uint> _shaders = new() { 0 };
-    private readonly List<uint> _buffers = new() { 0 };
-    private readonly List<bool> _indexIs32 = new() { false };
-    private readonly List<uint> _programs = new() { 0 };
-    private readonly List<int> _uniforms = new() { 0 };
-    private readonly List<uint> _vaos = new() { 0 };
-
-    // Track pipeline → (program, vao) mapping
-    private readonly Dictionary<int, (int programId, int vaoId)> _pipelines = new();
-    // Track bind group → uniform buffer mapping
-    private readonly Dictionary<int, List<(int binding, int bufferId)>> _bindGroups = new();
-
-    private int _nextPipelineId = 1;
-    private int _nextBindGroupId = 1;
-
-    // Desktop fallback: lit vertex-colored terrain. No textures (texture loading
-    // via Silk.NET OpenGL requires an image decoder dependency that isn't added
-    // yet; WASM is the primary deploy target).
-    public const string TerrainShaderGLSL = @"
-#version 330 core
-// -- VERTEX --
-#ifdef VERTEX
-layout(location = 0) in vec3 aPos;
-layout(location = 1) in vec3 aNormal;
-layout(location = 2) in float aLevel;
-uniform mat4 uMVP;
-out vec3 vWorldPos;
-out vec3 vNormal;
-out float vLevel;
-void main() {
-    gl_Position = uMVP * vec4(aPos, 1.0);
-    vWorldPos = aPos;
-    vNormal = normalize(aNormal);
-    vLevel = aLevel;
-}
-#endif
-// -- FRAGMENT --
-#ifdef FRAGMENT
-in vec3 vWorldPos;
-in vec3 vNormal;
-in float vLevel;
-uniform vec3 uSunDir;
-uniform vec3 uCameraPos;
-out vec4 FragColor;
-void main() {
-    vec3 levelColors[5] = vec3[5](
-        vec3(0.15, 0.35, 0.75),
-        vec3(0.90, 0.80, 0.55),
-        vec3(0.30, 0.65, 0.25),
-        vec3(0.55, 0.55, 0.55),
-        vec3(0.95, 0.97, 1.00)
-    );
-    int lvl = int(vLevel + 0.5);
-    if (lvl < 0) lvl = 0; if (lvl > 4) lvl = 4;
-    vec3 base = levelColors[lvl];
-    vec3 N = normalize(vNormal);
-    vec3 L = normalize(uSunDir);
-    vec3 V = normalize(uCameraPos - vWorldPos);
-    float NdotL = max(dot(N, L), 0.0);
-    float rim = pow(1.0 - max(dot(N, V), 0.0), 3.5);
-    vec3 lit = base * (0.25 + NdotL * 0.9);
-    lit += vec3(0.35, 0.55, 0.95) * rim * 0.35 * smoothstep(-0.1, 0.3, NdotL);
-    FragColor = vec4(lit, 1.0);
-}
-#endif
-";
-
-    public OpenGLGPU(GL gl)
-    {
-        _gl = gl;
-        _gl.Enable(EnableCap.DepthTest);
-        _gl.ClearColor(0.05f, 0.05f, 0.12f, 1.0f);
-    }
-
-    public Task<int> CreateShaderModule(string shaderCode)
-    {
-        // Compile vertex + fragment from combined source
-        var vs = Compile(ShaderType.VertexShader, "#version 330 core\n#define VERTEX\n" + StripVersionAndBlocks(shaderCode));
-        var fs = Compile(ShaderType.FragmentShader, "#version 330 core\n#define FRAGMENT\n" + StripVersionAndBlocks(shaderCode));
-
-        var program = _gl.CreateProgram();
-        _gl.AttachShader(program, vs);
-        _gl.AttachShader(program, fs);
-        _gl.LinkProgram(program);
-        _gl.DeleteShader(vs);
-        _gl.DeleteShader(fs);
-
-        var id = _programs.Count;
-        _programs.Add(program);
-        return Task.FromResult(id);
-    }
-
-    public unsafe Task<int> CreateVertexBuffer(float[] data)
-    {
-        var buf = _gl.GenBuffer();
-        _gl.BindBuffer(BufferTargetARB.ArrayBuffer, buf);
-        fixed (float* p = data)
-            _gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(data.Length * sizeof(float)), p, BufferUsageARB.StaticDraw);
-        var id = _buffers.Count;
-        _buffers.Add(buf);
-        return Task.FromResult(id);
-    }
-
-    public unsafe Task<int> CreateIndexBuffer(ushort[] data)
-    {
-        var buf = _gl.GenBuffer();
-        _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, buf);
-        fixed (ushort* p = data)
-            _gl.BufferData(BufferTargetARB.ElementArrayBuffer, (nuint)(data.Length * sizeof(ushort)), p, BufferUsageARB.StaticDraw);
-        var id = _buffers.Count;
-        _buffers.Add(buf);
-        _indexIs32.Add(false);
-        return Task.FromResult(id);
-    }
-
-    public unsafe Task<int> CreateIndexBuffer32(uint[] data)
-    {
-        var buf = _gl.GenBuffer();
-        _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, buf);
-        fixed (uint* p = data)
-            _gl.BufferData(BufferTargetARB.ElementArrayBuffer, (nuint)(data.Length * sizeof(uint)), p, BufferUsageARB.StaticDraw);
-        var id = _buffers.Count;
-        _buffers.Add(buf);
-        _indexIs32.Add(true);
-        return Task.FromResult(id);
-    }
-
-    public Task<int> CreateUniformBuffer(int sizeBytes)
-    {
-        // OpenGL uniforms don't need a buffer — we use glUniformMatrix4fv directly.
-        // Return a dummy handle; the actual uniform location is resolved at render time.
-        var id = _buffers.Count;
-        _buffers.Add(0);
-        return Task.FromResult(id);
-    }
-
-    public unsafe void WriteBuffer(int bufferId, float[] data)
-    {
-        // Store MVP data for next render call
-        _pendingMvp = data;
-    }
-
-    private float[]? _pendingMvp;
-
-    public unsafe Task<int> CreateRenderPipeline(int shaderModuleId, object[] vertexBufferLayouts)
-    {
-        var vao = _gl.GenVertexArray();
-        _gl.BindVertexArray(vao);
-
-        // Layout: pos(vec3) + normal(vec3) + level(float), stride 28
-        _gl.EnableVertexAttribArray(0);
-        _gl.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 28, (void*)0);
-        _gl.EnableVertexAttribArray(1);
-        _gl.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, 28, (void*)12);
-        _gl.EnableVertexAttribArray(2);
-        _gl.VertexAttribPointer(2, 1, VertexAttribPointerType.Float, false, 28, (void*)24);
-
-        var vaoId = _vaos.Count;
-        _vaos.Add(vao);
-
-        var pipelineId = _nextPipelineId++;
-        _pipelines[pipelineId] = (shaderModuleId, vaoId);
-        return Task.FromResult(pipelineId);
-    }
-
-    public Task<int> CreateBindGroup(int pipelineId, int groupIndex, object[] entries)
-    {
-        var bgId = _nextBindGroupId++;
-        // Not needed for basic GL uniforms, but track for API compatibility
-        _bindGroups[bgId] = new();
-        return Task.FromResult(bgId);
-    }
-
-    public unsafe void Render(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount)
-    {
-        if (!_pipelines.TryGetValue(pipelineId, out var p)) return;
-
-        var program = _programs[p.programId];
-        var vao = _vaos[p.vaoId];
-
-        _gl.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
-        _gl.UseProgram(program);
-        _gl.BindVertexArray(vao);
-        _gl.BindBuffer(BufferTargetARB.ArrayBuffer, _buffers[vertexBufferId]);
-
-        _gl.EnableVertexAttribArray(0);
-        _gl.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 28, (void*)0);
-        _gl.EnableVertexAttribArray(1);
-        _gl.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, 28, (void*)12);
-        _gl.EnableVertexAttribArray(2);
-        _gl.VertexAttribPointer(2, 1, VertexAttribPointerType.Float, false, 28, (void*)24);
-
-        _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, _buffers[indexBufferId]);
-
-        if (_pendingMvp != null && _pendingMvp.Length >= 16)
-        {
-            var loc = _gl.GetUniformLocation(program, "uMVP");
-            fixed (float* ptr = _pendingMvp)
-                _gl.UniformMatrix4(loc, 1, false, ptr);
-        }
-        if (_pendingMvp != null && _pendingMvp.Length >= 23)
-        {
-            var locSun = _gl.GetUniformLocation(program, "uSunDir");
-            if (locSun >= 0) _gl.Uniform3(locSun, _pendingMvp[16], _pendingMvp[17], _pendingMvp[18]);
-            var locCam = _gl.GetUniformLocation(program, "uCameraPos");
-            if (locCam >= 0) _gl.Uniform3(locCam, _pendingMvp[20], _pendingMvp[21], _pendingMvp[22]);
-        }
-
-        var elemType = (indexBufferId < _indexIs32.Count && _indexIs32[indexBufferId])
-            ? DrawElementsType.UnsignedInt : DrawElementsType.UnsignedShort;
-        _gl.DrawElements(PrimitiveType.Triangles, (uint)indexCount, elemType, null);
-    }
-
-    public void DestroyBuffer(int bufferId)
-    {
-        if (bufferId > 0 && bufferId < _buffers.Count && _buffers[bufferId] != 0)
-        {
-            _gl.DeleteBuffer(_buffers[bufferId]);
-            _buffers[bufferId] = 0;
-        }
-    }
-
-    public void RenderAdditional(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount) { }
-    public void RenderOverlay(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount) { }
-    public Task<int> CreateTextureFromUrl(string url) => Task.FromResult(0);
-    public Task<int> CreateSampler(string filter = "linear", string wrap = "repeat") => Task.FromResult(0);
-    public Task<int> CreateRenderPipelineLines(int shaderModuleId, object[] vertexBufferLayouts) => Task.FromResult(0);
-    public Task<int> CreateRenderPipelineAlphaBlend(int shaderModuleId, object[] vertexBufferLayouts) => Task.FromResult(0);
-    public Task<int> CreateRenderPipelineUI(int shaderModuleId, object[] vertexBufferLayouts) => Task.FromResult(0);
-    public void RenderNoBind(int pipelineId, int vertexBufferId, int indexBufferId, int indexCount) { }
-
-    public void Dispose()
-    {
-        for (int i = 1; i < _buffers.Count; i++)
-            if (_buffers[i] != 0) _gl.DeleteBuffer(_buffers[i]);
-        for (int i = 1; i < _programs.Count; i++)
-            if (_programs[i] != 0) _gl.DeleteProgram(_programs[i]);
-        for (int i = 1; i < _vaos.Count; i++)
-            if (_vaos[i] != 0) _gl.DeleteVertexArray(_vaos[i]);
-    }
-
-    private uint Compile(ShaderType type, string source)
-    {
-        var s = _gl.CreateShader(type);
-        _gl.ShaderSource(s, source);
-        _gl.CompileShader(s);
-        var log = _gl.GetShaderInfoLog(s);
-        if (!string.IsNullOrEmpty(log)) Console.Error.WriteLine($"Shader ({type}): {log}");
-        return s;
-    }
-
-    private static string StripVersionAndBlocks(string src)
-    {
-        // Remove any existing #version line and #ifdef blocks from the combined source
-        var lines = src.Split('\n');
-        var result = new System.Text.StringBuilder();
-        foreach (var line in lines)
-        {
-            var trimmed = line.TrimStart();
-            if (trimmed.StartsWith("#version")) continue;
-            if (trimmed.StartsWith("#ifdef") || trimmed.StartsWith("#endif")) continue;
-            if (trimmed.StartsWith("// --")) continue;
-            result.AppendLine(line);
-        }
-        return result.ToString();
-    }
-}
-
-/// <summary>
-/// Desktop IRenderBackend — Silk.NET.Windowing + Input.
-/// </summary>
-internal sealed class DesktopAppBackend : IRenderBackend
-{
-    private readonly IWindow _window;
-    private Func<Task>? _onTick;
-
-    public float CanvasWidth => _window.Size.X;
-    public float CanvasHeight => _window.Size.Y;
-
-    public event Action? PointerDown;
-    public event Action<float, float>? PointerDrag;
-    public event Action? PointerUp;
-    public event Action<float, float, int>? PointerClick;
-    public event Action<float>? Scroll;
-    public event Action<float, float>? PointerMove;
-    public event Action<string>? KeyDown;
-    public event Action<string>? UIButtonClick;
-    public void CreateUIButton(string id, string text, string cssJson) { }
-    public void ShowUIButton(string id, bool visible) { }
-
-    private bool _dragging;
-    private Vector2 _lastMouse;
-    private Vector2 _downMouse;
-    private float _totalDragDist;
-    private const float ClickThreshold = 5f;
-
-    public DesktopAppBackend(IWindow window)
-    {
-        _window = window;
-        var input = window.CreateInput();
-        foreach (var mouse in input.Mice)
-        {
-            mouse.MouseDown += (m, btn) =>
-            {
-                _dragging = true;
-                _lastMouse = mouse.Position;
-                _downMouse = mouse.Position;
-                _totalDragDist = 0;
-                PointerDown?.Invoke();
-            };
-            mouse.MouseUp += (m, btn) =>
-            {
-                if (!_dragging) return;
-                _dragging = false;
-                PointerUp?.Invoke();
-                if (_totalDragDist < ClickThreshold)
-                {
-                    int button = btn == MouseButton.Left ? 0 : btn == MouseButton.Right ? 2 : 1;
-                    PointerClick?.Invoke(mouse.Position.X, mouse.Position.Y, button);
-                }
-            };
-            mouse.MouseMove += (m, pos) =>
-            {
-                if (!_dragging) return;
-                var dx = pos.X - _lastMouse.X;
-                var dy = pos.Y - _lastMouse.Y;
-                _totalDragDist += MathF.Abs(dx) + MathF.Abs(dy);
-                PointerDrag?.Invoke(dx, dy);
-                _lastMouse = pos;
-            };
-            mouse.Scroll += (m, wheel) =>
-            {
-                Scroll?.Invoke(wheel.Y * 120f);
-            };
-        }
-    }
-
-    public void StartLoop(Func<Task> onTick) => _onTick = onTick;
-    public void StopLoop() => _onTick = null;
-    public void Tick() => _onTick?.Invoke();
-    public void Dispose() { }
+    /// <summary>
+    /// The Desktop csproj's Content links mirror the repo-root /assets
+    /// tree into the build output (config/, planets/, shaders/, textures/
+    /// at the binary root, with models/animations under assets/). So
+    /// FileAssetSource just resolves "config/foo.yaml" against
+    /// AppContext.BaseDirectory and finds the file directly.
+    /// </summary>
+    private static string[] ResolveAssetRoots() =>
+        new[] { AppContext.BaseDirectory };
 }

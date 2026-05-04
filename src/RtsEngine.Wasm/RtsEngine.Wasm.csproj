@@ -18,14 +18,43 @@
   </ItemGroup>
 
   <!--
-    Surface the canonical baked assets (under /assets at the repo root) as
-    Blazor static content under wwwroot/assets so they're fetchable at
-    /assets/<...> URLs. Source-of-truth lives at the repo root per the
-    static-asset guidelines; this just makes them available at runtime.
+    Shared assets live at the repo root /assets/ (see CLAUDE.md). Surface
+    each subfolder at runtime in wwwroot so existing relative paths
+    (e.g. "config/engine.yaml", "shaders/terrain.wgsl") resolve via
+    HttpClient against the WASM root unchanged.
+
+    Models, animations, and other under-/assets/ trees that don't match
+    a top-level subfolder still get the legacy /assets/ URL prefix via
+    the catch-all at the bottom.
   -->
   <ItemGroup>
-    <Content Include="..\..\assets\**\*.*">
-      <Link>wwwroot\assets\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    <Content Include="..\..\assets\config\**\*.*">
+      <Link>wwwroot\config\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="..\..\assets\planets\**\*.*">
+      <Link>wwwroot\planets\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="..\..\assets\shaders\**\*.wgsl">
+      <Link>wwwroot\shaders\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="..\..\assets\textures\**\*.*">
+      <Link>wwwroot\textures\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="..\..\assets\models\**\*.*">
+      <Link>wwwroot\assets\models\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="..\..\assets\animations\**\*.*">
+      <Link>wwwroot\assets\animations\%(RecursiveDir)%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>

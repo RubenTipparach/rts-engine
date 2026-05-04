@@ -12,13 +12,12 @@
 </div>
 
 @code {
-    private GameEngine? _engine;
+    // Home.razor is a compile/host shim only — it brings up WebGPU + the JS
+    // app shell, then hands everything to the shared EngineBootstrap. Game
+    // setup logic lives in RtsEngine.Game so Desktop hits the same code path.
+
+    private EngineBootstrap? _boot;
     private WebGLRenderBackend? _app;
-    private PlanetRenderer? _planet;
-    private StarMapRenderer? _starMap;
-    private SolarSystemRenderer? _solarSystem;
-    private IGPU? _gpu;
-    private EngineConfig _engineConfig = new();
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -31,7 +30,7 @@
                 // Surface the JS-side init reason so mobile users (where
                 // WebGPU support is patchy — iOS Safari < 18.2 has none, and
                 // some Android Chromes need flags) don't just see a blank
-                // canvas. Without this the page looks like it crashed.
+                // canvas.
                 var reason = await gpu.GetInitError();
                 if (string.IsNullOrEmpty(reason))
                     reason = "WebGPU init failed (no further detail). Try a recent Chrome/Edge desktop, or Safari 18.2+ on iOS / Chrome 121+ on Android.";
@@ -41,92 +40,14 @@
                     "document.getElementById('gpu-errors').style.fontSize = '14px';");
                 return;
             }
-            _gpu = gpu;
 
             _app = new WebGLRenderBackend(JS);
             await _app.InitializeAsync("gpuCanvas");
 
-            // Solar system
-            var solarData = SolarSystemData.CreateDefault();
-            var solarShader = await Http.GetStringAsync("shaders/solarsystem.wgsl");
-            var outlineShader = await Http.GetStringAsync("shaders/outline.wgsl");
-            var sunShader = await Http.GetStringAsync("shaders/sun.wgsl");
-            var starfieldShader = await Http.GetStringAsync("shaders/starfield.wgsl");
-            _solarSystem = new SolarSystemRenderer(gpu, solarData);
-            await _solarSystem.Setup(solarShader, outlineShader, sunShader, starfieldShader);
-
-            // Star map
-            var galaxy = GalaxyData.Generate(seed: 42);
-            var starmapShader = await Http.GetStringAsync("shaders/starmap.wgsl");
-            _starMap = new StarMapRenderer(gpu, galaxy);
-            await _starMap.Setup(starmapShader);
-
-            // Engine config (camera tuning, RTS ground view, LOD, lighting,
-            // slope density). Loaded BEFORE the planet so slope generation
-            // has the density value at mesh-build time.
-            try
-            {
-                var engineYaml = await Http.GetStringAsync("config/engine.yaml");
-                _engineConfig = EngineConfig.FromYaml(engineYaml);
-            }
-            catch { _engineConfig = new EngineConfig(); }
-
-            // Planet (default Earth)
-            _planet = await CreatePlanetRenderer("planets/earth.yaml");
-            var engineConfig = _engineConfig;
-
-            // RTS gameplay (buildings + units). Optional — falls back to a
-            // pure planet editor if either the config or shader is missing.
-            // Baked .obj models from assets/models/ replace the procedural
-            // boxes when available; missing files just fall back to MakeBox.
-            RtsConfig? rtsConfig = null;
-            RtsRenderer? rtsRenderer = null;
-            try
-            {
-                var rtsYaml = await Http.GetStringAsync("config/rts.yaml");
-                rtsConfig = RtsConfig.FromYaml(rtsYaml);
-                var rtsShader = await Http.GetStringAsync("shaders/rts.wgsl");
-                var objs = new Dictionary<string, string>();
-                foreach (var entityId in rtsConfig.Buildings.Select(b => b.Id)
-                                          .Concat(rtsConfig.Units.Select(u => u.Id)))
-                {
-                    try
-                    {
-                        objs[entityId] = await Http.GetStringAsync($"assets/models/{entityId}.obj");
-                    }
-                    catch { /* fall back to procedural box for this entity */ }
-                }
-                rtsRenderer = new RtsRenderer(gpu, rtsConfig);
-                await rtsRenderer.Setup(rtsShader, objs);
-            }
-            catch { rtsConfig = null; rtsRenderer = null; }
-
-            // Engine
-            _engine = new GameEngine(_app, gpu, _planet, _starMap, _solarSystem,
-                engineConfig, rtsRenderer, rtsConfig);
-            _engine.Mode = EditorMode.SolarSystem;
-
-            _engine.SetupUI();
-
-            // Planet hot-swap callback
-            _engine.OnFrameRendered += () =>
-            {
-                var wanted = _engine.SelectedPlanetConfig;
-                if (wanted != null && !_loading)
-                {
-                    if (wanted == _currentConfig)
-                    {
-                        _engine.SwitchToPlanetEdit();
-                    }
-                    else
-                    {
-                        _loading = true;
-                        _ = LoadPlanetAsync(wanted);
-                    }
-                }
-            };
-
-            _engine.Run();
+            _boot = new EngineBootstrap(gpu, _app, new HttpAssetSource(Http));
+            await _boot.SetupAsync();
+            _boot.HookPlanetHotSwap();
+            _boot.Engine!.Run();
         }
         catch (Exception e)
         {
@@ -135,70 +56,11 @@
         }
     }
 
-    private string _currentConfig = "planets/earth.yaml";
-    private bool _loading;
-
-    private async Task LoadPlanetAsync(string configPath)
-    {
-        try
-        {
-            var newPlanet = await CreatePlanetRenderer(configPath);
-            var old = _planet;
-            _planet = newPlanet;
-            _engine?.SetPlanetRenderer(newPlanet);
-            _engine?.SwitchToPlanetEdit();
-            old?.Dispose();
-        }
-        catch (Exception e)
-        {
-            await JS.InvokeVoidAsync("eval",
-                $"document.getElementById('gpu-errors').textContent = 'Load: ' + {System.Text.Json.JsonSerializer.Serialize(e.Message)}");
-        }
-        finally { _loading = false; }
-    }
-
-    private async Task<PlanetRenderer> CreatePlanetRenderer(string configPath)
-    {
-        if (_gpu == null) throw new InvalidOperationException("GPU not initialized");
-        var yaml = await Http.GetStringAsync(configPath);
-        var config = PlanetConfig.FromYaml(yaml);
-        var shader = await Http.GetStringAsync("shaders/terrain.wgsl");
-
-        var mesh = new PlanetMesh(
-            subdivisions: config.Subdivisions,
-            radius: config.Radius,
-            stepHeight: config.StepHeight);
-        mesh.GenerateFromNoise(
-            seed: config.Generation.Seed,
-            frequency: config.Generation.Frequency,
-            thresholds: config.Generation.Thresholds.ToArray());
-
-        // Procedural slope ramps at elevation borders so ground units have a
-        // way down without needing to hop. Seeded by the planet seed combined
-        // with a config-driven offset so terrain and slopes stay independent.
-        SlopeGenerator.Generate(mesh,
-            seed: config.Generation.Seed ^ _engineConfig.Slopes.SeedOffset,
-            density: _engineConfig.Slopes.Density);
-
-        var renderer = new PlanetRenderer(_gpu, mesh);
-        renderer.ApplyConfig(config);
-        await renderer.Setup(shader);
-
-        var atmoShader = await Http.GetStringAsync("shaders/atmosphere.wgsl");
-        await renderer.SetupAtmosphere(atmoShader);
-
-        var outlineShader = await Http.GetStringAsync("shaders/outline.wgsl");
-        await renderer.SetupOutline(outlineShader);
-
-        _currentConfig = configPath;
-        return renderer;
-    }
-
     public void Dispose()
     {
-        _planet?.Dispose();
-        _starMap?.Dispose();
-        _solarSystem?.Dispose();
+        _boot?.Planet?.Dispose();
+        _boot?.StarMap?.Dispose();
+        _boot?.SolarSystem?.Dispose();
         _app?.Dispose();
     }
 }

@@ -56,29 +56,54 @@ RtsEngine.Wasm (Blazor WebAssembly host — COMPILE LAYER ONLY)
 ├── WebGPU : IGPU       — JS interop → gpu-proxy.js
 ├── WebGLRenderBackend  — JS interop → app-shell.js
 ├── Home.razor          — bootstrap only, NO game UI (UI lives in GameEngine/EngineUI)
-└── wwwroot/
-    ├── shaders/        — terrain.wgsl, atmosphere.wgsl, starmap.wgsl, outline.wgsl, ui.wgsl
-    ├── textures/       — terrain_atlas.png, water_dudv.png, water_normal.png
-    ├── textures/{moon,mars,venus,ice}/ — per-planet texture sets
-    ├── planets/        — earth.yaml, moon.yaml, mars.yaml, venus.yaml, ice.yaml
+└── wwwroot/            — Wasm-only files only (HTML, _framework, JS interop, CSS)
     └── js/             — gpu-proxy.js, app-shell.js
 
 RtsEngine.Desktop (Silk.NET OpenGL host)
 └── OpenGLGPU : IGPU    — native GL calls (texture support stubbed)
+
+/assets/                — Shared content for both Wasm and Desktop
+├── config/             — engine.yaml, rts.yaml, solarsystem.yaml
+├── planets/            — earth.yaml, moon.yaml, mars.yaml, venus.yaml, ice.yaml
+├── shaders/            — terrain.wgsl/.glsl, atmosphere.*, starmap.*, outline.*, ui.* …
+├── textures/           — terrain_atlas.png, water_dudv.png, water_normal.png, per-planet sets, sprites/…
+├── models/             — baked .obj geometry
+└── animations/         — baked *.anim.json clips
 ```
 
 ## Critical Conventions
 
+- **Shared resources live in `/assets/` at the repo root, not in `RtsEngine.Wasm/wwwroot/`.** Anything consumed by both the WASM and Desktop builds — shaders, planet YAMLs, the engine config, terrain textures, model `.obj`s, animation clips — is a *shared* resource and belongs at the repo-root `/assets/` tree. The WASM csproj surfaces it at runtime via `<Content Include="..\..\assets\**\*.*">` (Link → wwwroot/...) and Desktop's `FileAssetSource` searches `/assets/` directly. Putting shared content under `RtsEngine.Wasm/wwwroot/` (other than truly Wasm-only files: `index.html`, `_framework`, JS interop, Blazor CSS) is a layering bug — Desktop ends up reaching into the Wasm host's folder for game content. Wasm-only assets stay in `wwwroot/`; everything else moves to `/assets/`.
 - **Blazor is a compile/host layer only.** All game logic, UI, mode switching, and rendering lives in RtsEngine.Game. Home.razor bootstraps the engine and handles planet hot-swap loading. No game UI in HTML/Blazor markup.
 - **Matrix math:** Silk.NET.Maths row-major, row-vector multiplication. `MVP = View * Proj`. `MatrixHelper.ToRawFloats` extracts row-major; WGSL interprets as column-major (auto-transpose).
 - **Projection z-range:** WebGPU [0,1], OpenGL [-1,1].
 - **GPU abstraction:** IGPU uses integer handles. WASM → gpu-proxy.js handle tables. Desktop → GL calls.
-- **Shaders:** WGSL for WebGPU (wwwroot/shaders/), GLSL embedded in Desktop Program.cs.
+- **Shaders:** WGSL for WebGPU (`/assets/shaders/*.wgsl`), GLSL ports for Desktop OpenGL (`/assets/shaders/*.glsl`). Game code asks for `shaders/foo.wgsl`; Desktop's `FileAssetSource` silently rewrites the extension to `.glsl` so callers don't branch.
 - **textureSampleLevel only:** Never use `textureSample` in shaders — it requires uniform control flow which breaks on mobile GPUs. Always use `textureSampleLevel(tex, samp, uv, 0.0)`.
 - **Texture creation:** `copyExternalImageToTexture` requires `TEXTURE_BINDING | COPY_DST | RENDER_ATTACHMENT` usage flags (Dawn/Chrome requirement).
 - **Index buffers:** Use `CreateIndexBuffer32(uint[])` for meshes that may exceed 65535 vertices (planet terrain). Use `CreateIndexBuffer(ushort[])` for small meshes (atmosphere, UI).
-- **Planet config:** YAML files in wwwroot/planets/ drive all planet parameters (radius, subdivisions, textures, atmosphere, noise). New planet = new YAML + texture set, no code changes.
+- **Planet config:** YAML files in `/assets/planets/` drive all planet parameters (radius, subdivisions, textures, atmosphere, noise). New planet = new YAML + texture set, no code changes.
 - **20-patch chunked rebuild:** Planet mesh is split into 20 icosahedron patches with independent VBO/IBO. Edits only rebuild affected patches (~5-15% of mesh).
+
+## Separation of Concerns (Keep GameEngine Thin)
+
+**Hard rule: `GameEngine` is an orchestration layer, not a kitchen sink.** It coordinates self-contained systems — it does not implement them. Each system below owns its own state, math, and lifecycle, exposes a small interface, and is added to GameEngine by composition. Think SRP and DIP: GameEngine depends on system abstractions; systems do not depend on GameEngine.
+
+When adding a feature, first ask **"is this orchestration, or is it its own system?"** If it has its own state, math, or lifecycle (camera transitions, hit-testing, selection sets, command queues, HUD layout, animation blending), it gets its own class — not another method on GameEngine. Touching GameEngine should mostly mean wiring a new system in, not adding logic to it.
+
+Systems that must live outside `GameEngine` (extract any of these on sight if you find them inline):
+
+- **Camera** — orbit/RTS state, zoom percent, tilt blend, pitch math, look-at resolution, MVP build, smooth lerp. Owns its own update tick. GameEngine asks it for an MVP and forwards input deltas; nothing more.
+- **Picking / hit-testing** — ray construction from canvas coords, unit picking, hex cell picking, screen→world unprojection. Pure functions of camera + scene; no rendering or UI knowledge.
+- **Input routing** — raw drag/click/scroll/move/key events come from `IRenderBackend`. A dedicated input router translates them into game intents (e.g. `SelectAt`, `MoveCommand`, `ZoomBy`) before GameEngine sees them. GameEngine should not contain `if (button == 0 && shift) ...` ladders.
+- **Selection** — selected units set, box-select rectangle, selection overlay. One owner, not scattered fields on GameEngine.
+- **Commands / orders** — move, attack, produce, build, place. Issued through a command interface; executed by the units/buildings systems. GameEngine doesn't mutate unit positions directly.
+- **UI controller** — button visibility, layout slots, zoom indicator, context menu state. `EngineUI` is the renderer; the controller is what decides *which* buttons are shown and what they do.
+- **Mode switching** — SolarSystem ↔ PlanetEdit ↔ StarMap. Each mode is a state object with its own enter/exit/tick/draw; GameEngine just holds the current one and forwards calls.
+
+What's left in `GameEngine` after extraction: hold the systems, route the per-frame tick (`Tick → input router → mode.Tick → camera.Update → renderer.Draw`), and own cross-system glue that genuinely belongs nowhere else. If a method on GameEngine could move to a system without GameEngine needing to know, **move it**.
+
+Rule of thumb: if `GameEngine.cs` is creeping past a few hundred lines or you find yourself adding another `private float SomeMath(...)` helper to it, stop and extract. New camera/picking/input math goes in its own file from the start.
 
 ## Config-Driven Design (NO HARDCODED MAGIC NUMBERS)
 

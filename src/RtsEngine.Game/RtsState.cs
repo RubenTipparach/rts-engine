@@ -23,15 +23,32 @@ public sealed class RtsState
     /// <summary>Currently selected building, or -1.</summary>
     public int SelectedBuildingInstanceId { get; set; } = -1;
 
-    /// <summary>Currently selected unit, or -1. Mutually exclusive with
-    /// the building selection — picking one clears the other.</summary>
-    public int SelectedUnitInstanceId { get; set; } = -1;
+    /// <summary>Currently selected unit instance ids. Mutually exclusive with
+    /// the building selection — picking one clears the other. A single-click
+    /// fills this with one id; a box select fills it with all units inside
+    /// the rect.</summary>
+    public HashSet<int> SelectedUnitInstanceIds { get; } = new();
+
+    /// <summary>Entity currently under the mouse cursor, or -1. Drives the
+    /// on-hover HP bar overlay alongside selected entities — set by
+    /// PlanetEditMode.OnMove via the picker.</summary>
+    public int HoveredUnitInstanceId { get; set; } = -1;
+    public int HoveredBuildingInstanceId { get; set; } = -1;
+
+    /// <summary>Convenience: first selected unit id, or -1.</summary>
+    public int SelectedUnitInstanceId =>
+        SelectedUnitInstanceIds.Count > 0 ? SelectedUnitInstanceIds.First() : -1;
 
     public PlacedBuilding? SelectedBuilding =>
         Buildings.FirstOrDefault(b => b.InstanceId == SelectedBuildingInstanceId);
 
     public SpawnedUnit? SelectedUnit =>
-        Units.FirstOrDefault(u => u.InstanceId == SelectedUnitInstanceId);
+        SelectedUnitInstanceIds.Count > 0
+            ? Units.FirstOrDefault(u => u.InstanceId == SelectedUnitInstanceIds.First())
+            : null;
+
+    public IEnumerable<SpawnedUnit> SelectedUnits =>
+        Units.Where(u => SelectedUnitInstanceIds.Contains(u.InstanceId));
 
     public PlacedBuilding? BuildingAtCell(int cellIndex) =>
         Buildings.FirstOrDefault(b => b.CellIndex == cellIndex);
@@ -67,7 +84,7 @@ public sealed class RtsState
         Units.Clear();
         PlacementBuildingId = null;
         SelectedBuildingInstanceId = -1;
-        SelectedUnitInstanceId = -1;
+        SelectedUnitInstanceIds.Clear();
     }
 }
 
@@ -80,6 +97,12 @@ public sealed class PlacedBuilding
     /// the ring-offset pattern so consecutive spawns don't stack on top of
     /// each other.</summary>
     public int UnitsSpawned { get; set; }
+    /// <summary>Team ownership — 0 = player, 1+ = enemies. Drives livery
+    /// (texture team-color swap) and friendly-vs-hostile selection rules.</summary>
+    public int Team { get; set; } = 0;
+    /// <summary>Hit points. Buildings start at MaxHp and don't regenerate.</summary>
+    public float MaxHp { get; set; } = 200f;
+    public float Hp { get; set; } = 200f;
 }
 
 public sealed class SpawnedUnit
@@ -101,7 +124,28 @@ public sealed class SpawnedUnit
     /// the next cell to step toward.</summary>
     public List<int>? Path { get; set; }
     public int PathIndex { get; set; }
+
+    /// <summary>Optional sub-cell anchor for the final waypoint, in world
+    /// coordinates. When set, the unit aims at this exact point on its last
+    /// path step instead of the destination cell's geometric center —
+    /// that's how multi-unit move orders pack several units into one hex
+    /// (each gets a different anchor inside the same cell). Null = use the
+    /// cell center as before.</summary>
+    public Vector3? FinalArrivalPos { get; set; }
     /// <summary>Heading vector along the surface (tangent), used by the
     /// renderer to face the unit's model toward its next step.</summary>
     public Vector3 Heading { get; set; }
+
+    /// <summary>Current velocity in world coordinates (radius-units per
+    /// second). Maintained by <see cref="MovementSystem"/>: at the start of
+    /// each tick the desired path-following velocity is computed, ORCA picks
+    /// a collision-free velocity closest to it, and that velocity is both
+    /// integrated into <see cref="SurfacePoint"/> and stored here so other
+    /// agents can see this unit's motion when they run their own ORCA pass.</summary>
+    public Vector3 Velocity { get; set; }
+
+    /// <summary>Team ownership — 0 = player, 1+ = enemies.</summary>
+    public int Team { get; set; } = 0;
+    public float MaxHp { get; set; } = 50f;
+    public float Hp { get; set; } = 50f;
 }

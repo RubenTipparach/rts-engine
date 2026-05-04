@@ -53,4 +53,10 @@ public sealed class UnitDef
     /// <summary>Infantry-style mobility — can hop a single elevation step
     /// between adjacent cells without needing a slope.</summary>
     public bool CanHop { get; set; } = false;
+    /// <summary>Max units of this type that share one destination hex
+    /// before BFS spills the rest to neighboring cells. Infantry typically
+    /// 8 (small enough to ring around a cell), vehicles typically 4 (need
+    /// more room). Mixed-type group orders pack at the most-restrictive
+    /// member's capacity.</summary>
+    public int PerCellCapacity { get; set; } = 4;
 }

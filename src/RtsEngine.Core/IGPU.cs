@@ -30,6 +30,12 @@ public interface IGPU
     /// <summary>Same as CreateRenderPipeline but with alpha blend + depth write off. For transparent overlays.</summary>
     Task<int> CreateRenderPipelineAlphaBlend(int shaderModuleId, object[] vertexBufferLayouts);
 
+    /// <summary>World-space markers (HP bars, selection discs, path lines, build ghosts):
+    /// alpha blend, depth test on but no depth write, cull-none so flat quads render
+    /// regardless of facing. Distinct from <see cref="CreateRenderPipelineAlphaBlend"/>
+    /// which culls front faces for inside-out shells (atmosphere).</summary>
+    Task<int> CreateRenderPipelineMarker(int shaderModuleId, object[] vertexBufferLayouts);
+
     /// <summary>Screen-space UI: alpha blend, no depth test, no culling.</summary>
     Task<int> CreateRenderPipelineUI(int shaderModuleId, object[] vertexBufferLayouts);
 

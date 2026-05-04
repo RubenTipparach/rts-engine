@@ -1,0 +1,70 @@
+# RTS gameplay definitions. Buildings sit on planet hex cells and produce
+# units; units spawn next to the building that produced them. Sizes are in
+# planet radius units (radius = 1.0) so they scale with the world.
+#
+# All values config-driven — no hardcoded buildings or units in code. Add
+# a new entry here, reference its id in the produces list, done.
+
+buildings:
+  - id: command_center
+    name: Command Center
+    color: [0.65, 0.70, 0.85]
+    halfWidth: 0.020
+    height:    0.035
+    produces:  [worker, scout]
+  - id: barracks
+    name: Barracks
+    color: [0.55, 0.35, 0.25]
+    halfWidth: 0.0175
+    height:    0.025
+    produces:  [marine, scout]
+  - id: factory
+    name: Factory
+    color: [0.40, 0.42, 0.48]
+    halfWidth: 0.0225
+    height:    0.030
+    produces:  [tank, apc]
+
+units:
+  # Speed is in planet-radius units per second.
+  # canHop = true lets infantry step a single elevation level without a slope.
+  - id: worker
+    name: Worker
+    color: [0.95, 0.85, 0.30]
+    halfWidth: 0.005
+    height:    0.009
+    speed:     0.040
+    canHop:    false
+    perCellCapacity: 8
+  - id: marine
+    name: Marine
+    color: [0.30, 0.65, 0.30]
+    halfWidth: 0.0045
+    height:    0.010
+    speed:     0.050
+    canHop:    false
+    perCellCapacity: 8
+  - id: scout
+    name: Scout
+    color: [0.70, 0.65, 0.35]
+    halfWidth: 0.004
+    height:    0.008
+    speed:     0.080
+    canHop:    false
+    perCellCapacity: 8
+  - id: tank
+    name: Tank
+    color: [0.45, 0.45, 0.50]
+    halfWidth: 0.007
+    height:    0.007
+    speed:     0.030
+    canHop:    false
+    perCellCapacity: 4
+  - id: apc
+    name: APC
+    color: [0.50, 0.45, 0.30]
+    halfWidth: 0.0065
+    height:    0.0065
+    speed:     0.060
+    canHop:    false
+    perCellCapacity: 4

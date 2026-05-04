@@ -28,6 +28,11 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
             _aUni[17] = config.Atmosphere.SunDirection[1];
             _aUni[18] = config.Atmosphere.SunDirection[2];
         }
+        // params.y on the terrain uniform (slot 25) toggles the wave-water
+        // shader for level 0. Only Earth has actual liquid water; Mars,
+        // Venus, Moon, Glacius all keep this off so their basin tier
+        // samples its atlas tile normally.
+        _tUni[25] = config.Terrain.OceanLevel0 ? 1f : 0f;
     }
 
     private readonly IGPU _gpu;

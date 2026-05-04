@@ -23,6 +23,13 @@ public sealed class WebGLRenderBackend : IRenderBackend
     public event Action<float>? Scroll;
     public event Action<float, float>? PointerMove;
     public event Action<string>? KeyDown;
+#pragma warning disable CS0067 // WASM doesn't yet expose RTS-style middle/right gestures; the DOM
+    // overlay would need to track button state + alt and emit them — TODO when desktop parity matters.
+    public event Action<float, float>? OrbitDrag;
+    public event Action<float, float, float, float>? BoxSelectUpdate;
+    public event Action<float, float, float, float>? BoxSelectComplete;
+    public event Action<float, float>? ContextMenuRequested;
+#pragma warning restore CS0067
 
     private Func<Task>? _onTick;
 

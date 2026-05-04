@@ -35,6 +35,14 @@ public sealed class TerrainConfig
 {
     public string AtlasUrl { get; set; } = "textures/terrain_atlas.png";
     public List<LevelConfig> Levels { get; set; } = new();
+
+    /// <summary>When true, level-0 cells render through the wave-water
+    /// shader (Fresnel + DuDv distortion + specular). When false, level 0
+    /// just samples its atlas tile like any other terrain — used for
+    /// planets whose lowest tier is solid ground (Mars canyon, Venus
+    /// lowland, Moon crater_floor) or frozen ocean (Glacius). Only Earth
+    /// flips this on by default.</summary>
+    public bool OceanLevel0 { get; set; } = false;
 }
 
 public sealed class LevelConfig
@@ -53,8 +61,13 @@ public sealed class GenerationConfig
 {
     public int Seed { get; set; } = 42;
     public float Frequency { get; set; } = 2.5f;
-    // Five levels → four thresholds separating them
-    public List<float> Thresholds { get; set; } = new() { 0.30f, 0.45f, 0.65f, 0.82f };
+    // Six levels → five thresholds separating them, applied to noise ∈ [0,1].
+    // Default palette: water, sand, grass×2, rock, snow. Earth-tuned (high
+    // t0 keeps roughly half the surface ocean).
+    public List<float> Thresholds { get; set; } = new()
+    {
+        0.45f, 0.52f, 0.65f, 0.78f, 0.88f
+    };
 }
 
 public sealed class AtmosphereConfig
