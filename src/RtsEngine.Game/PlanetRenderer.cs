@@ -288,6 +288,14 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
             _dirtyPatches.Add(p);
     }
 
+    /// <summary>Mark every patch dirty. Used after a global mesh-emission
+    /// flag flips (EmitWaterSurface, etc.) where we don't know which cells
+    /// changed but the whole planet needs a rebuild.</summary>
+    public void MarkAllPatchesDirty()
+    {
+        for (int p = 0; p < PlanetMesh.PatchCount; p++) _dirtyPatches.Add(p);
+    }
+
     /// <summary>Rebuild only dirty patches. Call once per frame before Draw.</summary>
     public async Task RebuildDirtyPatches()
     {

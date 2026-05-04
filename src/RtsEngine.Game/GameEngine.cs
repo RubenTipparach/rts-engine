@@ -87,6 +87,22 @@ public class GameEngine
         // Per-mode HUD events (build/produce/cancel/context/edit) are handled
         // inside the mode that uses them.
         _hud.BackSolarClicked += SwitchToSolarSystem;
+        // Water toggle is also cross-cutting — it affects the planet mesh
+        // (level-0 cells emit/skip the water surface fan) regardless of
+        // which mode we're in.
+        _hud.WaterToggled += OnWaterToggled;
+    }
+
+    /// <summary>HUD's 🌊 Water button flipped. Push the new state into the
+    /// active planet's mesh and force a full patch rebuild — every level-0
+    /// cell needs to re-emit (and the seabed underneath was already there,
+    /// it just becomes the "top" of the cell when water is off).</summary>
+    private void OnWaterToggled()
+    {
+        var planet = _transition.PlanetRenderer;
+        if (planet == null) return;
+        planet.Mesh.EmitWaterSurface = _hud.WaterOn;
+        planet.MarkAllPatchesDirty();
     }
 
     private void WireModes()

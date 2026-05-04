@@ -28,8 +28,14 @@ public sealed class EngineHud
     /// state of the Edit button; GameEngine reads it to gate input policy.</summary>
     public bool EditMode { get; private set; }
 
+    /// <summary>Water-on toggle — true means the water-surface fan emits.
+    /// Defaults to true. Toggled by the "🌊 Water" button; GameEngine
+    /// listens to <see cref="WaterToggled"/> and rebuilds the planet mesh.</summary>
+    public bool WaterOn { get; private set; } = true;
+
     public event Action? BackSolarClicked;
     public event Action? EditToggled;
+    public event Action? WaterToggled;
     public event Action<string>? BuildPlacementClicked;
     public event Action? PlacementCancelClicked;
     public event Action<string>? ProduceUnitClicked;
@@ -68,6 +74,7 @@ public sealed class EngineHud
         }";
         _app.CreateUIButton("back_solar", "⬅ Solar System", css);
         _app.CreateUIButton("edit_toggle", "✏ Edit", editCss);
+        _app.CreateUIButton("water_toggle", "🌊 Water", WaterButtonCss(WaterOn));
 
         // RTS build bar — one button per building type, laid out along the
         // bottom edge. Produce buttons (per selected building) and the
@@ -105,6 +112,7 @@ public sealed class EngineHud
         bool inPlanet = _modeProvider() == EditorMode.PlanetEdit && !_transitioningProvider();
         _app.ShowUIButton("back_solar", inPlanet);
         _app.ShowUIButton("edit_toggle", inPlanet);
+        _app.ShowUIButton("water_toggle", inPlanet);
         UpdateRtsButtonVisibility(inPlanet);
         UpdateZoomIndicator(inPlanet);
     }
@@ -206,6 +214,13 @@ public sealed class EngineHud
             _app.CreateUIButton("edit_toggle", EditMode ? "✓ Editing" : "✏ Edit", editCss);
             EditToggled?.Invoke();
         }
+        else if (id == "water_toggle")
+        {
+            WaterOn = !WaterOn;
+            _app.CreateUIButton("water_toggle", WaterOn ? "🌊 Water" : "🌊 Water (off)",
+                WaterButtonCss(WaterOn));
+            WaterToggled?.Invoke();
+        }
         else if (id == "cancel_placement") PlacementCancelClicked?.Invoke();
         else if (id.StartsWith("build_") && _rtsConfig != null)
             BuildPlacementClicked?.Invoke(id.Substring("build_".Length));
@@ -284,6 +299,24 @@ public sealed class EngineHud
 
         _app.CreateUIButton("zoom_indicator", label, css);
         _app.ShowUIButton("zoom_indicator", true);
+    }
+
+    /// <summary>CSS for the 🌊 Water button — sits to the right of the
+    /// Edit button in the top-left HUD strip. Tinted teal when water is
+    /// on, dimmer grey when off, so the current state reads at a glance.</summary>
+    private static string WaterButtonCss(bool on)
+    {
+        var bg = on ? "rgba(10,50,80,0.9)" : "rgba(30,30,30,0.85)";
+        var col = on ? "#7df" : "#999";
+        var border = on ? "#7df" : "#555";
+        return @"{""top"":""10px"",""left"":""300px""," +
+               @"""padding"":""10px 20px"",""fontSize"":""16px""," +
+               @"""background"":""" + bg + @"""," +
+               @"""color"":""" + col + @"""," +
+               @"""border"":""1px solid " + border + @"""," +
+               @"""borderRadius"":""6px""," +
+               @"""cursor"":""pointer"",""display"":""none""," +
+               @"""fontFamily"":""monospace""}";
     }
 
     private static string BuildButtonCss(int slot, bool active)

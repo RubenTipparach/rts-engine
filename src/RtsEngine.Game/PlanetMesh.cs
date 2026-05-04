@@ -47,6 +47,13 @@ public sealed class PlanetMesh
     public float ChamferDrop { get; }
     public int CellCount => _centers.Length;
 
+    /// <summary>Emit the water-surface fan on level-0 cells. Disable to expose
+    /// the rocky seabed underneath for visual debugging — the fan toggles the
+    /// second EmitCellFan in EmitCellGeometry's water branch. Toggling this
+    /// requires rebuilding all patches (PlanetRenderer.MarkAllPatchesDirty +
+    /// RebuildDirtyPatches).</summary>
+    public bool EmitWaterSurface { get; set; } = true;
+
     private readonly Vector3[] _centers;
     private readonly int[][] _neighbors;
     private readonly Vector3[][] _polyVerts;
@@ -537,14 +544,15 @@ public sealed class PlanetMesh
             //   * Rock seabed at Radius (height 0) — the level-0 baseline.
             //   * Water surface at Radius + 0.75 * StepHeight (height 0.75).
             //   * Adjacent land cliff tops at Radius + 1 * StepHeight (height 1).
-            // The seabed and water surface are both emitted as horizontal
-            // fans here. Cliff walls down to the seabed come from adjacent
-            // land cells (their wall code special-cases water neighbours
-            // and runs the wall to Radius); water-to-water edges suppress
-            // (same-level top, no wall) so the basin floor is flush.
+            // Cliff walls down to the seabed come from adjacent land cells
+            // (their wall code special-cases water neighbours and runs the
+            // wall to Radius); water-to-water edges suppress (same-level
+            // top, no wall) so the basin floor is flush. The water surface
+            // fan can be toggled off for debugging via EmitWaterSurface.
             float seabedH = Radius;
             EmitCellFan(verts, idx, cell, seabedH, cellNormal, CliffLevel);
-            EmitCellFan(verts, idx, cell, h, cellNormal, 0);
+            if (EmitWaterSurface)
+                EmitCellFan(verts, idx, cell, h, cellNormal, 0);
         }
         else
         {
