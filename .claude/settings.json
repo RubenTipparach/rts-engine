@@ -18,7 +18,11 @@
       "Bash(python tools/gen_planet_textures.py)",
       "PowerShell($env:PYTHONIOENCODING='utf-8'; python tools/gen_terrain_textures.py; if \\($?\\) { python tools/gen_planet_textures.py })",
       "PowerShell($nagaCmd = Get-Command naga -ErrorAction SilentlyContinue; if \\($nagaCmd\\) { Write-Output \"naga-found: $\\($nagaCmd.Source\\)\"; & naga --version } else { Write-Output \"naga-not-installed\" }; $cargoCmd = Get-Command cargo -ErrorAction SilentlyContinue; if \\($cargoCmd\\) { Write-Output \"cargo-found: $\\($cargoCmd.Source\\)\" } else { Write-Output \"cargo-not-installed\" })",
-      "Bash(cargo install *)"
+      "Bash(cargo install *)",
+      "PowerShell(naga --version)",
+      "PowerShell(naga --help 2>&1)",
+      "Bash(naga --version)",
+      "Bash(naga --help)"
     ]
   }
 }

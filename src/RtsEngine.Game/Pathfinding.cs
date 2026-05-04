@@ -137,14 +137,20 @@ public static class Pathfinding
     // ── Any-angle smoothing ───────────────────────────────────────────
 
     /// <summary>
-    /// Greedy great-circle line-of-sight test on the cell graph: walk from
-    /// <paramref name="from"/> toward <paramref name="to"/>, at each step
-    /// taking the neighbor whose direction best matches the current great-
-    /// circle tangent. Returns true iff every step along that walk is
-    /// traversable for the unit. Used by <see cref="SmoothPath"/> to drop
-    /// intermediate waypoints whose direct arc is unobstructed, so units
-    /// take straight-line motion in open ground instead of zigzagging
-    /// cell-to-cell along the raw A* output.
+    /// Arc-sampling great-circle line-of-sight test. Sweeps the geodesic
+    /// from <paramref name="from"/>'s center to <paramref name="to"/>'s
+    /// center at sub-cell angular resolution; at each sample, finds the
+    /// cell whose center is nearest (= the cell the unit would actually
+    /// physically be in there); whenever the sampled cell changes, checks
+    /// that the transition is traversable. Returns true iff every sampled
+    /// transition is legal for the unit.
+    ///
+    /// Replaces an earlier "greedy by tangent direction" walk that picked
+    /// the neighbor best aligned with the geodesic. That alignment-pick
+    /// could prefer a traversable slope adjacent to a cliff even when the
+    /// arc itself crossed the cliff cell, certifying clear paths that
+    /// physically went up the cliff. Sampling the actual arc and testing
+    /// the cells it crosses removes that false-positive.
     /// </summary>
     public static bool HasLineOfSight(PlanetMesh mesh, int from, int to, bool canHop,
         bool slopesTraversable)
@@ -152,53 +158,63 @@ public static class Pathfinding
         if (from == to) return true;
         if (from < 0 || to < 0) return false;
 
-        int current = from;
-        Vector3 goalPos = mesh.GetCellCenter(to);
-        // Loose safety bound — a great-circle walk on the cell graph is
-        // monotone toward the goal, so it terminates well inside CellCount
-        // steps. The bound is just to keep a malformed mesh from looping.
-        int safety = mesh.CellCount;
+        Vector3 a = mesh.GetCellCenter(from);  // unit vector
+        Vector3 b = mesh.GetCellCenter(to);
 
-        while (current != to && safety-- > 0)
+        float dot = Math.Clamp(Vector3.Dot(a, b), -1f, 1f);
+        float arcAngle = MathF.Acos(dot);
+        if (arcAngle < 1e-6f) return true;
+
+        // axis = a × b is perpendicular to both. The geodesic from a→b is
+        // the rotation of a around this axis through arcAngle. Antipodal
+        // points have ‖a×b‖ ≈ 0 and infinitely many geodesics — bail.
+        Vector3 axis = Vector3.Cross(a, b);
+        if (axis.LengthSquared() < 1e-12f) return false;
+        axis = Vector3.Normalize(axis);
+        Vector3 perp = Vector3.Cross(axis, a);  // axis ⟂ a, so |perp| = 1.
+
+        // Step angle = a fraction of an average cell's angular radius, so
+        // we don't skip narrow cells along the path. Total cell count gives
+        // average solid angle 4π/N → angular radius √(area/π) = √(4/N).
+        float cellAngularRadius = MathF.Sqrt(4f / mesh.CellCount);
+        float stepAngle = cellAngularRadius * 0.4f;
+        int steps = Math.Max(2, (int)MathF.Ceiling(arcAngle / stepAngle));
+
+        int prevCell = from;
+        for (int i = 1; i <= steps; i++)
         {
-            Vector3 currentPos = mesh.GetCellCenter(current);
+            float t = (float)i / steps;
+            float angle = t * arcAngle;
+            // Rodrigues simplification: axis ⟂ a → axis·a = 0, so
+            // p(t) = a·cos(angle) + perp·sin(angle).
+            Vector3 sample = a * MathF.Cos(angle) + perp * MathF.Sin(angle);
 
-            // Tangent at 'current' pointing along the great-circle toward
-            // 'goal': remove the radial component of (goal - current). On
-            // unit-radius positions this is the geodesic direction.
-            Vector3 toGoal = goalPos - currentPos;
-            Vector3 tangent = toGoal - currentPos * Vector3.Dot(toGoal, currentPos);
-            if (tangent.LengthSquared() < 1e-12f) return false;
-            tangent = Vector3.Normalize(tangent);
-
-            int bestNbr = -1;
-            float bestDot = -2f;
-            foreach (int n in mesh.GetNeighbors(current))
+            // Walk the cell graph one neighbor at a time toward `sample`,
+            // validating each adjacency step. This is what a robust LOS
+            // needs: a hill-climb that simply *returned* the nearest cell
+            // could let CanTraverse compare two non-adjacent cells (start
+            // and end of a many-step walk), passing on same-level grounds
+            // while the actual route between them crosses an unsloped
+            // cliff. Stepping cell-by-cell forces every implicit cliff
+            // crossing onto the test surface.
+            int safety = 16;
+            while (safety-- > 0)
             {
-                Vector3 dirN = mesh.GetCellCenter(n) - currentPos;
-                Vector3 tN = dirN - currentPos * Vector3.Dot(dirN, currentPos);
-                if (tN.LengthSquared() < 1e-12f) continue;
-                tN = Vector3.Normalize(tN);
-                float d = Vector3.Dot(tN, tangent);
-                if (d > bestDot) { bestDot = d; bestNbr = n; }
+                Vector3 prevCenter = mesh.GetCellCenter(prevCell);
+                float bestDist = Vector3.DistanceSquared(prevCenter, sample);
+                int bestNbr = -1;
+                foreach (int n in mesh.GetNeighbors(prevCell))
+                {
+                    float d = Vector3.DistanceSquared(mesh.GetCellCenter(n), sample);
+                    if (d < bestDist) { bestDist = d; bestNbr = n; }
+                }
+                if (bestNbr < 0) break;  // prevCell is already the closest
+                if (!CanTraverse(mesh, prevCell, bestNbr, canHop, slopesTraversable))
+                    return false;
+                prevCell = bestNbr;
             }
-            if (bestNbr < 0) return false;
-
-            // Progress guard: if the greedy pick isn't strictly closer to
-            // the goal than current, the great-circle direction lies
-            // between two neighbors and the walk would oscillate. Treat
-            // that as "no clear line" and let the raw A* path handle it.
-            float curDistSq = Vector3.DistanceSquared(currentPos, goalPos);
-            float nextDistSq = Vector3.DistanceSquared(mesh.GetCellCenter(bestNbr), goalPos);
-            if (nextDistSq >= curDistSq) return false;
-
-            // The walk hit a non-traversable transition (cliff without
-            // slope/hop) — line of sight blocked, raw A* must route around.
-            if (!CanTraverse(mesh, current, bestNbr, canHop, slopesTraversable)) return false;
-
-            current = bestNbr;
         }
-        return current == to;
+        return prevCell == to;
     }
 
     /// <summary>
