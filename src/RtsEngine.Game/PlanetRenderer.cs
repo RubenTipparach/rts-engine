@@ -37,7 +37,7 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         // cells emit a rock seabed at Radius - 3*StepHeight, so this is
         // 3 * StepHeight. The water shader uses it for depth-based color
         // absorption and shore foam at shallow areas.
-        _tUni[26] = 3f * config.Terrain.StepHeight;
+        _tUni[26] = 3f * config.StepHeight;
     }
 
     private readonly IGPU _gpu;
