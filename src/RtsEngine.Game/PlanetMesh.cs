@@ -533,19 +533,18 @@ public sealed class PlanetMesh
         // appear at cliff borders, never below water.
         if (level == 0 && slope == null)
         {
-            // Three elevations on a water cell:
-            //   * Rock seabed at Radius (height 0) — the level-0 baseline.
-            //   * Water surface at Radius + 0.75 * StepHeight (height 0.75).
-            //   * Adjacent land cliff tops at Radius + 1 * StepHeight (height 1).
-            // The seabed and water surface are emitted as horizontal fans
-            // here; the cliff walls down to the seabed are emitted by the
-            // adjacent land cells (their wall code special-cases water
-            // neighbours and runs the wall all the way down to seabed
-            // instead of stopping at the water surface, so the rock
-            // visibly continues underwater).
+            // EXPERIMENT: water surface disabled. Only the seabed fan emits,
+            // so level-0 cells appear as a flat rock floor at Radius (height
+            // 0). The cliff walls from adjacent land cells still drop to
+            // Radius, so this view shows the geometry the water would be
+            // sitting in — useful for visually confirming the seabed sits
+            // a full step below the level-1 cliff tops, separated from the
+            // water surface elevation (R + 0.75 * StepHeight, currently
+            // unrendered). Re-enable the water surface fan to restore the
+            // wave-water shader on top.
             float seabedH = Radius;
             EmitCellFan(verts, idx, cell, seabedH, cellNormal, CliffLevel);
-            EmitCellFan(verts, idx, cell, h, cellNormal, 0);
+            // EmitCellFan(verts, idx, cell, h, cellNormal, 0);  // water surface (disabled)
         }
         else
         {
