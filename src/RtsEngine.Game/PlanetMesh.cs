@@ -114,8 +114,28 @@ public sealed class PlanetMesh
             for (int i = 0; i < n; i++)
             {
                 int j = (i + 1) % n;
-                Vector3 centroid = (_centers[v] + _centers[nbrs[i]] + _centers[nbrs[j]]) / 3f;
-                _polyVerts[v][i] = Vector3.Normalize(centroid);
+                // Centroid of (cell, nbrs[i], nbrs[j]) — the three cells
+                // sharing this polygon vertex in the Goldberg dual. Each of
+                // the three cells will compute this same physical vertex
+                // independently, but their neighbor lists are sorted by
+                // angle so the order of the three centers in the sum
+                // differs cell-to-cell. Float addition isn't associative,
+                // so summing in float gives ~1 ULP differences cell-to-cell,
+                // which propagates into per-cell mesh geometry as visible
+                // seams (especially at chamfer + slope interactions where
+                // small offsets stack). Sum in double — double precision
+                // (~1e-16) is well below float ULP (~1e-7), so the float
+                // cast at the end rounds to the SAME float regardless of
+                // sum order, and all three cells get a bit-identical
+                // polygon vertex position.
+                double sx = (double)_centers[v].X + _centers[nbrs[i]].X + _centers[nbrs[j]].X;
+                double sy = (double)_centers[v].Y + _centers[nbrs[i]].Y + _centers[nbrs[j]].Y;
+                double sz = (double)_centers[v].Z + _centers[nbrs[i]].Z + _centers[nbrs[j]].Z;
+                double len = Math.Sqrt(sx * sx + sy * sy + sz * sz);
+                _polyVerts[v][i] = new Vector3(
+                    (float)(sx / len),
+                    (float)(sy / len),
+                    (float)(sz / len));
             }
         }
 
@@ -152,6 +172,23 @@ public sealed class PlanetMesh
     // ── Cell access ─────────────────────────────────────────────────
 
     public byte GetLevel(int cell) => _levels[cell];
+
+    /// <summary>
+    /// Distance-from-core for a given elevation tier. Levels 1..MaxLevel sit
+    /// at <c>Radius + level * StepHeight</c> as you'd expect, but level 0
+    /// (water) is offset to <c>Radius + 0.75 * StepHeight</c> so the water
+    /// surface sits visibly above the rocky cliff bottoms (which would
+    /// otherwise meet the water at the same height = Radius and read as
+    /// "the rock is poking up to the same level as the water"). The 0.75
+    /// fraction means the water column reads as a clear "puddle" of
+    /// elevation between the seabed (Radius - 3*step) and the
+    /// level-1-sand shoreline (Radius + step), without the surface
+    /// floating up so high it crosses over to land elevation.
+    /// </summary>
+    public float LevelH(byte level)
+        => level == 0
+            ? Radius + 0.75f * StepHeight
+            : Radius + level * StepHeight;
 
     public void SetLevel(int cell, byte level)
     {
@@ -222,14 +259,40 @@ public sealed class PlanetMesh
     /// Remaining "perpendicular" vertices interpolate linearly along the
     /// axis between the two edge midpoints.
     /// </summary>
+    /// <summary>
+    /// Per-vertex height for cell <paramref name="cell"/>'s polygon corner
+    /// <paramref name="vertIndex"/>. Flat cells return the level height; slope
+    /// cells anchor their low-edge corners at the low-neighbor height and
+    /// their high-edge corners at the high-neighbor (= cell's nominal) height,
+    /// then handle the rest as follows:
+    ///
+    /// Polygon vertex <c>polyVerts[i]</c> is shared with this cell, <c>nbrs[i]</c>,
+    /// and <c>nbrs[(i+1) mod n]</c>. For perpendicular corners (not on the low
+    /// or high edges) we want the slope cell's corner to align with the two
+    /// flat neighbors' tops where possible, so adjacent same-level cells meet
+    /// flush and no vertical "perpendicular wall" with cliff/rock texture is
+    /// needed to bridge the gap. Concretely, the corner sits at the higher of:
+    ///
+    ///   1. the slope-axis interpolation between low and high edge midpoints
+    ///      (the original ramp tilt), and
+    ///   2. the higher of the two perpendicular flat neighbors' tops, clamped
+    ///      to the cell's nominal so the slope never pokes above its own ceiling.
+    ///
+    /// When both perpendicular neighbors sit at the slope's nominal level
+    /// (the common case — a slope is in a plateau region tilting down to one
+    /// neighbor), this clamps the corner UP to <c>highH</c>, which exactly
+    /// matches the flat neighbors and removes the seam wall entirely. When
+    /// a perpendicular neighbor is lower than nominal, the cliff wall on
+    /// that edge still emits — but that's a real cliff, not an artefact.
+    /// </summary>
     public float GetVertexHeight(int cell, int vertIndex)
     {
         var slope = _slopes[cell];
-        float baseH = Radius + _levels[cell] * StepHeight;
+        float baseH = LevelH(_levels[cell]);
         if (slope == null) return baseH;
 
-        float lowH = Radius + _levels[slope.LowNeighbor] * StepHeight;
-        float highH = Radius + _levels[slope.HighNeighbor] * StepHeight;
+        float lowH = LevelH(_levels[slope.LowNeighbor]);
+        float highH = LevelH(_levels[slope.HighNeighbor]);
 
         var nbrs = _neighbors[cell];
         int n = nbrs.Length;
@@ -251,22 +314,50 @@ public sealed class PlanetMesh
         if (vertIndex == lowA || vertIndex == lowB) return lowH;
         if (vertIndex == highA || vertIndex == highB) return highH;
 
+        // Slope-axis interpolation: project this corner onto the axis from low
+        // edge midpoint to high edge midpoint and return lowH..highH at the
+        // projected fraction. Done in tangent space so the projection stays
+        // on the cell's surface plane regardless of the cell's orientation.
         var verts = _polyVerts[cell];
         Vector3 cellNormal = _centers[cell];
         Vector3 lowMid = (verts[lowA] + verts[lowB]) * 0.5f;
         Vector3 highMid = (verts[highA] + verts[highB]) * 0.5f;
         Vector3 axis = highMid - lowMid;
         axis -= cellNormal * Vector3.Dot(axis, cellNormal);
-        if (axis.LengthSquared() < 1e-8f) return (lowH + highH) * 0.5f;
-        axis = Vector3.Normalize(axis);
+        float interp;
+        if (axis.LengthSquared() < 1e-8f)
+        {
+            interp = (lowH + highH) * 0.5f;
+        }
+        else
+        {
+            axis = Vector3.Normalize(axis);
+            float lowProj = Vector3.Dot(lowMid - cellNormal, axis);
+            float highProj = Vector3.Dot(highMid - cellNormal, axis);
+            float range = highProj - lowProj;
+            if (MathF.Abs(range) < 1e-8f)
+            {
+                interp = (lowH + highH) * 0.5f;
+            }
+            else
+            {
+                float vt = Vector3.Dot(verts[vertIndex] - cellNormal, axis);
+                float u = Math.Clamp((vt - lowProj) / range, 0f, 1f);
+                interp = lowH + (highH - lowH) * u;
+            }
+        }
 
-        float lowProj = Vector3.Dot(lowMid - cellNormal, axis);
-        float highProj = Vector3.Dot(highMid - cellNormal, axis);
-        float range = highProj - lowProj;
-        if (MathF.Abs(range) < 1e-8f) return (lowH + highH) * 0.5f;
-        float vt = Vector3.Dot(verts[vertIndex] - cellNormal, axis);
-        float u = Math.Clamp((vt - lowProj) / range, 0f, 1f);
-        return lowH + (highH - lowH) * u;
+        // Match the higher perpendicular neighbor's top when possible. Clamp
+        // to highH (cell's own ceiling) so a higher-elevation perpendicular
+        // neighbor still has its own cliff handled by its own wall pass — we
+        // never raise the slope's corner above the cell's nominal level.
+        int nbrLeft = nbrs[vertIndex];
+        int nbrRight = nbrs[(vertIndex + 1) % n];
+        float perpMax = MathF.Max(
+            LevelH(_levels[nbrLeft]),
+            LevelH(_levels[nbrRight]));
+        float perpClamped = MathF.Min(perpMax, highH);
+        return MathF.Max(interp, perpClamped);
     }
 
     /// <summary>Surface height at the cell's center — average of low and
@@ -274,9 +365,9 @@ public sealed class PlanetMesh
     public float GetCenterHeight(int cell)
     {
         var slope = _slopes[cell];
-        if (slope == null) return Radius + _levels[cell] * StepHeight;
-        float lowH = Radius + _levels[slope.LowNeighbor] * StepHeight;
-        float highH = Radius + _levels[slope.HighNeighbor] * StepHeight;
+        if (slope == null) return LevelH(_levels[cell]);
+        float lowH = LevelH(_levels[slope.LowNeighbor]);
+        float highH = LevelH(_levels[slope.HighNeighbor]);
         return (lowH + highH) * 0.5f;
     }
 
@@ -288,7 +379,7 @@ public sealed class PlanetMesh
     public float[] BuildCellOutline(int cell)
     {
         byte level = _levels[cell];
-        float h = Radius + level * StepHeight + 0.003f; // slightly above to avoid z-fighting
+        float h = LevelH(level) + 0.003f; // slightly above to avoid z-fighting
         var poly = _polyVerts[cell];
         int n = poly.Length;
         var data = new float[n * 2 * 3];
@@ -382,7 +473,7 @@ public sealed class PlanetMesh
     private void EmitCellGeometry(List<float> verts, List<uint> idx, int cell)
     {
         byte level = _levels[cell];
-        float h = Radius + level * StepHeight;
+        float h = LevelH(level);
         Vector3 cellNormal = _centers[cell];
         int n = _polyVerts[cell].Length;
         var slope = _slopes[cell];
@@ -415,7 +506,7 @@ public sealed class PlanetMesh
         for (int k = 0; k < n; k++)
         {
             byte nLevelE = _levels[nbrs[k]];
-            float nhE = Radius + nLevelE * StepHeight;
+            float nhE = LevelH(nLevelE);
             int pAe = ((k - 1) + n) % n;
             int pBe = k;
             float ourMinH = MathF.Min(vertH[pAe], vertH[pBe]);
@@ -442,8 +533,18 @@ public sealed class PlanetMesh
         // appear at cliff borders, never below water.
         if (level == 0 && slope == null)
         {
-            float sandH = Radius - StepHeight;
-            EmitCellFan(verts, idx, cell, sandH, cellNormal, 1);
+            // Three elevations on a water cell:
+            //   * Rock seabed at Radius (height 0) — the level-0 baseline.
+            //   * Water surface at Radius + 0.75 * StepHeight (height 0.75).
+            //   * Adjacent land cliff tops at Radius + 1 * StepHeight (height 1).
+            // The seabed and water surface are emitted as horizontal fans
+            // here; the cliff walls down to the seabed are emitted by the
+            // adjacent land cells (their wall code special-cases water
+            // neighbours and runs the wall all the way down to seabed
+            // instead of stopping at the water surface, so the rock
+            // visibly continues underwater).
+            float seabedH = Radius;
+            EmitCellFan(verts, idx, cell, seabedH, cellNormal, CliffLevel);
             EmitCellFan(verts, idx, cell, h, cellNormal, 0);
         }
         else
@@ -485,7 +586,13 @@ public sealed class PlanetMesh
         for (int k = 0; k < nbrs.Length; k++)
         {
             byte nLevel = _levels[nbrs[k]];
-            float nh = Radius + nLevel * StepHeight;
+            // For walls toward a water neighbour, drop the wall all the way
+            // to the seabed (Radius) instead of stopping at the water
+            // surface (LevelH(0) = Radius + 0.75*step). That way the rock
+            // cliff continues underwater visibly as a vertical rock face,
+            // matching the elevation scheme: cliff top at height 1, water
+            // surface at 0.75, rocks at 0.
+            float nh = nLevel == 0 ? Radius : LevelH(nLevel);
 
             int pA = ((k - 1) + n) % n;
             int pB = k;
@@ -534,11 +641,24 @@ public sealed class PlanetMesh
             Vector3 nA = SmoothNormalAtCorner(cell, pA);
             Vector3 nB = SmoothNormalAtCorner(cell, pB);
 
+            // Per-corner texture: a "real" cliff face (cell sits ABOVE the
+            // neighbor at this corner) uses CliffLevel — the rocky/basalt
+            // tile that reads as a vertical cliff. A "tilt-fill" wall (cell
+            // sits BELOW the neighbor at this corner — only happens on
+            // slope cells where the slope's interp top has dipped below an
+            // adjacent flat neighbor) uses the cell's OWN level instead, so
+            // the wall reads as a soft tilted shoulder of the slope rather
+            // than a vertical cliff strip across what should be a smooth
+            // ramp. Per-corner so a single edge that's a real cliff at one
+            // end and a tilt-fill at the other gets the right texture on
+            // each side.
+            byte aLevel = (topAH > bdyH + 1e-5f) ? CliffLevel : level;
+            byte bLevel = (topBH > bdyH + 1e-5f) ? CliffLevel : level;
             uint b = (uint)(verts.Count / VertexFloats);
-            EmitVert(verts, topA, nA, CliffLevel);
-            EmitVert(verts, topB, nB, CliffLevel);
-            EmitVert(verts, botB, nB, CliffLevel);
-            EmitVert(verts, botA, nA, CliffLevel);
+            EmitVert(verts, topA, nA, aLevel);
+            EmitVert(verts, topB, nB, bLevel);
+            EmitVert(verts, botB, nB, bLevel);
+            EmitVert(verts, botA, nA, aLevel);
 
             idx.Add(b); idx.Add(b + 2); idx.Add(b + 1);
             idx.Add(b); idx.Add(b + 3); idx.Add(b + 2);
@@ -579,7 +699,18 @@ public sealed class PlanetMesh
         Vector3[] insetDirs, float[] vertHeights, bool[] edgeConvex, byte level)
     {
         int n = _polyVerts[cell].Length;
-        const byte rockLevel = 3;
+        // Bevel ring + seal triangles use the CELL'S OWN terrain level so
+        // they read as a soft rolloff of the cell top into the cliff edge,
+        // not a textured ring sitting on the cell. Previously this was
+        // hardcoded `3` (a fixed mid-tier tile like `grass_dry` on Earth)
+        // and then briefly `CliffLevel` (rock) — both produced a visible
+        // textured strip around every cliff-bordering hexagon's perimeter
+        // regardless of the cell's actual surface (sand, grass, mesa,
+        // etc.). Using the cell's own `level` makes the bevel disappear
+        // visually on flat-top areas — the cell extends a thin tilted
+        // shoulder into the cliff edge, and only the vertical wall below
+        // shows the cliff/rock texture.
+        byte bevelLevel = level;
 
         // Per-CONVEX-edge ring quads. Non-convex edges get no geometry —
         // the top fan already runs straight to polyVerts on those sides,
@@ -598,10 +729,10 @@ public sealed class PlanetMesh
             Vector3 nB = SmoothNormalAtCorner(cell, pB);
 
             uint b = (uint)(verts.Count / VertexFloats);
-            EmitVert(verts, innerA, nA, rockLevel);
-            EmitVert(verts, innerB, nB, rockLevel);
-            EmitVert(verts, outerB, nB, rockLevel);
-            EmitVert(verts, outerA, nA, rockLevel);
+            EmitVert(verts, innerA, nA, bevelLevel);
+            EmitVert(verts, innerB, nB, bevelLevel);
+            EmitVert(verts, outerB, nB, bevelLevel);
+            EmitVert(verts, outerA, nA, bevelLevel);
 
             // Two-sided (front + back) so the bevel is visible from any angle.
             idx.Add(b); idx.Add(b + 1); idx.Add(b + 2);
@@ -632,9 +763,9 @@ public sealed class PlanetMesh
             Vector3 nrm = SmoothNormalAtCorner(cell, i);
 
             uint b = (uint)(verts.Count / VertexFloats);
-            EmitVert(verts, inner, nrm, rockLevel);
-            EmitVert(verts, outerNonConvex, nrm, rockLevel);
-            EmitVert(verts, outerConvex, nrm, rockLevel);
+            EmitVert(verts, inner, nrm, bevelLevel);
+            EmitVert(verts, outerNonConvex, nrm, bevelLevel);
+            EmitVert(verts, outerConvex, nrm, bevelLevel);
 
             // Two-sided like the ring quads.
             idx.Add(b); idx.Add(b + 1); idx.Add(b + 2);

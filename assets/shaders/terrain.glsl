@@ -9,6 +9,10 @@ layout(std140, binding = 0) uniform U {
     // params.x = time
     // params.y = oceanLevel0 (1.0 = level 0 uses wave-water shader, 0.0 = level 0
     //            samples atlas like any other tier; only Earth flips this on)
+    // params.z = water column thickness in world units (= 3 * stepHeight). The
+    //            seabed (rock tier) sits this far below the water surface, so
+    //            this is the maximum vertical depth a water-surface fragment
+    //            sees through the water before it hits rock.
     vec4 params;
 } u;
 
@@ -113,24 +117,45 @@ vec3 waterShader(vec3 wp, vec3 N, vec3 V, vec3 L) {
 
     float refractiveFactor = pow(max(dot(V, waveN), 0.0), 0.5);
 
-    float viewDepth = max(dot(N, V), 0.0);
-    vec3 shallowColor = vec3(0.20, 0.50, 0.55);
-    vec3 deepColor = vec3(0.02, 0.06, 0.15);
-    vec3 refractColor = mix(deepColor, shallowColor, pow(viewDepth, 0.6));
+    // Sample the rock seabed beneath the water at the same world position.
+    // Approximates the refracted view-ray endpoint as the radial projection
+    // of `wp` onto the seabed sphere — fine for a colour signal.
+    vec3 radial = normalize(wp);
+    float oceanDepth = u.params.z;
+    vec3 seabedPoint = radial * (length(wp) - oceanDepth);
+    vec3 seabedColor = triplanarTile(seabedPoint, radial, 4.0);
+
+    // Slab-thickness optical path through the water column.
+    float viewCos = max(dot(N, V), 0.08);
+    float pathLen = oceanDepth / viewCos;
+
+    // Beer-Lambert absorption: red drops fastest, blue last → the seabed
+    // shows true colour at the shoreline and fades to ocean-blue offshore.
+    vec3 absorption = vec3(8.0, 2.5, 1.0);
+    vec3 transmittance = exp(-absorption * pathLen);
+    vec3 waterTint = vec3(0.05, 0.20, 0.32);
+    vec3 throughWater = seabedColor * transmittance + waterTint * (vec3(1.0) - transmittance);
+
+    // Shore foam where the water column is thinnest. DuDv-distorted UVs
+    // make the foam splotchy/animated instead of a clean gradient ring.
+    float depthFoamMask = 1.0 - smoothstep(0.0, oceanDepth * 1.5, pathLen);
+    float foamPattern = textureLod(waterDuDv, dudvUV2 * 0.5, 0.0).g;
+    float foamShape = smoothstep(0.35, 0.65, foamPattern + depthFoamMask * 0.5);
+    float foam = foamShape * smoothstep(0.0, 1.0, depthFoamMask);
 
     vec3 R = reflect(-V, waveN);
     float skyGrad = R.y * 0.5 + 0.5;
     vec3 reflectColor = mix(vec3(0.30, 0.40, 0.50), vec3(0.50, 0.65, 0.85), skyGrad);
 
-    vec3 waterBase = mix(reflectColor, refractColor, refractiveFactor);
-    vec3 tinted = mix(waterBase, vec3(0.0, 0.3, 0.5), 0.2);
+    vec3 waterBase = mix(reflectColor, throughWater, refractiveFactor);
 
     vec3 reflectedLight = reflect(-L, waveN);
     float spec = pow(max(dot(reflectedLight, V), 0.0), 64.0);
     vec3 specHighlight = vec3(1.0, 0.95, 0.85) * spec * 0.5;
 
     float NdotL = max(dot(N, L), 0.0);
-    return tinted * (0.2 + NdotL * 0.4) + specHighlight;
+    vec3 lit = waterBase * (0.4 + NdotL * 0.6) + specHighlight;
+    return mix(lit, vec3(0.95, 0.97, 1.0), foam);
 }
 
 void main() {

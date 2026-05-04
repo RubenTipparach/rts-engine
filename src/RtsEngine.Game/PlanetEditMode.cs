@@ -421,7 +421,7 @@ public sealed class PlanetEditMode : IEditorMode
         var planet = _planetProvider();
         var mesh = planet.Mesh;
         var up = mesh.GetCellCenter(b.CellIndex);
-        float surfaceR = mesh.Radius + mesh.GetLevel(b.CellIndex) * mesh.StepHeight;
+        float surfaceR = mesh.LevelH(mesh.GetLevel(b.CellIndex));
 
         // Spawn units in a ring around the building so successive units don't
         // stack on the same point. Tangent basis comes from the cell's normal.
@@ -576,7 +576,7 @@ public sealed class PlanetEditMode : IEditorMode
         int capacity, float halfWidth)
     {
         Vector3 up = mesh.GetCellCenter(cell);
-        Vector3 cellPos = up * (mesh.Radius + mesh.GetLevel(cell) * mesh.StepHeight + 0.002f);
+        Vector3 cellPos = up * (mesh.LevelH(mesh.GetLevel(cell)) + 0.002f);
         if (capacity <= 0 || subSlotIndex < 0) return cellPos;
 
         Vector3 worldUp = new(0, 1, 0);

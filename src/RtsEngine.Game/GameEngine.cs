@@ -259,7 +259,7 @@ public class GameEngine
     private async Task TickInner()
     {
         if (_tickCount < 3 || _tickCount == 60 || _tickCount == 300)
-            Console.Error.WriteLine($"[tick] {_tickCount} mode={Mode} canvas={_app.CanvasWidth}x{_app.CanvasHeight} dist={_camera.Distance:F1} planetReady={_transition.PlanetReady}");
+            Console.WriteLine($"[tick] {_tickCount} mode={Mode} canvas={_app.CanvasWidth}x{_app.CanvasHeight} dist={_camera.Distance:F1} planetReady={_transition.PlanetReady}");
         // Camera pitch + basis — only meaningful in PlanetEdit. Logged every
         // 6 ticks (~10 Hz at 60fps), plus on any pitch sign-flip so we don't
         // miss a transient inversion between samples. Includes the tilt
