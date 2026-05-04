@@ -585,13 +585,15 @@ public sealed class PlanetMesh
         for (int k = 0; k < nbrs.Length; k++)
         {
             byte nLevel = _levels[nbrs[k]];
-            // For walls toward a water neighbour, drop the wall all the way
-            // to the seabed (Radius) instead of stopping at the water
-            // surface (LevelH(0) = Radius + 0.75*step). That way the rock
-            // cliff continues underwater visibly as a vertical rock face,
-            // matching the elevation scheme: cliff top at height 1, water
-            // surface at 0.75, rocks at 0.
-            float nh = nLevel == 0 ? Radius : LevelH(nLevel);
+            // Wall to a water neighbour drops to the seabed (Radius)
+            // ONLY when the current cell is LAND. Water-to-water edges
+            // use the standard same-level top (LevelH(0) = R + 0.75*step)
+            // so the suppression check kicks in and no wall emits between
+            // adjacent water cells — otherwise every water cell would
+            // emit a wall around its own perimeter going down from its
+            // surface to the seabed, producing a "honeycomb" of vertical
+            // rocky strips inside the ocean basin.
+            float nh = (level != 0 && nLevel == 0) ? Radius : LevelH(nLevel);
 
             int pA = ((k - 1) + n) % n;
             int pB = k;
