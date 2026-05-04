@@ -114,8 +114,28 @@ public sealed class PlanetMesh
             for (int i = 0; i < n; i++)
             {
                 int j = (i + 1) % n;
-                Vector3 centroid = (_centers[v] + _centers[nbrs[i]] + _centers[nbrs[j]]) / 3f;
-                _polyVerts[v][i] = Vector3.Normalize(centroid);
+                // Centroid of (cell, nbrs[i], nbrs[j]) — the three cells
+                // sharing this polygon vertex in the Goldberg dual. Each of
+                // the three cells will compute this same physical vertex
+                // independently, but their neighbor lists are sorted by
+                // angle so the order of the three centers in the sum
+                // differs cell-to-cell. Float addition isn't associative,
+                // so summing in float gives ~1 ULP differences cell-to-cell,
+                // which propagates into per-cell mesh geometry as visible
+                // seams (especially at chamfer + slope interactions where
+                // small offsets stack). Sum in double — double precision
+                // (~1e-16) is well below float ULP (~1e-7), so the float
+                // cast at the end rounds to the SAME float regardless of
+                // sum order, and all three cells get a bit-identical
+                // polygon vertex position.
+                double sx = (double)_centers[v].X + _centers[nbrs[i]].X + _centers[nbrs[j]].X;
+                double sy = (double)_centers[v].Y + _centers[nbrs[i]].Y + _centers[nbrs[j]].Y;
+                double sz = (double)_centers[v].Z + _centers[nbrs[i]].Z + _centers[nbrs[j]].Z;
+                double len = Math.Sqrt(sx * sx + sy * sy + sz * sz);
+                _polyVerts[v][i] = new Vector3(
+                    (float)(sx / len),
+                    (float)(sy / len),
+                    (float)(sz / len));
             }
         }
 
