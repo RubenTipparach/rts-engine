@@ -326,5 +326,5 @@ public sealed class EngineBootstrap
         return renderer;
     }
 
-    private static void Trace(string msg) => Console.Error.WriteLine($"[boot] {msg}");
+    private static void Trace(string msg) => Console.WriteLine($"[boot] {msg}");
 }

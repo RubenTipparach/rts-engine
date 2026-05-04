@@ -157,7 +157,7 @@ public sealed class ModeTransition
         // Switch when animation done AND planet ready
         if (t >= 1f && PlanetReady)
         {
-            Console.Error.WriteLine($"[transition] zoom-in complete; switching Mode → PlanetEdit");
+            Console.WriteLine($"[transition] zoom-in complete; switching Mode → PlanetEdit");
             IsActive = false;
             _camera.Distance = _camera.DefaultDistance;
             _camera.TargetDistance = _camera.Distance;

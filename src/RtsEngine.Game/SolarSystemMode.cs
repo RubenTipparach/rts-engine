@@ -26,7 +26,7 @@ public sealed class SolarSystemMode : IEditorMode
         if (button != 0) return;
         var (config, pos, _) = _solarSystem.PickPlanet(canvasX, canvasY,
             _app.CanvasWidth, _app.CanvasHeight);
-        Console.Error.WriteLine($"[click] solar pick at ({canvasX},{canvasY}) → {config ?? "<none>"}");
+        Console.WriteLine($"[click] solar pick at ({canvasX},{canvasY}) → {config ?? "<none>"}");
         if (config != null) PlanetPicked?.Invoke(config, pos);
     }
 
