@@ -33,6 +33,15 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         // Venus, Moon, Glacius all keep this off so their basin tier
         // samples its atlas tile normally.
         _tUni[25] = config.Terrain.OceanLevel0 ? 1f : 0f;
+        // Water sphere visibility — start it on for Earth (OceanLevel0=true),
+        // off for everything else. The HUD's 🌊 Water button can override.
+        WaterVisible = config.Terrain.OceanLevel0;
+        // params.z (slot 26) = water column thickness in world units.
+        // Water surface at Radius + 0.75 * StepHeight (height 0.75 in
+        // PlanetMesh.LevelH for level 0); seabed at Radius (height 0);
+        // delta = 0.75 * StepHeight. The shader uses this for depth-based
+        // absorption and shore foam.
+        _tUni[26] = 0.75f * config.StepHeight;
     }
 
     private readonly IGPU _gpu;
@@ -51,6 +60,21 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
     private int _aIndexCount;
     private readonly float[] _aUni = new float[AtmoUniFloats];
     private bool _atmoReady;
+
+    // Water — full-planet sphere at LevelH(0). Reuses the terrain pipeline
+    // and bind group; toggled on/off via WaterVisible. WaterVisible defaults
+    // to true; ApplyConfig overrides from PlanetConfig.Terrain.OceanLevel0
+    // so non-Earth planets (no liquid water) start with the sphere off.
+    private int _waterVbo, _waterIbo;
+    private int _waterIndexCount;
+    public bool WaterVisible { get; set; } = true;
+
+    /// <summary>Toggle for the terrain patch render. False hides the planet
+    /// surface entirely; combined with WaterVisible=true the player sees
+    /// the bare water sphere floating in space, useful for inspecting the
+    /// water shader's depth-FX without the cliff/seabed/sand confusing
+    /// the read.</summary>
+    public bool PlanetVisible { get; set; } = true;
 
     // Outline (hovered cell highlight — line-list mesh)
     private int _oPipeline, _oUbo, _oBindGroup;
@@ -140,6 +164,16 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
             new { binding = 3, textureViewId = _dudvTexId },
             new { binding = 4, textureViewId = _normalTexId },
         });
+
+        // Water sphere — single full-planet mesh at LevelH(0). Reuses the
+        // terrain pipeline + bind group; the fragment shader's wave-water
+        // branch is reached because every vertex has level=0 and the
+        // OceanLevel0 flag is set in params.y. Toggling water on/off in
+        // the HUD just flips _waterVisible — no mesh rebuild.
+        var (wv, wi) = Mesh.BuildWaterSphereMesh();
+        _waterVbo = await _gpu.CreateVertexBuffer(wv);
+        _waterIbo = await _gpu.CreateIndexBuffer(wi);
+        _waterIndexCount = wi.Length;
     }
 
     public async Task SetupAtmosphere(string atmosphereShader)
@@ -226,22 +260,33 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         Array.Copy(mvpRawFloats, 0, _tUni, 0, 16);
         _gpu.WriteBuffer(_tUbo, _tUni);
 
+        // The first render call this frame either clears the framebuffer
+        // (if clearFirst, IRenderer.Draw entry point) or overlays onto the
+        // already-cleared framebuffer (transitions, second-camera draws).
+        // Track that across the patch loop AND the water sphere — if the
+        // player toggles planet off but leaves water on, the water sphere
+        // becomes the "first render" and has to do the clear/overlay so
+        // we don't draw on top of stale frame data.
         bool first = true;
-        for (int p = 0; p < PlanetMesh.PatchCount; p++)
+
+        if (PlanetVisible)
         {
-            if (_patchIdxCount[p] == 0) continue;
-            if (first)
+            for (int p = 0; p < PlanetMesh.PatchCount; p++)
             {
-                if (clearFirst)
-                    _gpu.Render(_tPipeline, _patchVbo[p], _patchIbo[p], _tBindGroup, _patchIdxCount[p]);
-                else
-                    _gpu.RenderOverlay(_tPipeline, _patchVbo[p], _patchIbo[p], _tBindGroup, _patchIdxCount[p]);
-                first = false;
+                if (_patchIdxCount[p] == 0) continue;
+                RenderPatch(_patchVbo[p], _patchIbo[p], _patchIdxCount[p], ref first, clearFirst);
             }
-            else
-            {
-                _gpu.RenderAdditional(_tPipeline, _patchVbo[p], _patchIbo[p], _tBindGroup, _patchIdxCount[p]);
-            }
+        }
+
+        // Water sphere — drawn after terrain so the depth test resolves
+        // land cells (poking above the water surface) on top, and the water
+        // surface covers the seabed and underwater portions of cliffs. Same
+        // pipeline + bind group as terrain; the fragment shader takes the
+        // wave-water branch because every vertex on this mesh has level=0
+        // and the OceanLevel0 flag is set.
+        if (WaterVisible && _waterIndexCount > 0)
+        {
+            RenderPatch(_waterVbo, _waterIbo, _waterIndexCount, ref first, clearFirst);
         }
 
         // Atmosphere — skip when far (saves ~32 ray-sphere intersections/pixel)
@@ -280,6 +325,26 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
     {
         foreach (int p in Mesh.GetAffectedPatches(cell))
             _dirtyPatches.Add(p);
+    }
+
+    /// <summary>Render one terrain-pipeline draw call (a patch or the water
+    /// sphere). The first call this frame uses <c>Render</c> (clears the
+    /// framebuffer) or <c>RenderOverlay</c> (preserves the existing frame
+    /// without clearing); every subsequent call uses <c>RenderAdditional</c>.
+    /// <paramref name="first"/> is flipped to false after the call so the
+    /// caller can chain multiple draws in order.</summary>
+    private void RenderPatch(int vbo, int ibo, int idxCount, ref bool first, bool clearFirst)
+    {
+        if (first)
+        {
+            if (clearFirst) _gpu.Render(_tPipeline, vbo, ibo, _tBindGroup, idxCount);
+            else            _gpu.RenderOverlay(_tPipeline, vbo, ibo, _tBindGroup, idxCount);
+            first = false;
+        }
+        else
+        {
+            _gpu.RenderAdditional(_tPipeline, vbo, ibo, _tBindGroup, idxCount);
+        }
     }
 
     /// <summary>Rebuild only dirty patches. Call once per frame before Draw.</summary>

@@ -87,6 +87,31 @@ public class GameEngine
         // Per-mode HUD events (build/produce/cancel/context/edit) are handled
         // inside the mode that uses them.
         _hud.BackSolarClicked += SwitchToSolarSystem;
+        // Water and planet toggles are also cross-cutting — they're render
+        // flags on the active planet, regardless of which mode we're in.
+        _hud.WaterToggled += OnWaterToggled;
+        _hud.PlanetToggled += OnPlanetToggled;
+    }
+
+    /// <summary>HUD's 🌊 Water button flipped. Just sets the renderer's
+    /// WaterVisible flag — the water surface is its own sphere mesh built
+    /// once at planet load, so toggling is a one-bool flip with no GPU
+    /// work and no lag spike.</summary>
+    private void OnWaterToggled()
+    {
+        if (_planet == null) return;
+        _planet.WaterVisible = _hud.WaterOn;
+    }
+
+    /// <summary>HUD's 🌍 Planet button flipped. Hide/show the terrain
+    /// patches; combined with WaterVisible the player can see the water
+    /// sphere on its own. PlanetRenderer's RenderPatch helper handles
+    /// the case where the water sphere becomes the first-rendered thing
+    /// this frame (it does the clear/overlay instead of the terrain).</summary>
+    private void OnPlanetToggled()
+    {
+        if (_planet == null) return;
+        _planet.PlanetVisible = _hud.PlanetOn;
     }
 
     private void WireModes()
@@ -259,7 +284,7 @@ public class GameEngine
     private async Task TickInner()
     {
         if (_tickCount < 3 || _tickCount == 60 || _tickCount == 300)
-            Console.Error.WriteLine($"[tick] {_tickCount} mode={Mode} canvas={_app.CanvasWidth}x{_app.CanvasHeight} dist={_camera.Distance:F1} planetReady={_transition.PlanetReady}");
+            Console.WriteLine($"[tick] {_tickCount} mode={Mode} canvas={_app.CanvasWidth}x{_app.CanvasHeight} dist={_camera.Distance:F1} planetReady={_transition.PlanetReady}");
         // Camera pitch + basis — only meaningful in PlanetEdit. Logged every
         // 6 ticks (~10 Hz at 60fps), plus on any pitch sign-flip so we don't
         // miss a transient inversion between samples. Includes the tilt
