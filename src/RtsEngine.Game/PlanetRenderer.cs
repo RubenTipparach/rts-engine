@@ -35,7 +35,7 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         _tUni[25] = config.Terrain.OceanLevel0 ? 1f : 0f;
         // Water sphere visibility — start it on for Earth (OceanLevel0=true),
         // off for everything else. The HUD's 🌊 Water button can override.
-        WaterVisible = config.Terrain.OceanLevel0;
+        if (_water != null) _water.Visible = config.Terrain.OceanLevel0;
         // params.z (slot 26) = water column thickness in world units.
         // Water surface at Radius + 0.75 * StepHeight (height 0.75 in
         // PlanetMesh.LevelH for level 0); seabed at Radius (height 0);
@@ -65,9 +65,18 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
     // and bind group; toggled on/off via WaterVisible. WaterVisible defaults
     // to true; ApplyConfig overrides from PlanetConfig.Terrain.OceanLevel0
     // so non-Earth planets (no liquid water) start with the sphere off.
-    private int _waterVbo, _waterIbo;
-    private int _waterIndexCount;
-    public bool WaterVisible { get; set; } = true;
+    /// <summary>Owned WaterRenderer — built by SetupWater with the standalone
+    /// water shader, drawn between terrain patches and atmosphere. Exposed
+    /// so GameEngine can push per-frame uniforms (time, camera, sun). Toggle
+    /// the surface on/off via the Visible property forwarded as
+    /// <see cref="WaterVisible"/>.</summary>
+    public WaterRenderer? Water => _water;
+    private WaterRenderer? _water;
+    public bool WaterVisible
+    {
+        get => _water?.Visible ?? false;
+        set { if (_water != null) _water.Visible = value; }
+    }
 
     /// <summary>Toggle for the terrain patch render. False hides the planet
     /// surface entirely; combined with WaterVisible=true the player sees
@@ -101,12 +110,17 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         Array.Copy(DefaultSunDir, 0, _aUni, 16, 4);
     }
 
-    public void SetTime(float seconds) => _tUni[24] = seconds;
+    public void SetTime(float seconds)
+    {
+        _tUni[24] = seconds;
+        _water?.SetTime(seconds);
+    }
 
     public void SetCameraPosition(float x, float y, float z)
     {
         _tUni[20] = x; _tUni[21] = y; _tUni[22] = z;
         _aUni[20] = x; _aUni[21] = y; _aUni[22] = z;
+        _water?.SetCameraPosition(x, y, z);
     }
 
     /// <summary>Set the direction *toward* the sun (in planet-local space). Used by Lambert.</summary>
@@ -114,6 +128,7 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
     {
         _tUni[16] = x; _tUni[17] = y; _tUni[18] = z;
         _aUni[16] = x; _aUni[17] = y; _aUni[18] = z;
+        _water?.SetSunDirection(x, y, z);
     }
 
     public void SetHighlightCell(int cell)
@@ -132,9 +147,7 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         _atlasTexId = await _gpu.CreateTextureFromUrl(atlasUrl ?? _config.Terrain.AtlasUrl);
         _dudvTexId = await _gpu.CreateTextureFromUrl(_config.Water.DuDvUrl);
         _normalTexId = await _gpu.CreateTextureFromUrl(_config.Water.NormalUrl);
-        _samplerId = await _gpu.CreateSampler("linear", "repeat");
-
-        // Build per-patch VBO/IBO (20 patches)
+        _samplerId = await _gpu.CreateSampler("linear", "repeat");        // Build per-patch VBO/IBO (20 patches)
         for (int p = 0; p < PlanetMesh.PatchCount; p++)
         {
             var (pv, pi) = Mesh.BuildPatchMesh(p);
@@ -165,15 +178,18 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
             new { binding = 4, textureViewId = _normalTexId },
         });
 
-        // Water sphere — single full-planet mesh at LevelH(0). Reuses the
-        // terrain pipeline + bind group; the fragment shader's wave-water
-        // branch is reached because every vertex has level=0 and the
-        // OceanLevel0 flag is set in params.y. Toggling water on/off in
-        // the HUD just flips _waterVisible — no mesh rebuild.
-        var (wv, wi) = Mesh.BuildWaterSphereMesh();
-        _waterVbo = await _gpu.CreateVertexBuffer(wv);
-        _waterIbo = await _gpu.CreateIndexBuffer(wi);
-        _waterIndexCount = wi.Length;
+    }
+
+    /// <summary>Wire up the standalone water shader. Called by EngineBootstrap
+    /// after the main terrain Setup with shaders/water.wgsl. Separate from
+    /// Setup() so the terrain pass can render even on planets that don't
+    /// want water (Mars, Moon, etc.) — those just don't call this.</summary>
+    public async Task SetupWater(string waterShader)
+    {
+        _water = new WaterRenderer(_gpu, Mesh);
+        await _water.Setup(waterShader, _config.Water.DuDvUrl, _config.Water.NormalUrl);
+        _water.SetOceanDepth(0.75f * Mesh.StepHeight);
+        _water.Visible = _config.Terrain.OceanLevel0;
     }
 
     public async Task SetupAtmosphere(string atmosphereShader)
@@ -278,15 +294,25 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
             }
         }
 
-        // Water sphere — drawn after terrain so the depth test resolves
-        // land cells (poking above the water surface) on top, and the water
-        // surface covers the seabed and underwater portions of cliffs. Same
-        // pipeline + bind group as terrain; the fragment shader takes the
-        // wave-water branch because every vertex on this mesh has level=0
-        // and the OceanLevel0 flag is set.
-        if (WaterVisible && _waterIndexCount > 0)
+        // Water sphere — drawn between terrain and atmosphere on its own
+        // alpha-blended pipeline. Depth test resolves land cells (poking
+        // above the water surface) on top; alpha blend lets shallow shores
+        // fade out so the seabed/cliffs underneath show through. The
+        // WaterRenderer also picks up clearFirst when planet is hidden, so
+        // toggling planet off + water on still produces a clean frame.
+        if (_water != null && _water.Visible)
         {
-            RenderPatch(_waterVbo, _waterIbo, _waterIndexCount, ref first, clearFirst);
+            // If the terrain pass didn't render (planet toggle off) the
+            // first-render rule still applies — clear the framebuffer with
+            // an empty draw before alpha-blending. Currently the WaterRenderer
+            // just always uses RenderAdditional; this is fine as long as
+            // *something* in the frame issues the clear. PlanetRenderer's
+            // patch loop did. When planet is off + water is on, pixels
+            // outside the water sphere will hold last-frame data. Acceptable
+            // for the debug toggle — fix when there's a clear-first water
+            // path or a separate "skybox" clear.
+            _water.Draw(mvpRawFloats);
+            first = false; // not used after this, but keeps the contract.
         }
 
         // Atmosphere — skip when far (saves ~32 ray-sphere intersections/pixel)
@@ -373,6 +399,7 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
             _gpu.DestroyBuffer(_patchIbo[p]);
         }
         _gpu.DestroyBuffer(_tUbo);
+        _water?.Dispose();
     }
 
     // ── Atmosphere icosphere mesh ───────────────────────────────────

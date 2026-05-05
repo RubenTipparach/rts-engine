@@ -84,74 +84,7 @@ vec3 triplanarTile(vec3 wp, vec3 N, float level) {
          + sampleTile(wp.xy * s, level) * (b.z / total);
 }
 
-vec3 waterShader(vec3 wp, vec3 N, vec3 V, vec3 L) {
-    float t = u.params.x;
-    float tiling = 6.0;
-
-    vec3 b = max(abs(N), vec3(0.001));
-    float total = b.x + b.y + b.z;
-    float wx = b.x / total;
-    float wy = b.y / total;
-    float wz = b.z / total;
-
-    vec2 waterUV;
-    if (wy > wx && wy > wz)      waterUV = wp.xz * tiling;
-    else if (wx > wz)            waterUV = wp.zy * tiling;
-    else                         waterUV = wp.xy * tiling;
-
-    float moveSpeed = 0.03;
-    float moveFactor = t * moveSpeed;
-    vec2 dudvUV1 = vec2(waterUV.x + moveFactor, waterUV.y);
-    vec2 dudv1 = textureLod(waterDuDv, dudvUV1, 0.0).rg * 0.1;
-    vec2 dudvUV2 = waterUV + vec2(dudv1.x, dudv1.y + moveFactor);
-    vec2 distortion = (textureLod(waterDuDv, dudvUV2, 0.0).rg * 2.0 - 1.0) * 0.02;
-
-    vec3 nmSample = textureLod(waterNormal, dudvUV2, 0.0).rgb;
-    vec3 mapNormal = vec3(nmSample.r * 2.0 - 1.0, nmSample.b * 3.0, nmSample.g * 2.0 - 1.0);
-
-    vec3 tang = cross(N, vec3(0.0, 1.0, 0.0));
-    if (dot(tang, tang) < 0.01) tang = cross(N, vec3(1.0, 0.0, 0.0));
-    tang = normalize(tang);
-    vec3 bitang = normalize(cross(N, tang));
-    vec3 waveN = normalize(tang * mapNormal.x + N * mapNormal.y + bitang * mapNormal.z);
-
-    float refractiveFactor = pow(max(dot(V, waveN), 0.0), 0.5);
-
-    // Slab-thickness path length through the water column. No terrain
-    // texture is sampled here — the water material is its own colour.
-    float oceanDepth = u.params.z;
-    float viewCos = max(dot(N, V), 0.08);
-    float pathLen = oceanDepth / viewCos;
-
-    // Depth-based water colour: shallow → bright teal, deep → near-navy.
-    // smoothstep over path length scales with view angle (grazing rays
-    // appear deeper than perpendicular ones).
-    vec3 shallowColor = vec3(0.18, 0.55, 0.65);
-    vec3 deepColor    = vec3(0.02, 0.10, 0.22);
-    float depth01     = smoothstep(0.0, oceanDepth * 4.0, pathLen);
-    vec3 throughWater = mix(shallowColor, deepColor, depth01);
-
-    // Shore foam where the water column is thinnest. DuDv-distorted UVs
-    // make the foam splotchy/animated instead of a clean gradient ring.
-    float depthFoamMask = 1.0 - smoothstep(0.0, oceanDepth * 1.5, pathLen);
-    float foamPattern = textureLod(waterDuDv, dudvUV2 * 0.5, 0.0).g;
-    float foamShape = smoothstep(0.35, 0.65, foamPattern + depthFoamMask * 0.5);
-    float foam = foamShape * smoothstep(0.0, 1.0, depthFoamMask);
-
-    vec3 R = reflect(-V, waveN);
-    float skyGrad = R.y * 0.5 + 0.5;
-    vec3 reflectColor = mix(vec3(0.30, 0.40, 0.50), vec3(0.50, 0.65, 0.85), skyGrad);
-
-    vec3 waterBase = mix(reflectColor, throughWater, refractiveFactor);
-
-    vec3 reflectedLight = reflect(-L, waveN);
-    float spec = pow(max(dot(reflectedLight, V), 0.0), 64.0);
-    vec3 specHighlight = vec3(1.0, 0.95, 0.85) * spec * 0.5;
-
-    float NdotL = max(dot(N, L), 0.0);
-    vec3 lit = waterBase * (0.4 + NdotL * 0.6) + specHighlight;
-    return mix(lit, vec3(0.95, 0.97, 1.0), foam);
-}
+// Water rendering moved to shaders/water.glsl + WaterRenderer.
 
 void main() {
     vec3 N = normalize(vNormal);
@@ -161,16 +94,10 @@ void main() {
 
     vec3 terrainBase = triplanarTile(vWorldPos, N, vLevel);
 
-    // Wave-water shader is gated on the per-planet OceanLevel0 flag — only
-    // Earth has actual liquid water at level 0; Mars/Venus/Moon level 0 is
-    // solid ground, Glacius level 0 is frozen ocean ice. Those all sample
-    // the atlas like any other tier.
-    vec3 lit;
-    if (vLevel < 0.5 && u.params.y > 0.5) {
-        lit = waterShader(vWorldPos, N, V, L);
-    } else {
-        lit = terrainBase * (0.25 + NdotL * 0.9);
-    }
+    // Water rendering moved to shaders/water.glsl + WaterRenderer. Level-0
+    // cells in the terrain mesh emit only the rocky seabed, so this shader
+    // never needs to branch on water any more.
+    vec3 lit = terrainBase * (0.25 + NdotL * 0.9);
 
     float rim = pow(1.0 - max(dot(N, V), 0.0), 3.5);
     float dayFactor = smoothstep(-0.1, 0.3, NdotL);

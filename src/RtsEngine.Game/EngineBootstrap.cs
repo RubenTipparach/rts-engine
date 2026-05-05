@@ -317,6 +317,9 @@ public sealed class EngineBootstrap
         renderer.ApplyConfig(config);
         await renderer.Setup(terrainShader);
 
+        var waterShader = await _assets.GetTextAsync("shaders/water.wgsl");
+        await renderer.SetupWater(waterShader);
+
         var atmoShader = await _assets.GetTextAsync("shaders/atmosphere.wgsl");
         await renderer.SetupAtmosphere(atmoShader);
 
