@@ -117,27 +117,19 @@ vec3 waterShader(vec3 wp, vec3 N, vec3 V, vec3 L) {
 
     float refractiveFactor = pow(max(dot(V, waveN), 0.0), 0.5);
 
-    // Sample the rock seabed beneath the water at the same world position.
-    // Approximates the refracted view-ray endpoint as the radial projection
-    // of `wp` onto the seabed sphere — fine for a colour signal.
-    vec3 radial = normalize(wp);
+    // Slab-thickness path length through the water column. No terrain
+    // texture is sampled here — the water material is its own colour.
     float oceanDepth = u.params.z;
-    vec3 seabedPoint = radial * (length(wp) - oceanDepth);
-    vec3 seabedColor = triplanarTile(seabedPoint, radial, 4.0);
-
-    // Slab-thickness optical path through the water column.
     float viewCos = max(dot(N, V), 0.08);
     float pathLen = oceanDepth / viewCos;
 
-    // Beer-Lambert absorption — coefficients per world unit, tuned for a
-    // 0.75*stepHeight (≈0.03) column. Old (8, 2.5, 1) left 79-97% of the
-    // rock colour visible through the thin column at perpendicular view,
-    // so the water read as rock. (80, 25, 10) drops red to ≈9% at the
-    // same depth, green to ≈47% — the surface reads as teal head-on.
-    vec3 absorption = vec3(80.0, 25.0, 10.0);
-    vec3 transmittance = exp(-absorption * pathLen);
-    vec3 waterTint = vec3(0.05, 0.20, 0.32);
-    vec3 throughWater = seabedColor * transmittance + waterTint * (vec3(1.0) - transmittance);
+    // Depth-based water colour: shallow → bright teal, deep → near-navy.
+    // smoothstep over path length scales with view angle (grazing rays
+    // appear deeper than perpendicular ones).
+    vec3 shallowColor = vec3(0.18, 0.55, 0.65);
+    vec3 deepColor    = vec3(0.02, 0.10, 0.22);
+    float depth01     = smoothstep(0.0, oceanDepth * 4.0, pathLen);
+    vec3 throughWater = mix(shallowColor, deepColor, depth01);
 
     // Shore foam where the water column is thinnest. DuDv-distorted UVs
     // make the foam splotchy/animated instead of a clean gradient ring.

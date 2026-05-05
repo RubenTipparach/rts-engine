@@ -129,42 +129,29 @@ fn waterShader(wp: vec3f, N: vec3f, V: vec3f, L: vec3f) -> vec3f {
     // Fresnel — more reflection at grazing angle
     let refractiveFactor = pow(max(dot(V, waveN), 0.0), 0.5);
 
-    // Sample the rock seabed beneath the water at the same world position.
-    // The seabed is on a sphere of radius (R - oceanDepth); its surface
-    // texture tile is CliffLevel = 4 (rock/basalt/etc.). We pretend the
-    // refracted view ray lands at the radial projection of `wp` onto that
-    // sphere — that's a fine approximation for shading colour, since the
-    // foam/depth signal we're computing dominates the visual.
-    let radial = normalize(wp);
+    // Slab-thickness path length: from a water surface fragment with
+    // outward normal N, the optical path through the water column is
+    // oceanDepth / cos(viewAngleFromN). Clamp the cosine so grazing
+    // pixels get a long-but-finite path.
     let oceanDepth = u.params.z;
-    let seabedPoint = radial * (length(wp) - oceanDepth);
-    let seabedColor = triplanarTile(seabedPoint, radial, 4.0);
-
-    // Slab-thickness approximation: from a water surface fragment with
-    // outward normal N, the optical path through the water column to the
-    // seabed is oceanDepth / cos(viewAngleFromN). Clamp the cosine so
-    // grazing-angle pixels get a finite (long) path rather than infinite.
     let viewCos = max(dot(N, V), 0.08);
     let pathLen = oceanDepth / viewCos;
 
-    // Beer-Lambert absorption — coefficients per world unit, tuned for a
-    // 0.75 * stepHeight (≈ 0.03) column. Old (8, 2.5, 1) gave 79-97%
-    // transmittance through the thin column at perpendicular view, so the
-    // rock seabed showed through nearly unattenuated and the water surface
-    // looked like rock. Aggressive coefficients make red collapse fast
-    // (≈ 9% transmittance at 0.03 path length) and green moderate, so the
-    // surface reads as proper teal head-on with rocks fading further the
-    // grazing the angle gets.
-    let absorption = vec3f(80.0, 25.0, 10.0);
-    let transmittance = exp(-absorption * pathLen);
-    let waterTint = vec3f(0.05, 0.20, 0.32);
-    let throughWater = seabedColor * transmittance + waterTint * (vec3f(1.0) - transmittance);
+    // Depth-based water colour. Pure water material — no terrain texture
+    // sampled. Shallow shores read as bright teal, deep open ocean as
+    // near-navy. The smoothstep over path length gives a soft transition
+    // that scales with view angle: grazing rays appear deeper, perpendicular
+    // ones shallower, and the player can see the actual water column depth
+    // by moving the camera.
+    let shallowColor = vec3f(0.18, 0.55, 0.65);
+    let deepColor    = vec3f(0.02, 0.10, 0.22);
+    let depth01      = smoothstep(0.0, oceanDepth * 4.0, pathLen);
+    let throughWater = mix(shallowColor, deepColor, depth01);
 
     // Shore foam — pre-foam mask is 1 where the water column is thinnest
     // (fragment sits over a near-zero-depth seabed → coastline) and 0
-    // where the water is "open ocean" (path long enough to fully absorb
-    // the seabed). The DuDv-distorted UVs give the foam an animated,
-    // splotchy edge instead of a clean gradient.
+    // where the water is "open ocean" (long path). The DuDv-distorted UVs
+    // give the foam an animated, splotchy edge instead of a clean gradient.
     let depthFoamMask = 1.0 - smoothstep(0.0, oceanDepth * 1.5, pathLen);
     let foamPattern = textureSampleLevel(waterDuDv, samp, dudvUV2 * 0.5, 0.0).g;
     let foamShape = smoothstep(0.35, 0.65, foamPattern + depthFoamMask * 0.5);
