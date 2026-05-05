@@ -104,6 +104,6 @@ void main() {
     float alphaCore = mix(0.55, 0.95, depth01);
     float alpha = max(alphaCore, foam);
 
-    FragColor = vec4(withFoam, alpha + nmTexel.a * 0.0001);
+    FragColor = vec4(withFoam, alpha) + nmTexel * 0.001;
 }
 #endif

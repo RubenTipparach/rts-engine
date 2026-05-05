@@ -153,9 +153,13 @@ fn fs_main(
     let alphaCore = mix(0.55, 0.95, depth01);
     let alpha = max(alphaCore, foam);
 
-    // Belt-and-braces dependency: nudge alpha by a tiny amount of the raw
-    // normal-map alpha channel so the compiler cannot dead-code eliminate
-    // the waterNormal binding. The visual effect is sub-perceptible (≤
-    // 0.0001 alpha) but the @binding(3) entry stays in the auto-layout.
-    return vec4f(withFoam, alpha + nmTexel.a * 0.0001);
+    // Belt-and-braces: fold the entire normal-map texel directly into the
+    // return vec4 with a tiny multiplier. WGSL `layout: 'auto'` was pruning
+    // binding 3 (waterNormal) even with a more-indirect chain through
+    // `mapNormal → waveN → reflection → withFoam`. Adding nmTexel directly
+    // to the output makes the dependency syntactically straight-line and
+    // forces the binding to stay in the auto bind-group layout. The 0.001
+    // scale keeps the visual contribution sub-perceptible (≤ 1/1000 on
+    // every channel) while remaining a side effect Dawn can't elide.
+    return vec4f(withFoam, alpha) + nmTexel * 0.001;
 }
