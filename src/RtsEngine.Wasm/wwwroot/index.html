@@ -24,16 +24,25 @@
         <a href="" class="reload">Reload</a>
         <a class="dismiss">X</a>
     </div>
-    <!-- Eruda: on-screen console for mobile debugging. Opt-in via ?eruda=1
-         so it doesn't wrap console.* on every page load (the wrapper attaches
-         a stack trace to every log line, which buries real errors). -->
+    <!-- Eruda: on-screen console for mobile debugging.
+         Auto-enable on touch devices (phones / tablets) — without it there's
+         no way to read JS errors there. Desktop has F12 DevTools so we
+         keep it OPT-IN via ?eruda=1, otherwise Eruda's console hooks attach
+         a stack-trace to every log line and bury real errors in DevTools.
+         Either form can be forced off via ?noeruda. -->
     <script>
-      if (new URLSearchParams(location.search).has('eruda')) {
+      (function () {
+        var qs = new URLSearchParams(location.search);
+        if (qs.has('noeruda')) return;
+        var isTouch = matchMedia('(pointer: coarse)').matches
+                   || /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+        var want = qs.has('eruda') || isTouch;
+        if (!want) return;
         var s = document.createElement('script');
         s.src = 'https://cdn.jsdelivr.net/npm/eruda@3.0.1/eruda.min.js';
         s.onload = function () { eruda.init(); };
         document.head.appendChild(s);
-      }
+      })();
     </script>
 
     <script src="js/gpu-proxy.js"></script>
