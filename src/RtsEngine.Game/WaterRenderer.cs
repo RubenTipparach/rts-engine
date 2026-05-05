@@ -96,7 +96,14 @@ public sealed class WaterRenderer : IDisposable
         // 24-byte stride. Distinct from the terrain mesh's 28-byte stride
         // (pos3 + normal3 + level1) — water doesn't carry a level since
         // every fragment runs the same shader.
-        _pipeline = await _gpu.CreateRenderPipelineAlphaBlend(module, new object[]
+        // Marker pipeline (alpha blend + depth test + no depth write +
+        // cullMode 'none'). The cullMode matters: AlphaBlend (used by the
+        // atmosphere) culls FRONT faces — designed for inside-out shells —
+        // which would make the water sphere render its back-faces only,
+        // looking inside-out. The water sphere is viewed from outside, so
+        // we want either back-face cull or no cull. Marker's "none" is
+        // also the right pick for translucency at any view angle.
+        _pipeline = await _gpu.CreateRenderPipelineMarker(module, new object[]
         {
             new {
                 arrayStride = 24,
