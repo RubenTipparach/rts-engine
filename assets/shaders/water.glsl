@@ -61,7 +61,10 @@ void main() {
     vec2 dudv1 = textureLod(waterDuDv, dudvUV1, 0.0).rg * 0.1;
     vec2 dudvUV2 = waterUV + vec2(dudv1.x, dudv1.y + moveFactor);
 
-    vec3 nmSample = textureLod(waterNormal, dudvUV2, 0.0).rgb;
+    // Match terrain.wgsl pattern: keep the vec4 so the .a tap below makes
+    // the waterNormal binding's reachability obvious to the auto-layout.
+    vec4 nmTexel = textureLod(waterNormal, dudvUV2, 0.0);
+    vec3 nmSample = nmTexel.rgb;
     vec3 mapNormal = vec3(nmSample.r * 2.0 - 1.0, nmSample.b * 3.0, nmSample.g * 2.0 - 1.0);
 
     vec3 tang = cross(N, vec3(0.0, 1.0, 0.0));
@@ -101,6 +104,6 @@ void main() {
     float alphaCore = mix(0.55, 0.95, depth01);
     float alpha = max(alphaCore, foam);
 
-    FragColor = vec4(withFoam, alpha);
+    FragColor = vec4(withFoam, alpha + nmTexel.a * 0.0001);
 }
 #endif

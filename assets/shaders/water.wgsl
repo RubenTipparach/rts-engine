@@ -92,7 +92,14 @@ fn fs_main(
     let dudvUV2 = waterUV + vec2f(dudv1.x, dudv1.y + moveFactor);
 
     // Normal map sample → tangent-space wave normal → transform to world.
-    let nmSample = textureSampleLevel(waterNormal, samp, dudvUV2, 0.0).rgb;
+    // Keep the vec4 result so the dependency from `waterNormal` reaches the
+    // final fragment output through the .rgb swizzle below; without this
+    // shape (or with a too-indirect chain) Dawn's `layout: 'auto'` analyzer
+    // has been observed to prune binding 3 from the auto bind-group layout
+    // and the C# side's 4-entry bind group then fails validation with
+    // "binding index 3 not present in the bind group layout".
+    let nmTexel = textureSampleLevel(waterNormal, samp, dudvUV2, 0.0);
+    let nmSample = nmTexel.rgb;
     let mapNormal = vec3f(nmSample.r * 2.0 - 1.0, nmSample.b * 3.0, nmSample.g * 2.0 - 1.0);
     var tang = cross(N, vec3f(0.0, 1.0, 0.0));
     if (dot(tang, tang) < 0.01) { tang = cross(N, vec3f(1.0, 0.0, 0.0)); }
@@ -146,5 +153,9 @@ fn fs_main(
     let alphaCore = mix(0.55, 0.95, depth01);
     let alpha = max(alphaCore, foam);
 
-    return vec4f(withFoam, alpha);
+    // Belt-and-braces dependency: nudge alpha by a tiny amount of the raw
+    // normal-map alpha channel so the compiler cannot dead-code eliminate
+    // the waterNormal binding. The visual effect is sub-perceptible (≤
+    // 0.0001 alpha) but the @binding(3) entry stays in the auto-layout.
+    return vec4f(withFoam, alpha + nmTexel.a * 0.0001);
 }
