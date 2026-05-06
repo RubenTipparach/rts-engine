@@ -22,7 +22,14 @@
       "PowerShell(naga --version)",
       "PowerShell(naga --help 2>&1)",
       "Bash(naga --version)",
-      "Bash(naga --help)"
+      "Bash(naga --help)",
+      "PowerShell(Get-Process RtsEngine.Desktop -ErrorAction SilentlyContinue)",
+      "PowerShell(Stop-Process -Force)",
+      "PowerShell(\"ok\")",
+      "PowerShell($p = Start-Process -FilePath \"src\\\\RtsEngine.Desktop\\\\bin\\\\Debug\\\\net8.0\\\\RtsEngine.Desktop.exe\" -RedirectStandardError \"$env:TEMP\\\\desktop-run.err\" -RedirectStandardOutput \"$env:TEMP\\\\desktop-run.out\" -PassThru -WindowStyle Hidden; Start-Sleep -Seconds 8; if \\(-not $p.HasExited\\) { Stop-Process -Id $p.Id -Force }; \"===stderr===\"; Get-Content \"$env:TEMP\\\\desktop-run.err\" -Encoding UTF8; \"===stdout===\"; Get-Content \"$env:TEMP\\\\desktop-run.out\" -Encoding UTF8)",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"assets\\\\shaders\\\\water.glsl\"\\); $bytes.Length; $bytes[-20..-1] | ForEach-Object { \"{0:X2}\" -f $_ })",
+      "PowerShell($src = \"assets\\\\shaders\\\\water.glsl\"; $bin = \"src\\\\RtsEngine.Desktop\\\\bin\\\\Debug\\\\net8.0\\\\shaders\\\\water.glsl\"; $a = Get-FileHash $src; $b = Get-FileHash $bin; \"src: $\\($a.Hash\\)\"; \"bin: $\\($b.Hash\\)\"; if \\($a.Hash -eq $b.Hash\\) { \"MATCH\" } else { \"DIFFER\"; \\(Get-Item $src\\).Length; \\(Get-Item $bin\\).Length })",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"assets\\\\shaders\\\\water.glsl\"\\); \"first 30 bytes:\"; $bytes[0..29] | ForEach-Object { \"{0:X2}\" -f $_ })"
     ]
   }
 }

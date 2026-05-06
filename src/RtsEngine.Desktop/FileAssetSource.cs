@@ -25,6 +25,14 @@ internal sealed class FileAssetSource : IAssetSource
         // main thread; truly-async file I/O would yield, the await would
         // resume on a thread-pool thread, and the next GPU call would crash
         // with "no current OpenGL context".
+
+        // Strip cache-busting query (e.g. "shaders/terrain.wgsl?v=2"). WASM's
+        // HttpClient treats it as a fresh URL so the browser drops its stale
+        // cached copy after a binding-layout change; on desktop there's no
+        // cache layer between us and the file, so the suffix is just noise.
+        var q = relativePath.IndexOf('?');
+        if (q >= 0) relativePath = relativePath.Substring(0, q);
+
         if (relativePath.EndsWith(".wgsl", StringComparison.OrdinalIgnoreCase))
             relativePath = relativePath.Substring(0, relativePath.Length - 5) + ".glsl";
 
