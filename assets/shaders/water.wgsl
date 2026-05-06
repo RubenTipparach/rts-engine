@@ -118,10 +118,14 @@ fn fs_main(
     let viewCos = max(dot(N, V), 0.08);
     let pathLen = oceanDepth / viewCos;
 
-    // Depth-based water colour. No terrain texture is sampled.
+    // Depth-based water colour. No terrain texture is sampled. The
+    // smoothstep range = "fog depth": path length at which the colour
+    // saturates from shallow to deep. Halved from the previous 4× so the
+    // fog reads as denser — water turns opaque-navy at shorter visible
+    // path lengths instead of staying mid-teal across most of the basin.
     let shallowColor = vec3f(0.18, 0.55, 0.65);
     let deepColor    = vec3f(0.02, 0.10, 0.22);
-    let depth01      = smoothstep(0.0, oceanDepth * 4.0, pathLen);
+    let depth01      = smoothstep(0.0, oceanDepth * 2.0, pathLen);
     let throughWater = mix(shallowColor, deepColor, depth01);
 
     // Shore foam — splotchy noise modulated by depth proximity.
