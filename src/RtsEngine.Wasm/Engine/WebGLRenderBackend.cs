@@ -23,13 +23,10 @@ public sealed class WebGLRenderBackend : IRenderBackend
     public event Action<float>? Scroll;
     public event Action<float, float>? PointerMove;
     public event Action<string>? KeyDown;
-#pragma warning disable CS0067 // WASM doesn't yet expose RTS-style middle/right gestures; the DOM
-    // overlay would need to track button state + alt and emit them — TODO when desktop parity matters.
     public event Action<float, float>? OrbitDrag;
     public event Action<float, float, float, float>? BoxSelectUpdate;
     public event Action<float, float, float, float>? BoxSelectComplete;
     public event Action<float, float>? ContextMenuRequested;
-#pragma warning restore CS0067
 
     private Func<Task>? _onTick;
 
@@ -67,6 +64,17 @@ public sealed class WebGLRenderBackend : IRenderBackend
     [JSInvokable] public void OnPointerMove(float x, float y) => PointerMove?.Invoke(x, y);
     [JSInvokable] public void OnKeyDown(string key) => KeyDown?.Invoke(key);
     [JSInvokable] public void OnUIButtonClick(string id) => UIButtonClick?.Invoke(id);
+
+    // Higher-level gesture intents emitted by app-shell.js. Mirrors the
+    // vocabulary DesktopAppBackend already produces, so game code routes
+    // input identically on both platforms with no per-platform branching.
+    [JSInvokable] public void OnOrbitDrag(float dx, float dy) => OrbitDrag?.Invoke(dx, dy);
+    [JSInvokable] public void OnBoxSelectUpdate(float x0, float y0, float x1, float y1)
+        => BoxSelectUpdate?.Invoke(x0, y0, x1, y1);
+    [JSInvokable] public void OnBoxSelectComplete(float x0, float y0, float x1, float y1)
+        => BoxSelectComplete?.Invoke(x0, y0, x1, y1);
+    [JSInvokable] public void OnContextMenuRequested(float x, float y)
+        => ContextMenuRequested?.Invoke(x, y);
 
     public event Action<string>? UIButtonClick;
 
