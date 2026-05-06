@@ -1,26 +1,21 @@
-// Terrain shader — triplanar atlas + Lambert + OpenGL-Water style water
-// (DuDv distortion map + normal map + Fresnel + specular).
+// Terrain shader — triplanar atlas + Lambert. Water is rendered separately
+// by WaterRenderer (assets/shaders/water.wgsl); the level-0 wave branch and
+// its DuDv/normal samplers used to live here but are gone now.
 // Uses textureSampleLevel exclusively for non-uniform flow safety.
 
 struct Uniforms {
     mvp: mat4x4f,
     sunDir: vec4f,
     cameraPos: vec4f,
-    // params.x = time
-    // params.y = oceanLevel0 (1.0 = level 0 uses wave-water shader, 0.0 = level 0
-    //            samples atlas like any other tier; only Earth flips this on)
-    // params.z = water column thickness in world units (= 3 * stepHeight). The
-    //            seabed (rock tier) sits this far below the water surface, so
-    //            this is the maximum vertical depth a water-surface fragment
-    //            sees through the water before it hits rock.
+    // params.x = time (unused after water moved out, kept so the C# uniform
+    //            layout matches AtmoUniformSize and other planet shaders)
+    // params.y..w reserved
     params: vec4f,
 }
 
 @binding(0) @group(0) var<uniform> u: Uniforms;
 @binding(1) @group(0) var samp: sampler;
 @binding(2) @group(0) var terrainAtlas: texture_2d<f32>;
-@binding(3) @group(0) var waterDuDv: texture_2d<f32>;
-@binding(4) @group(0) var waterNormal: texture_2d<f32>;
 
 struct VSOutput {
     @builtin(position) position: vec4f,

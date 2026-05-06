@@ -48,7 +48,7 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
 
     // Terrain (20 patches)
     private int _tPipeline, _tUbo, _tBindGroup;
-    private int _samplerId, _atlasTexId, _dudvTexId, _normalTexId;
+    private int _samplerId, _atlasTexId;
     private readonly int[] _patchVbo = new int[PlanetMesh.PatchCount];
     private readonly int[] _patchIbo = new int[PlanetMesh.PatchCount];
     private readonly int[] _patchIdxCount = new int[PlanetMesh.PatchCount];
@@ -145,8 +145,9 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         var tShader = await _gpu.CreateShaderModule(terrainShader);
         _tUbo = await _gpu.CreateUniformBuffer(TerrainUniformSize);
         _atlasTexId = await _gpu.CreateTextureFromUrl(atlasUrl ?? _config.Terrain.AtlasUrl);
-        _dudvTexId = await _gpu.CreateTextureFromUrl(_config.Water.DuDvUrl);
-        _normalTexId = await _gpu.CreateTextureFromUrl(_config.Water.NormalUrl);
+        // DuDv + normal textures are loaded by WaterRenderer.Setup now —
+        // terrain shader doesn't sample them, so they don't belong on the
+        // terrain bind group anymore.
         _samplerId = await _gpu.CreateSampler("linear", "repeat");        // Build per-patch VBO/IBO (20 patches)
         for (int p = 0; p < PlanetMesh.PatchCount; p++)
         {
@@ -174,8 +175,6 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
             new { binding = 0, bufferId = _tUbo },
             new { binding = 1, samplerId = _samplerId },
             new { binding = 2, textureViewId = _atlasTexId },
-            new { binding = 3, textureViewId = _dudvTexId },
-            new { binding = 4, textureViewId = _normalTexId },
         });
 
     }

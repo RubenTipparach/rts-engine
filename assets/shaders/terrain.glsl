@@ -1,28 +1,18 @@
-// Terrain shader (GLSL port of terrain.wgsl). Triplanar atlas + Lambert +
-// OpenGL-Water-style water (DuDv distortion + normal map + Fresnel + spec).
+// Terrain shader (GLSL port of terrain.wgsl). Triplanar atlas + Lambert.
+// Water rendering moved to WaterRenderer (water.glsl) — the level-0 wave
+// branch and its DuDv/normal samplers used to live here but are gone.
 // Single source split by #ifdef VERTEX / #ifdef FRAGMENT in OpenGLGPU.
 
 layout(std140, binding = 0) uniform U {
     mat4 mvp;
     vec4 sunDir;
     vec4 cameraPos;
-    // params.x = time
-    // params.y = oceanLevel0 (1.0 = level 0 uses wave-water shader, 0.0 = level 0
-    //            samples atlas like any other tier; only Earth flips this on)
-    // params.z = water column thickness in world units (= 3 * stepHeight). The
-    //            seabed (rock tier) sits this far below the water surface, so
-    //            this is the maximum vertical depth a water-surface fragment
-    //            sees through the water before it hits rock.
+    // params.x = time (unused after water moved out, kept for layout parity)
+    // params.y..w reserved
     vec4 params;
 } u;
 
-// Binding slots match the WGSL order. WGSL slot 1 holds a standalone sampler;
-// in GLSL the sampler is baked into each sampler2D, so slot 1 is unused on
-// our side — we just bind the sampler to all the texture units. The C# bind
-// group still writes slot 1 (sampler entry) and slots 2/3/4 (textures).
 layout(binding = 2) uniform sampler2D terrainAtlas;
-layout(binding = 3) uniform sampler2D waterDuDv;
-layout(binding = 4) uniform sampler2D waterNormal;
 
 const float LOG_DEPTH_FAR = 10000.0;
 vec4 applyLogDepth(vec4 p) {
