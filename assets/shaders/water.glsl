@@ -75,7 +75,8 @@ void main() {
 
     vec3 shallowColor = vec3(0.18, 0.55, 0.65);
     vec3 deepColor    = vec3(0.02, 0.10, 0.22);
-    float depth01     = smoothstep(0.0, oceanDepth * 4.0, pathLen);
+    // Halved fog-depth: was 4×, now 2× — denser fog, sooner saturation.
+    float depth01     = smoothstep(0.0, oceanDepth * 2.0, pathLen);
     vec3 throughWater = mix(shallowColor, deepColor, depth01);
 
     float depthFoamMask = 1.0 - smoothstep(0.0, oceanDepth * 1.5, pathLen);
