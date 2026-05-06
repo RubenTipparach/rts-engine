@@ -268,6 +268,7 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
     /// </summary>
     public void Draw(float[] mvpRawFloats, float cameraDistance = 3f, bool clearFirst = true)
     {
+        using var _ = Profiler.Scope("PlanetRenderer.Draw");
         // No LOD cutoff: the planet view now lets the camera zoom out to see
         // the whole solar system, so the detailed mesh has to keep drawing
         // (just smaller and without atmosphere/outline at far distances).

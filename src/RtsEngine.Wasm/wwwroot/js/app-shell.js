@@ -197,5 +197,89 @@
             const el = document.getElementById('engine-btn-' + id);
             if (el) el.remove();
         },
+
+        // ── Profiler overlay (toggled by F3 in game code) ────────
+        // The panel and Copy button live entirely in JS — game code just
+        // pushes refreshed text every frame while visible. Copy fires back
+        // through OnProfilerCopyRequested so the snapshot is taken in C#
+        // (single source of truth) and routed through CopyTextToClipboard.
+        showProfilerOverlay(text, visible) {
+            let panel = document.getElementById('engine-profiler');
+            if (!visible) {
+                if (panel) panel.style.display = 'none';
+                return;
+            }
+            if (!panel) {
+                panel = document.createElement('div');
+                panel.id = 'engine-profiler';
+                Object.assign(panel.style, {
+                    position: 'absolute',
+                    top: '12px',
+                    left: '12px',
+                    minWidth: '420px',
+                    maxWidth: '70vw',
+                    maxHeight: '70vh',
+                    overflow: 'auto',
+                    background: 'rgba(8, 12, 20, 0.85)',
+                    color: '#cfe7ff',
+                    font: '12px/1.4 ui-monospace, Menlo, Consolas, monospace',
+                    padding: '10px 12px',
+                    borderRadius: '6px',
+                    border: '1px solid rgba(120,160,210,0.35)',
+                    zIndex: '300',
+                    pointerEvents: 'auto',
+                    whiteSpace: 'pre',
+                });
+                const copy = document.createElement('button');
+                copy.textContent = 'Copy';
+                Object.assign(copy.style, {
+                    position: 'absolute',
+                    top: '6px',
+                    right: '6px',
+                    padding: '2px 8px',
+                    fontSize: '11px',
+                    cursor: 'pointer',
+                    background: 'rgba(60,100,160,0.9)',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '3px',
+                });
+                copy.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (dotnetRef) dotnetRef.invokeMethodAsync('OnProfilerCopyRequested');
+                });
+                const body = document.createElement('pre');
+                body.id = 'engine-profiler-body';
+                Object.assign(body.style, { margin: '0', whiteSpace: 'pre' });
+                panel.appendChild(copy);
+                panel.appendChild(body);
+                const container = document.getElementById('game-container') || document.body;
+                container.appendChild(panel);
+            }
+            const body = document.getElementById('engine-profiler-body');
+            if (body) body.textContent = text;
+            panel.style.display = 'block';
+        },
+
+        copyToClipboard(text) {
+            const reportFallback = () => {
+                // Older browsers / insecure contexts: drop into a textarea
+                // selection so the user can ⌘/Ctrl+C if Clipboard API isn't
+                // available. Better than silently failing.
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.position = 'fixed';
+                ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.select();
+                try { document.execCommand('copy'); } catch {}
+                ta.remove();
+            };
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(text).catch(reportFallback);
+            } else {
+                reportFallback();
+            }
+        },
     };
 })();

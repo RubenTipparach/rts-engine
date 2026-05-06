@@ -67,14 +67,22 @@ public sealed class WebGLRenderBackend : IRenderBackend
     [JSInvokable] public void OnPointerMove(float x, float y) => PointerMove?.Invoke(x, y);
     [JSInvokable] public void OnKeyDown(string key) => KeyDown?.Invoke(key);
     [JSInvokable] public void OnUIButtonClick(string id) => UIButtonClick?.Invoke(id);
+    [JSInvokable] public void OnProfilerCopyRequested() => ProfilerCopyRequested?.Invoke();
 
     public event Action<string>? UIButtonClick;
+    public event Action? ProfilerCopyRequested;
 
     public void CreateUIButton(string id, string text, string cssJson)
         => _js.InvokeVoidAsync("AppShell.createButton", id, text, cssJson);
 
     public void ShowUIButton(string id, bool visible)
         => _js.InvokeVoidAsync("AppShell.showButton", id, visible);
+
+    public void ShowProfilerOverlay(string text, bool visible)
+        => _js.InvokeVoidAsync("AppShell.showProfilerOverlay", text, visible);
+
+    public void CopyTextToClipboard(string text)
+        => _js.InvokeVoidAsync("AppShell.copyToClipboard", text);
 
     public void Dispose()
     {

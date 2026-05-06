@@ -12,6 +12,24 @@ public interface IGPU
     Task<int> CreateIndexBuffer32(uint[] data);
     Task<int> CreateUniformBuffer(int sizeBytes);
     void WriteBuffer(int bufferId, float[] data);
+
+    /// <summary>
+    /// Upload only the first <paramref name="floatCount"/> floats of
+    /// <paramref name="data"/> into the buffer at offset 0. Use this when a
+    /// long-lived scratch array has only a small populated prefix (e.g. the
+    /// per-frame path-line / HP-bar streaming buffers): otherwise the full
+    /// scratch (tens of thousands of floats) is marshalled across the
+    /// Blazor↔JS boundary every frame on WASM, which dominates frame time
+    /// once any selection turns those buffers on. Default impl slices into
+    /// a fresh array; backends should override when they can avoid the copy.
+    /// </summary>
+    void WriteBuffer(int bufferId, float[] data, int floatCount)
+    {
+        if (floatCount >= data.Length) { WriteBuffer(bufferId, data); return; }
+        var slice = new float[floatCount];
+        Array.Copy(data, slice, floatCount);
+        WriteBuffer(bufferId, slice);
+    }
     Task<int> CreateRenderPipeline(int shaderModuleId, object[] vertexBufferLayouts);
     Task<int> CreateBindGroup(int pipelineId, int groupIndex, object[] entries);
     void Render(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount);
