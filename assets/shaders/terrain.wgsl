@@ -1,26 +1,21 @@
-// Terrain shader — triplanar atlas + Lambert + OpenGL-Water style water
-// (DuDv distortion map + normal map + Fresnel + specular).
+// Terrain shader — triplanar atlas + Lambert. Water is rendered separately
+// by WaterRenderer (assets/shaders/water.wgsl); the level-0 wave branch and
+// its DuDv/normal samplers used to live here but are gone now.
 // Uses textureSampleLevel exclusively for non-uniform flow safety.
 
 struct Uniforms {
     mvp: mat4x4f,
     sunDir: vec4f,
     cameraPos: vec4f,
-    // params.x = time
-    // params.y = oceanLevel0 (1.0 = level 0 uses wave-water shader, 0.0 = level 0
-    //            samples atlas like any other tier; only Earth flips this on)
-    // params.z = water column thickness in world units (= 3 * stepHeight). The
-    //            seabed (rock tier) sits this far below the water surface, so
-    //            this is the maximum vertical depth a water-surface fragment
-    //            sees through the water before it hits rock.
+    // params.x = time (unused after water moved out, kept so the C# uniform
+    //            layout matches AtmoUniformSize and other planet shaders)
+    // params.y..w reserved
     params: vec4f,
 }
 
 @binding(0) @group(0) var<uniform> u: Uniforms;
 @binding(1) @group(0) var samp: sampler;
 @binding(2) @group(0) var terrainAtlas: texture_2d<f32>;
-@binding(3) @group(0) var waterDuDv: texture_2d<f32>;
-@binding(4) @group(0) var waterNormal: texture_2d<f32>;
 
 struct VSOutput {
     @builtin(position) position: vec4f,
@@ -88,99 +83,6 @@ fn triplanarTile(wp: vec3f, N: vec3f, level: f32) -> vec3f {
          + sampleTile(wp.xy * s, level) * (b.z / total);
 }
 
-// ── Water (OpenGL-Water style: DuDv distortion + normal map) ──────
-
-fn waterShader(wp: vec3f, N: vec3f, V: vec3f, L: vec3f) -> vec3f {
-    let t = u.params.x;
-    let tiling = 6.0;
-
-    // Triplanar UV for sphere
-    let b = max(abs(N), vec3f(0.001, 0.001, 0.001));
-    let total = b.x + b.y + b.z;
-    let wx = b.x / total;
-    let wy = b.y / total;
-    let wz = b.z / total;
-
-    // Dominant UV plane
-    var waterUV: vec2f;
-    if (wy > wx && wy > wz) { waterUV = wp.xz * tiling; }
-    else if (wx > wz)       { waterUV = wp.zy * tiling; }
-    else                     { waterUV = wp.xy * tiling; }
-
-    // Animated DuDv distortion (two scrolling layers like OpenGL-Water)
-    let moveSpeed = 0.03;
-    let moveFactor = t * moveSpeed;
-    let dudvUV1 = vec2f(waterUV.x + moveFactor, waterUV.y);
-    let dudv1 = textureSampleLevel(waterDuDv, samp, dudvUV1, 0.0).rg * 0.1;
-    let dudvUV2 = waterUV + vec2f(dudv1.x, dudv1.y + moveFactor);
-    let distortion = (textureSampleLevel(waterDuDv, samp, dudvUV2, 0.0).rg * 2.0 - 1.0) * 0.02;
-
-    // Normal from normal map (perturbed by distortion)
-    let nmSample = textureSampleLevel(waterNormal, samp, dudvUV2, 0.0).rgb;
-    let mapNormal = vec3f(nmSample.r * 2.0 - 1.0, nmSample.b * 3.0, nmSample.g * 2.0 - 1.0);
-
-    // Transform map normal from tangent space to world
-    var tang = cross(N, vec3f(0.0, 1.0, 0.0));
-    if (dot(tang, tang) < 0.01) { tang = cross(N, vec3f(1.0, 0.0, 0.0)); }
-    tang = normalize(tang);
-    let bitang = normalize(cross(N, tang));
-    let waveN = normalize(tang * mapNormal.x + N * mapNormal.y + bitang * mapNormal.z);
-
-    // Fresnel — more reflection at grazing angle
-    let refractiveFactor = pow(max(dot(V, waveN), 0.0), 0.5);
-
-    // Slab-thickness path length: from a water surface fragment with
-    // outward normal N, the optical path through the water column is
-    // oceanDepth / cos(viewAngleFromN). Clamp the cosine so grazing
-    // pixels get a long-but-finite path.
-    let oceanDepth = u.params.z;
-    let viewCos = max(dot(N, V), 0.08);
-    let pathLen = oceanDepth / viewCos;
-
-    // Depth-based water colour. Pure water material — no terrain texture
-    // sampled. Shallow shores read as bright teal, deep open ocean as
-    // near-navy. The smoothstep over path length gives a soft transition
-    // that scales with view angle: grazing rays appear deeper, perpendicular
-    // ones shallower, and the player can see the actual water column depth
-    // by moving the camera.
-    let shallowColor = vec3f(0.18, 0.55, 0.65);
-    let deepColor    = vec3f(0.02, 0.10, 0.22);
-    let depth01      = smoothstep(0.0, oceanDepth * 4.0, pathLen);
-    let throughWater = mix(shallowColor, deepColor, depth01);
-
-    // Shore foam — pre-foam mask is 1 where the water column is thinnest
-    // (fragment sits over a near-zero-depth seabed → coastline) and 0
-    // where the water is "open ocean" (long path). The DuDv-distorted UVs
-    // give the foam an animated, splotchy edge instead of a clean gradient.
-    let depthFoamMask = 1.0 - smoothstep(0.0, oceanDepth * 1.5, pathLen);
-    let foamPattern = textureSampleLevel(waterDuDv, samp, dudvUV2 * 0.5, 0.0).g;
-    let foamShape = smoothstep(0.35, 0.65, foamPattern + depthFoamMask * 0.5);
-    let foam = foamShape * smoothstep(0.0, 1.0, depthFoamMask);
-
-    // Reflection: approximated sky gradient
-    let R = reflect(-V, waveN);
-    let skyGrad = R.y * 0.5 + 0.5;
-    let reflectColor = mix(vec3f(0.30, 0.40, 0.50), vec3f(0.50, 0.65, 0.85), skyGrad);
-
-    // Blend the through-water (seabed seen through the column) and the
-    // mirrored sky via Fresnel — head-on view gets refraction-dominant,
-    // grazing gets reflection-dominant.
-    let waterBase = mix(reflectColor, throughWater, refractiveFactor);
-
-    // Sun specular on wave surface
-    let reflectedLight = reflect(-L, waveN);
-    let spec = pow(max(dot(reflectedLight, V), 0.0), 64.0);
-    let specHighlight = vec3f(1.0, 0.95, 0.85) * spec * 0.5;
-
-    // Lambert (gentle)
-    let NdotL = max(dot(N, L), 0.0);
-    let lit = waterBase * (0.4 + NdotL * 0.6) + specHighlight;
-
-    // Foam paints over everything else so the shoreline reads clearly
-    // even at grazing angles where reflection would otherwise dominate.
-    return mix(lit, vec3f(0.95, 0.97, 1.0), foam);
-}
-
 // ── Fragment ──────────────────────────────────────────────────────
 
 @fragment
@@ -212,16 +114,13 @@ fn fs_main(
     let wallCurve = 0.55 + NdotL * 0.25;
     let lambert = mix(topCurve, wallCurve, wallness);
 
-    // Wave-water shader is gated on the per-planet OceanLevel0 flag — only
-    // Earth has actual liquid water at level 0; Mars/Venus/Moon level 0 is
-    // solid ground (canyon/lowland/crater), Glacius level 0 is frozen ocean
-    // ice. All those sample the atlas like any other tier.
-    var lit: vec3f;
-    if (level < 0.5 && u.params.y > 0.5) {
-        lit = waterShader(worldPos, N, V, L);
-    } else {
-        lit = terrainBase * lambert;
-    }
+    // Water is no longer rendered through this shader — it has its own
+    // alpha-blended pipeline in WaterRenderer / shaders/water.wgsl. Level-0
+    // cells in the terrain mesh now emit only the rocky seabed (CliffLevel
+    // tile), so the level == 0 path here would only be hit by future
+    // mesh changes; treat it like any other tier so it's not a silent bug.
+    let lit_pre = terrainBase * lambert;
+    var lit = lit_pre;
 
     // Rim atmosphere glow at the planet's actual silhouette, not on
     // any tangent-normal surface — gate on dot(radial, V) so cliffs
