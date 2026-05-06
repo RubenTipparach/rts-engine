@@ -78,4 +78,8 @@ public sealed class WebGPU : IGPU
 
     public void RenderNoBind(int pipelineId, int vertexBufferId, int indexBufferId, int indexCount)
         => _js.InvokeVoidAsync("GPUProxy.renderNoBind", pipelineId, vertexBufferId, indexBufferId, indexCount);
+
+    public void BeginFrame() => _js.InvokeVoidAsync("GPUProxy.beginFrame");
+
+    public void EndFrame() => _js.InvokeVoidAsync("GPUProxy.endFrame");
 }

@@ -18,6 +18,84 @@
     const samplers = [null];
     const indexFormats = new Map(); // bufferId → 'uint16' | 'uint32'
 
+    // ── Per-frame batching ──────────────────────────────────────────
+    // The hot path used to be one createCommandEncoder + beginRenderPass +
+    // queue.submit per draw call (and every Blazor → JS interop call carries
+    // its own marshalling cost). With 20 terrain patches + water + atmosphere
+    // + outline + UI + units + HP bars + path lines that's 40+ submits per
+    // frame. queue.submit is a sync point — it tanks WebGPU performance.
+    //
+    // Instead, beginFrame opens ONE encoder for the whole frame; each render*
+    // call appends a draw to the currently-open pass; we only end the pass +
+    // start a new one when the load/clear ops actually change (Render clears
+    // color+depth, RenderOverlay clears depth, RenderAdditional/RenderNoBind
+    // load both). endFrame ends the open pass and submits once.
+    let frameEncoder = null;
+    let frameColorView = null;
+    let frameDepthView = null;
+    let openPass = null;
+    let openColorOp = '';   // 'clear' | 'load'
+    let openDepthOp = '';   // 'clear' | 'load'
+
+    // Buffers read by draws in the currently-recorded (but not yet submitted)
+    // command encoder. queue.writeBuffer is queued and executes before the
+    // next submit, so writing a buffer that's already been bound by a
+    // recorded draw would clobber the value that draw expected to read.
+    // We detect that hazard and flush (submit + reopen the encoder) before
+    // the offending write — see flushHazard() / writeBuffer().
+    //
+    // Hot example: RtsRenderer.DrawInstance reuses one _ubo across N units,
+    // doing WriteBuffer + RenderAdditional per unit. Without this guard, all
+    // N units would render with the LAST writeBuffer's contents.
+    const frameReadBuffers = new Set();
+
+    function flushHazardIfNeeded(bufferId) {
+        if (!frameEncoder) return;
+        if (!frameReadBuffers.has(bufferId)) return;
+        if (openPass) { openPass.end(); openPass = null; }
+        device.queue.submit([frameEncoder.finish()]);
+        frameEncoder = device.createCommandEncoder();
+        frameReadBuffers.clear();
+        openColorOp = '';
+        openDepthOp = '';
+    }
+
+    function noteRead(bufferId) {
+        if (bufferId) frameReadBuffers.add(bufferId);
+    }
+
+    function startPassIfNeeded(colorOp, depthOp) {
+        if (!frameEncoder) {
+            // No frame open — fall back to legacy single-draw pass so callers
+            // outside the BeginFrame/EndFrame wrap still work. This path
+            // creates and submits its own encoder.
+            return null;
+        }
+        if (openPass && openColorOp === colorOp && openDepthOp === depthOp) {
+            return openPass;
+        }
+        if (openPass) openPass.end();
+        const colorAttachment = {
+            view: frameColorView,
+            loadOp: colorOp === 'clear' ? 'clear' : 'load',
+            storeOp: 'store',
+        };
+        if (colorOp === 'clear') colorAttachment.clearValue = { r: 0.02, g: 0.02, b: 0.06, a: 1.0 };
+        const depthAttachment = {
+            view: frameDepthView,
+            depthLoadOp: depthOp === 'clear' ? 'clear' : 'load',
+            depthStoreOp: 'store',
+        };
+        if (depthOp === 'clear') depthAttachment.depthClearValue = 1.0;
+        openPass = frameEncoder.beginRenderPass({
+            colorAttachments: [colorAttachment],
+            depthStencilAttachment: depthAttachment,
+        });
+        openColorOp = colorOp;
+        openDepthOp = depthOp;
+        return openPass;
+    }
+
     function register(table, obj) {
         const id = table.length;
         table.push(obj);
@@ -163,6 +241,11 @@
         },
 
         writeBuffer(bufferId, floatData) {
+            // If a draw in the currently-open encoder already binds this
+            // buffer, flushing here keeps the frame correct. The flushed
+            // submit becomes one of (typically) very few mid-frame submits
+            // — only the RTS per-unit UBO pattern triggers it.
+            flushHazardIfNeeded(bufferId);
             device.queue.writeBuffer(buffers[bufferId], 0, new Float32Array(floatData));
         },
 
@@ -207,15 +290,59 @@
                     throw new Error('bind group entry missing bufferId/textureViewId/samplerId');
                 }),
             });
+            // Stash the buffer ids referenced by this bind group so render*()
+            // can register them with frameReadBuffers (drives the
+            // writeBuffer-after-draw hazard detector).
+            bg.__bufferIds = [];
+            for (const e of entries) {
+                if (e.bufferId !== undefined && e.bufferId !== null) bg.__bufferIds.push(e.bufferId);
+            }
             return register(bindGroups, bg);
+        },
+
+        beginFrame() {
+            if (!device || !context) return;
+            // Resolve the swapchain + depth view ONCE per frame —
+            // getCurrentTexture is not stable across multiple calls in a frame
+            // and creating a fresh view per draw was extra GC churn anyway.
+            frameColorView = context.getCurrentTexture().createView();
+            const depthTex = ensureDepthTexture();
+            frameDepthView = depthTex ? depthTex.createView() : null;
+            frameEncoder = device.createCommandEncoder();
+            openPass = null;
+            openColorOp = '';
+            openDepthOp = '';
+            frameReadBuffers.clear();
+        },
+
+        endFrame() {
+            if (!frameEncoder) return;
+            if (openPass) { openPass.end(); openPass = null; }
+            device.queue.submit([frameEncoder.finish()]);
+            frameEncoder = null;
+            frameColorView = null;
+            frameDepthView = null;
+            frameReadBuffers.clear();
         },
 
         render(pipelineId, vertexBufferId, indexBufferId, bindGroupId, indexCount) {
             if (!device || !context) return;
+            const pass = startPassIfNeeded('clear', 'clear');
+            if (pass) {
+                const bg = bindGroups[bindGroupId];
+                pass.setPipeline(pipelines[pipelineId]);
+                pass.setVertexBuffer(0, buffers[vertexBufferId]);
+                pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
+                pass.setBindGroup(0, bg);
+                pass.drawIndexed(indexCount);
+                noteRead(vertexBufferId); noteRead(indexBufferId);
+                if (bg && bg.__bufferIds) for (const id of bg.__bufferIds) noteRead(id);
+                return;
+            }
+            // Legacy unbatched path — only hit if a caller forgets BeginFrame.
             const depthTex = ensureDepthTexture();
-
             const encoder = device.createCommandEncoder();
-            const pass = encoder.beginRenderPass({
+            const p = encoder.beginRenderPass({
                 colorAttachments: [{
                     view: context.getCurrentTexture().createView(),
                     clearValue: { r: 0.02, g: 0.02, b: 0.06, a: 1.0 },
@@ -229,22 +356,32 @@
                     depthStoreOp: 'store',
                 },
             });
-
-            pass.setPipeline(pipelines[pipelineId]);
-            pass.setVertexBuffer(0, buffers[vertexBufferId]);
-            pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
-            pass.setBindGroup(0, bindGroups[bindGroupId]);
-            pass.drawIndexed(indexCount);
-            pass.end();
-
+            p.setPipeline(pipelines[pipelineId]);
+            p.setVertexBuffer(0, buffers[vertexBufferId]);
+            p.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
+            p.setBindGroup(0, bindGroups[bindGroupId]);
+            p.drawIndexed(indexCount);
+            p.end();
             device.queue.submit([encoder.finish()]);
         },
 
         renderAdditional(pipelineId, vertexBufferId, indexBufferId, bindGroupId, indexCount) {
             if (!device || !context) return;
+            const pass = startPassIfNeeded('load', 'load');
+            if (pass) {
+                const bg = bindGroups[bindGroupId];
+                pass.setPipeline(pipelines[pipelineId]);
+                pass.setVertexBuffer(0, buffers[vertexBufferId]);
+                pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
+                pass.setBindGroup(0, bg);
+                pass.drawIndexed(indexCount);
+                noteRead(vertexBufferId); noteRead(indexBufferId);
+                if (bg && bg.__bufferIds) for (const id of bg.__bufferIds) noteRead(id);
+                return;
+            }
             const depthTex = ensureDepthTexture();
             const encoder = device.createCommandEncoder();
-            const pass = encoder.beginRenderPass({
+            const p = encoder.beginRenderPass({
                 colorAttachments: [{
                     view: context.getCurrentTexture().createView(),
                     loadOp: 'load',
@@ -256,12 +393,12 @@
                     depthStoreOp: 'store',
                 },
             });
-            pass.setPipeline(pipelines[pipelineId]);
-            pass.setVertexBuffer(0, buffers[vertexBufferId]);
-            pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
-            pass.setBindGroup(0, bindGroups[bindGroupId]);
-            pass.drawIndexed(indexCount);
-            pass.end();
+            p.setPipeline(pipelines[pipelineId]);
+            p.setVertexBuffer(0, buffers[vertexBufferId]);
+            p.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
+            p.setBindGroup(0, bindGroups[bindGroupId]);
+            p.drawIndexed(indexCount);
+            p.end();
             device.queue.submit([encoder.finish()]);
         },
 
@@ -360,9 +497,21 @@
 
         renderOverlay(pipelineId, vertexBufferId, indexBufferId, bindGroupId, indexCount) {
             if (!device || !context) return;
+            const pass = startPassIfNeeded('load', 'clear');
+            if (pass) {
+                const bg = bindGroups[bindGroupId];
+                pass.setPipeline(pipelines[pipelineId]);
+                pass.setVertexBuffer(0, buffers[vertexBufferId]);
+                pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
+                pass.setBindGroup(0, bg);
+                pass.drawIndexed(indexCount);
+                noteRead(vertexBufferId); noteRead(indexBufferId);
+                if (bg && bg.__bufferIds) for (const id of bg.__bufferIds) noteRead(id);
+                return;
+            }
             const depthTex = ensureDepthTexture();
             const encoder = device.createCommandEncoder();
-            const pass = encoder.beginRenderPass({
+            const p = encoder.beginRenderPass({
                 colorAttachments: [{
                     view: context.getCurrentTexture().createView(),
                     loadOp: 'load',
@@ -375,20 +524,29 @@
                     depthStoreOp: 'store',
                 },
             });
-            pass.setPipeline(pipelines[pipelineId]);
-            pass.setVertexBuffer(0, buffers[vertexBufferId]);
-            pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
-            pass.setBindGroup(0, bindGroups[bindGroupId]);
-            pass.drawIndexed(indexCount);
-            pass.end();
+            p.setPipeline(pipelines[pipelineId]);
+            p.setVertexBuffer(0, buffers[vertexBufferId]);
+            p.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
+            p.setBindGroup(0, bindGroups[bindGroupId]);
+            p.drawIndexed(indexCount);
+            p.end();
             device.queue.submit([encoder.finish()]);
         },
 
         renderNoBind(pipelineId, vertexBufferId, indexBufferId, indexCount) {
             if (!device || !context) return;
+            const pass = startPassIfNeeded('load', 'load');
+            if (pass) {
+                pass.setPipeline(pipelines[pipelineId]);
+                pass.setVertexBuffer(0, buffers[vertexBufferId]);
+                pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
+                pass.drawIndexed(indexCount);
+                noteRead(vertexBufferId); noteRead(indexBufferId);
+                return;
+            }
             const depthTex = ensureDepthTexture();
             const encoder = device.createCommandEncoder();
-            const pass = encoder.beginRenderPass({
+            const p = encoder.beginRenderPass({
                 colorAttachments: [{
                     view: context.getCurrentTexture().createView(),
                     loadOp: 'load',
@@ -400,11 +558,11 @@
                     depthStoreOp: 'store',
                 },
             });
-            pass.setPipeline(pipelines[pipelineId]);
-            pass.setVertexBuffer(0, buffers[vertexBufferId]);
-            pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
-            pass.drawIndexed(indexCount);
-            pass.end();
+            p.setPipeline(pipelines[pipelineId]);
+            p.setVertexBuffer(0, buffers[vertexBufferId]);
+            p.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
+            p.drawIndexed(indexCount);
+            p.end();
             device.queue.submit([encoder.finish()]);
         },
 

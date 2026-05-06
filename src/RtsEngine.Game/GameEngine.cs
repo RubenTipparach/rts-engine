@@ -270,6 +270,11 @@ public class GameEngine
 
     private async Task Tick()
     {
+        // Open ONE command encoder for the whole frame. All render calls
+        // appended in TickInner share it (and reuse the open render pass when
+        // load/clear ops match), so the frame ends with a single queue.submit
+        // instead of one per draw — the dominant WebGPU cost on the web.
+        _gpu.BeginFrame();
         try { await TickInner(); }
         catch (Exception e)
         {
@@ -279,6 +284,7 @@ public class GameEngine
             Console.Error.WriteLine($"[tick] EXCEPTION: {e.GetType().Name}: {e.Message}");
             Console.Error.WriteLine(e.StackTrace);
         }
+        finally { _gpu.EndFrame(); }
     }
 
     private async Task TickInner()

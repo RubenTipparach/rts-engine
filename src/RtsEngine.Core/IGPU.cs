@@ -44,4 +44,21 @@ public interface IGPU
 
     /// <summary>Creates a line-list pipeline. For wireframe overlays (cell outlines, debug lines).</summary>
     Task<int> CreateRenderPipelineLines(int shaderModuleId, object[] vertexBufferLayouts);
+
+    /// <summary>
+    /// Open a per-frame command recording session. On WebGPU this creates a
+    /// single command encoder that all subsequent <c>Render*</c> calls share —
+    /// reusing one render pass per (color-loadOp, depth-loadOp) phase instead
+    /// of starting + submitting one command buffer per draw. Cuts JS interop
+    /// hops and (more importantly) <c>queue.submit</c> sync points from N×draws
+    /// to 1×frame. Idempotent / no-op on backends that don't need it (OpenGL).
+    /// </summary>
+    void BeginFrame() { }
+
+    /// <summary>
+    /// Close the per-frame command recording session opened by
+    /// <see cref="BeginFrame"/> and submit it to the GPU. Must be called once
+    /// per frame after all draws. No-op on backends that don't batch.
+    /// </summary>
+    void EndFrame() { }
 }
