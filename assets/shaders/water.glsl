@@ -11,7 +11,9 @@ layout(std140, binding = 0) uniform U {
 } u;
 
 layout(binding = 2) uniform sampler2D waterDuDv;
-layout(binding = 3) uniform sampler2D waterNormal;
+// waterNormal removed — Dawn's `layout: 'auto'` was pruning it from the
+// WGSL auto bind-group layout regardless. Wave normal now comes from
+// DuDv-derived tangent-space perturbation only.
 
 const float LOG_DEPTH_FAR = 10000.0;
 vec4 applyLogDepth(vec4 p) {
@@ -60,18 +62,13 @@ void main() {
     vec2 dudvUV1 = vec2(waterUV.x + moveFactor, waterUV.y);
     vec2 dudv1 = textureLod(waterDuDv, dudvUV1, 0.0).rg * 0.1;
     vec2 dudvUV2 = waterUV + vec2(dudv1.x, dudv1.y + moveFactor);
-
-    // Match terrain.wgsl pattern: keep the vec4 so the .a tap below makes
-    // the waterNormal binding's reachability obvious to the auto-layout.
-    vec4 nmTexel = textureLod(waterNormal, dudvUV2, 0.0);
-    vec3 nmSample = nmTexel.rgb;
-    vec3 mapNormal = vec3(nmSample.r * 2.0 - 1.0, nmSample.b * 3.0, nmSample.g * 2.0 - 1.0);
+    vec2 dudv2 = textureLod(waterDuDv, dudvUV2, 0.0).rg * 2.0 - vec2(1.0);
 
     vec3 tang = cross(N, vec3(0.0, 1.0, 0.0));
     if (dot(tang, tang) < 0.01) tang = cross(N, vec3(1.0, 0.0, 0.0));
     tang = normalize(tang);
     vec3 bitang = normalize(cross(N, tang));
-    vec3 waveN = normalize(tang * mapNormal.x + N * mapNormal.y + bitang * mapNormal.z);
+    vec3 waveN = normalize(N + tang * dudv2.x * 0.3 + bitang * dudv2.y * 0.3);
 
     float viewCos = max(dot(N, V), 0.08);
     float pathLen = oceanDepth / viewCos;
@@ -104,6 +101,6 @@ void main() {
     float alphaCore = mix(0.55, 0.95, depth01);
     float alpha = max(alphaCore, foam);
 
-    FragColor = vec4(withFoam, alpha) + nmTexel * 0.001;
+    FragColor = vec4(withFoam, alpha);
 }
 #endif

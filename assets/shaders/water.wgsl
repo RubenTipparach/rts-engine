@@ -31,7 +31,12 @@ struct Uniforms {
 @binding(0) @group(0) var<uniform> u: Uniforms;
 @binding(1) @group(0) var samp: sampler;
 @binding(2) @group(0) var waterDuDv: texture_2d<f32>;
-@binding(3) @group(0) var waterNormal: texture_2d<f32>;
+// (waterNormal binding removed — Dawn's `layout: 'auto'` analyser kept
+//  pruning it as unused regardless of how directly its sample fed the
+//  fragment output. Could revisit when we move to an explicit pipeline
+//  layout. For now the wave normal comes from the geometric N plus the
+//  DuDv-derived perturbation only — visually less detailed than a true
+//  normal-mapped surface but matches the auto-layout exactly.)
 
 struct VSOutput {
     @builtin(position) position: vec4f,
@@ -84,28 +89,26 @@ fn fs_main(
     else                     { waterUV = worldPos.xy * tiling; }
 
     // Animated DuDv distortion — two scrolling layers drive the wave
-    // perturbation, classic OpenGL-water approach.
+    // perturbation, classic OpenGL-water approach. The DuDv samples form
+    // a small XY offset on N for the Fresnel/specular calculations below;
+    // we no longer sample a separate normal map for full tangent-space
+    // wave normals (see binding comment above).
     let moveSpeed = 0.03;
     let moveFactor = t * moveSpeed;
     let dudvUV1 = vec2f(waterUV.x + moveFactor, waterUV.y);
     let dudv1 = textureSampleLevel(waterDuDv, samp, dudvUV1, 0.0).rg * 0.1;
     let dudvUV2 = waterUV + vec2f(dudv1.x, dudv1.y + moveFactor);
+    let dudv2 = textureSampleLevel(waterDuDv, samp, dudvUV2, 0.0).rg * 2.0 - vec2f(1.0);
 
-    // Normal map sample → tangent-space wave normal → transform to world.
-    // Keep the vec4 result so the dependency from `waterNormal` reaches the
-    // final fragment output through the .rgb swizzle below; without this
-    // shape (or with a too-indirect chain) Dawn's `layout: 'auto'` analyzer
-    // has been observed to prune binding 3 from the auto bind-group layout
-    // and the C# side's 4-entry bind group then fails validation with
-    // "binding index 3 not present in the bind group layout".
-    let nmTexel = textureSampleLevel(waterNormal, samp, dudvUV2, 0.0);
-    let nmSample = nmTexel.rgb;
-    let mapNormal = vec3f(nmSample.r * 2.0 - 1.0, nmSample.b * 3.0, nmSample.g * 2.0 - 1.0);
+    // Wave normal: tilt the surface normal in tangent space by the DuDv
+    // distortion. Cheap stand-in for a proper normal map — gives the
+    // surface enough variation that the Fresnel and specular terms below
+    // sparkle plausibly without needing a second texture.
     var tang = cross(N, vec3f(0.0, 1.0, 0.0));
     if (dot(tang, tang) < 0.01) { tang = cross(N, vec3f(1.0, 0.0, 0.0)); }
     tang = normalize(tang);
     let bitang = normalize(cross(N, tang));
-    let waveN = normalize(tang * mapNormal.x + N * mapNormal.y + bitang * mapNormal.z);
+    let waveN = normalize(N + tang * dudv2.x * 0.3 + bitang * dudv2.y * 0.3);
 
     // Slab-thickness path length: from this water-surface fragment, the
     // ray going inward hits the seabed sphere after (oceanDepth / cos(view
@@ -153,13 +156,5 @@ fn fs_main(
     let alphaCore = mix(0.55, 0.95, depth01);
     let alpha = max(alphaCore, foam);
 
-    // Belt-and-braces: fold the entire normal-map texel directly into the
-    // return vec4 with a tiny multiplier. WGSL `layout: 'auto'` was pruning
-    // binding 3 (waterNormal) even with a more-indirect chain through
-    // `mapNormal → waveN → reflection → withFoam`. Adding nmTexel directly
-    // to the output makes the dependency syntactically straight-line and
-    // forces the binding to stay in the auto bind-group layout. The 0.001
-    // scale keeps the visual contribution sub-perceptible (≤ 1/1000 on
-    // every channel) while remaining a side effect Dawn can't elide.
-    return vec4f(withFoam, alpha) + nmTexel * 0.001;
+    return vec4f(withFoam, alpha);
 }

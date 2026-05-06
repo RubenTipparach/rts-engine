@@ -43,7 +43,6 @@ public sealed class WaterRenderer : IDisposable
     private int _ubo;
     private int _sampler;
     private int _dudvTexId;
-    private int _normalTexId;
     private int _bindGroup;
 
     private int _vbo;
@@ -90,19 +89,19 @@ public sealed class WaterRenderer : IDisposable
         _ubo = await _gpu.CreateUniformBuffer(UniformSize);
         _sampler = await _gpu.CreateSampler("linear", "repeat");
         _dudvTexId = await _gpu.CreateTextureFromUrl(dudvUrl);
-        _normalTexId = await _gpu.CreateTextureFromUrl(normalUrl);
+        // normalUrl ignored for now — see water.wgsl note about Dawn's
+        // auto-layout pruning that binding regardless of how directly its
+        // sample reaches the output. Argument kept so the call sites stay
+        // unchanged when we re-add it (probably with an explicit pipeline
+        // layout instead of `layout: 'auto'`).
+        _ = normalUrl;
 
         // Vertex layout matches the water sphere mesh (pos3 + normal3),
         // 24-byte stride. Distinct from the terrain mesh's 28-byte stride
         // (pos3 + normal3 + level1) — water doesn't carry a level since
         // every fragment runs the same shader.
         // Marker pipeline (alpha blend + depth test + no depth write +
-        // cullMode 'none'). The cullMode matters: AlphaBlend (used by the
-        // atmosphere) culls FRONT faces — designed for inside-out shells —
-        // which would make the water sphere render its back-faces only,
-        // looking inside-out. The water sphere is viewed from outside, so
-        // we want either back-face cull or no cull. Marker's "none" is
-        // also the right pick for translucency at any view angle.
+        // cullMode 'none').
         _pipeline = await _gpu.CreateRenderPipelineMarker(module, new object[]
         {
             new {
@@ -120,7 +119,6 @@ public sealed class WaterRenderer : IDisposable
             new { binding = 0, bufferId = _ubo },
             new { binding = 1, samplerId = _sampler },
             new { binding = 2, textureViewId = _dudvTexId },
-            new { binding = 3, textureViewId = _normalTexId },
         });
 
         // Build the water sphere: an icosphere subdivided to 4 (2562 verts,
