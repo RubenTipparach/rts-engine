@@ -307,51 +307,58 @@ public sealed class RtsRenderer : IDisposable
         Vector3 cameraPosLocal, float canvasW, float canvasH, int hoveredCell)
     {
         if (!_ready) return;
+        using var _ = Profiler.Scope("RtsRenderer.Draw");
 
         var planetMvpMat = RawToMat(planetMvp);
 
         // Pass 1: building + unit meshes (lit, opaque).
-        foreach (var b in state.Buildings)
+        using (Profiler.Scope("Rts.Entities"))
         {
-            if (!_buildingMeshes.TryGetValue(b.TypeId, out var bm)) continue;
-            if (!_bindGroups.TryGetValue(b.TypeId, out var bg)) continue;
-            var color = _buildingColors[b.TypeId];
+            foreach (var b in state.Buildings)
+            {
+                if (!_buildingMeshes.TryGetValue(b.TypeId, out var bm)) continue;
+                if (!_bindGroups.TryGetValue(b.TypeId, out var bg)) continue;
+                var color = _buildingColors[b.TypeId];
 
-            var up = mesh.GetCellCenter(b.CellIndex);
-            float surfaceR = mesh.LevelH(mesh.GetLevel(b.CellIndex));
-            var pos = up * surfaceR;
+                var up = mesh.GetCellCenter(b.CellIndex);
+                float surfaceR = mesh.LevelH(mesh.GetLevel(b.CellIndex));
+                var pos = up * surfaceR;
 
-            var (modelMvp, sunModel) = BuildModelMvpAndSun(pos, up, planetMvpMat, _sunDir, heading: null);
-            DrawInstance(bm, bg, modelMvp, color, sunModel, ColorForTeam(b.Team),
-                selected: b.InstanceId == state.SelectedBuildingInstanceId);
-        }
+                var (modelMvp, sunModel) = BuildModelMvpAndSun(pos, up, planetMvpMat, _sunDir, heading: null);
+                DrawInstance(bm, bg, modelMvp, color, sunModel, ColorForTeam(b.Team),
+                    selected: b.InstanceId == state.SelectedBuildingInstanceId);
+            }
 
-        foreach (var u in state.Units)
-        {
-            if (!_unitMeshes.TryGetValue(u.TypeId, out var um)) continue;
-            if (!_bindGroups.TryGetValue(u.TypeId, out var bg)) continue;
-            var color = _unitColors[u.TypeId];
-            var (modelMvp, sunModel) = BuildModelMvpAndSun(u.SurfacePoint, u.SurfaceUp, planetMvpMat, _sunDir, heading: u.Heading);
-            DrawInstance(um, bg, modelMvp, color, sunModel, ColorForTeam(u.Team),
-                selected: state.SelectedUnitInstanceIds.Contains(u.InstanceId));
+            foreach (var u in state.Units)
+            {
+                if (!_unitMeshes.TryGetValue(u.TypeId, out var um)) continue;
+                if (!_bindGroups.TryGetValue(u.TypeId, out var bg)) continue;
+                var color = _unitColors[u.TypeId];
+                var (modelMvp, sunModel) = BuildModelMvpAndSun(u.SurfacePoint, u.SurfaceUp, planetMvpMat, _sunDir, heading: u.Heading);
+                DrawInstance(um, bg, modelMvp, color, sunModel, ColorForTeam(u.Team),
+                    selected: state.SelectedUnitInstanceIds.Contains(u.InstanceId));
+            }
         }
 
         // Pass 2: selection discs (translucent, flat-shaded). Drawn after
         // entities so the disc sits on top of the surface rendering at the
         // entity's footprint.
-        foreach (var b in state.Buildings)
+        using (Profiler.Scope("Rts.SelectionDiscs"))
         {
-            if (b.InstanceId != state.SelectedBuildingInstanceId) continue;
-            var def = _config.GetBuilding(b.TypeId); if (def == null) continue;
-            var up = mesh.GetCellCenter(b.CellIndex);
-            float surfaceR = mesh.LevelH(mesh.GetLevel(b.CellIndex));
-            DrawSelectionDisc(up * surfaceR, up, def.HalfWidth * 1.6f, planetMvpMat);
-        }
-        foreach (var u in state.Units)
-        {
-            if (!state.SelectedUnitInstanceIds.Contains(u.InstanceId)) continue;
-            var def = _config.GetUnit(u.TypeId); if (def == null) continue;
-            DrawSelectionDisc(u.SurfacePoint, u.SurfaceUp, def.HalfWidth * 1.6f, planetMvpMat);
+            foreach (var b in state.Buildings)
+            {
+                if (b.InstanceId != state.SelectedBuildingInstanceId) continue;
+                var def = _config.GetBuilding(b.TypeId); if (def == null) continue;
+                var up = mesh.GetCellCenter(b.CellIndex);
+                float surfaceR = mesh.LevelH(mesh.GetLevel(b.CellIndex));
+                DrawSelectionDisc(up * surfaceR, up, def.HalfWidth * 1.6f, planetMvpMat);
+            }
+            foreach (var u in state.Units)
+            {
+                if (!state.SelectedUnitInstanceIds.Contains(u.InstanceId)) continue;
+                var def = _config.GetUnit(u.TypeId); if (def == null) continue;
+                DrawSelectionDisc(u.SurfacePoint, u.SurfaceUp, def.HalfWidth * 1.6f, planetMvpMat);
+            }
         }
 
         // Pass 2.5: building placement ghost — when a build is queued, draw
@@ -364,6 +371,7 @@ public sealed class RtsRenderer : IDisposable
         // selected unit's path goal, so the player can see where they'll end
         // up. Only shown for selected units to keep the screen clean when
         // many units are moving at once.
+        using (var _md = Profiler.Scope("Rts.MoveDestMarkers"))
         foreach (var u in state.Units)
         {
             if (!state.SelectedUnitInstanceIds.Contains(u.InstanceId)) continue;
@@ -376,12 +384,14 @@ public sealed class RtsRenderer : IDisposable
         }
 
         // Pass 3: HP bars — screen-space, only over selected/hovered entities.
-        DrawHealthBars(state, mesh, planetMvpMat, cameraPosLocal, canvasW, canvasH);
+        using (Profiler.Scope("Rts.HpBars"))
+            DrawHealthBars(state, mesh, planetMvpMat, cameraPosLocal, canvasW, canvasH);
 
         // Pass 4 (debug only): unit paths — straight line strips from each
         // moving unit's current position along its remaining waypoints.
         if (_engineConfig.Debug.ShowUnitPaths)
-            DrawUnitPaths(state, mesh, planetMvp);
+            using (Profiler.Scope("Rts.UnitPaths"))
+                DrawUnitPaths(state, mesh, planetMvp);
     }
 
     /// <summary>When debug.showUnitPaths is on, emit a line-list pair for
@@ -442,7 +452,11 @@ public sealed class RtsRenderer : IDisposable
         uni[16] = 1.00f; uni[17] = 0.20f; uni[18] = 0.85f; uni[19] = 0.85f;
 
         _gpu.WriteBuffer(_pathUbo, uni);
-        _gpu.WriteBuffer(_pathVbo, _pathVertScratch);
+        // Only the first segs*6 floats of _pathVertScratch are populated; the
+        // rest is stale leftover from previous frames. Marshalling the whole
+        // ~196 KB scratch every frame across JS interop dominates frame time
+        // once any selection has paths — slice to the live prefix instead.
+        _gpu.WriteBuffer(_pathVbo, _pathVertScratch, segs * 6);
         _gpu.RenderAdditional(_pathPipeline, _pathVbo, _pathIbo, _pathBindGroup, segs * 2);
     }
 
@@ -509,7 +523,9 @@ public sealed class RtsRenderer : IDisposable
         }
 
         if (barCount == 0) return;
-        _gpu.WriteBuffer(_hpVbo, _hpVertScratch);
+        // Same reasoning as DrawUnitPaths — _hpVertScratch is sized for
+        // MaxHpBars but typically only a handful of bars are populated.
+        _gpu.WriteBuffer(_hpVbo, _hpVertScratch, barCount * VertsPerBar * FloatsPerVert);
         _gpu.RenderNoBind(_hpPipeline, _hpVbo, _hpIbo, barCount * IndicesPerBar);
     }
 

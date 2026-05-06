@@ -241,6 +241,12 @@ internal sealed class OpenGLGPU : IGPU, IDisposable
     }
 
     public unsafe void WriteBuffer(int bufferId, float[] data)
+        => WriteBufferRangeUnsafe(bufferId, data, data.Length);
+
+    public unsafe void WriteBuffer(int bufferId, float[] data, int floatCount)
+        => WriteBufferRangeUnsafe(bufferId, data, Math.Min(floatCount, data.Length));
+
+    private unsafe void WriteBufferRangeUnsafe(int bufferId, float[] data, int floatCount)
     {
         if (!_bufferKind.TryGetValue(bufferId, out var kind)) return;
         // Match WebGPU writeBuffer semantics: it uploads exactly the floats
@@ -258,7 +264,7 @@ internal sealed class OpenGLGPU : IGPU, IDisposable
         };
         _gl.BindBuffer(target, _buffers[bufferId]);
         fixed (float* p = data)
-            _gl.BufferSubData(target, 0, (nuint)(data.Length * sizeof(float)), p);
+            _gl.BufferSubData(target, 0, (nuint)(floatCount * sizeof(float)), p);
     }
 
     public void DestroyBuffer(int bufferId)

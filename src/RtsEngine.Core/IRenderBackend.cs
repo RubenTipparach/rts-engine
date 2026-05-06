@@ -69,6 +69,26 @@ public interface IRenderBackend : IDisposable
     void ShowUIButton(string id, bool visible);
 
     /// <summary>
+    /// Display (or hide) a multi-line profiler text overlay. Implementations
+    /// should pick whatever native presentation fits — WASM uses an HTML
+    /// `<pre>` overlay with a Copy button; desktop dumps to stdout. Default
+    /// is no-op so backends can opt in.
+    /// </summary>
+    void ShowProfilerOverlay(string text, bool visible) { }
+
+    /// <summary>
+    /// Copy the given string to the user's clipboard (WASM:
+    /// navigator.clipboard.writeText; desktop falls back to stdout). No-op by
+    /// default for backends that don't have clipboard access.
+    /// </summary>
+    void CopyTextToClipboard(string text) { }
+
+    /// <summary>Fired when the user clicks the Copy button on the profiler
+    /// overlay. The host responds by snapshotting current stats and routing
+    /// them to <see cref="CopyTextToClipboard"/>.</summary>
+    event Action? ProfilerCopyRequested;
+
+    /// <summary>
     /// Render any platform-managed UI on top of the current frame. WASM uses
     /// HTML DOM buttons that draw themselves outside the canvas, so this is
     /// a no-op there. Desktop rasterises an EngineUI quad mesh.

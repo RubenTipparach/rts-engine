@@ -201,9 +201,25 @@ public class GameEngine
         };
         _app.KeyDown += key =>
         {
+            // F3 toggles the live profiler overlay on either platform. The
+            // toggle lives outside the per-mode dispatch because it should
+            // work even mid-transition. Hide the overlay when turning it off
+            // so a stale snapshot doesn't linger.
+            if (key == "F3" || key == "f3")
+            {
+                Profiler.Enabled = !Profiler.Enabled;
+                _app.ShowProfilerOverlay(Profiler.Enabled ? Profiler.Snapshot() : string.Empty,
+                                          Profiler.Enabled);
+                return;
+            }
             if (_transition.IsActive) return;
             CurrentMode()?.OnKey(key);
         };
+
+        // Copy button on the WASM overlay (no-op subscription on platforms
+        // that never raise the event). Snapshot is taken in C# so both
+        // platforms share the same formatting.
+        _app.ProfilerCopyRequested += () => _app.CopyTextToClipboard(Profiler.Snapshot());
     }
 
     private void DispatchOrbit(float dx, float dy)
@@ -270,7 +286,12 @@ public class GameEngine
 
     private async Task Tick()
     {
-        try { await TickInner(); }
+        Profiler.BeginFrame();
+        try
+        {
+            using (Profiler.Scope("Tick"))
+                await TickInner();
+        }
         catch (Exception e)
         {
             // Silk.NET swallows exceptions thrown from async render handlers
@@ -279,6 +300,10 @@ public class GameEngine
             Console.Error.WriteLine($"[tick] EXCEPTION: {e.GetType().Name}: {e.Message}");
             Console.Error.WriteLine(e.StackTrace);
         }
+        Profiler.EndFrame();
+        // Push a fresh snapshot to the platform overlay every frame while the
+        // profiler is on. Cheap when off (Snapshot is never called).
+        if (Profiler.Enabled) _app.ShowProfilerOverlay(Profiler.Snapshot(), true);
     }
 
     private async Task TickInner()
@@ -350,12 +375,16 @@ public class GameEngine
 
         // Normal tick — dispatch to the active mode.
         var mode = CurrentMode();
-        if (mode != null) await mode.RenderTick(elapsed);
+        if (mode != null)
+        {
+            using (Profiler.Scope($"{Mode}.RenderTick"))
+                await mode.RenderTick(elapsed);
+        }
 
         // Platform UI overlay. WASM uses HTML buttons that draw themselves;
         // desktop rasterises an EngineUI quad mesh.
-        _hud.Sync();
-        _app.RenderUI();
+        using (Profiler.Scope("Hud.Sync")) _hud.Sync();
+        using (Profiler.Scope("RenderUI")) _app.RenderUI();
         OnFrameRendered?.Invoke();
     }
 }

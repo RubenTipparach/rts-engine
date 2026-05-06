@@ -47,6 +47,33 @@ internal sealed class DesktopAppBackend : IRenderBackend
     public event Action<float, float, float, float>? BoxSelectUpdate;
     public event Action<float, float, float, float>? BoxSelectComplete;
     public event Action<float, float>? ContextMenuRequested;
+#pragma warning disable CS0067 // Desktop has no clipboard plumbing yet — text dumps to stdout.
+    public event Action? ProfilerCopyRequested;
+#pragma warning restore CS0067
+
+    private DateTime _lastProfilerDump;
+    public void ShowProfilerOverlay(string text, bool visible)
+    {
+        // Desktop has no HTML overlay; mirror the snapshot to stdout. Throttle
+        // to once per second so we don't spam the terminal — Press F3 to stop
+        // updates entirely; press Copy from the WASM client (or use the next
+        // F3 dump on desktop) to grab a snapshot. Empty text means the host
+        // wants the overlay hidden, which on desktop is just "stop printing".
+        if (!visible || string.IsNullOrEmpty(text)) return;
+        var now = DateTime.UtcNow;
+        if ((now - _lastProfilerDump).TotalSeconds < 1.0) return;
+        _lastProfilerDump = now;
+        Console.WriteLine(text);
+    }
+
+    public void CopyTextToClipboard(string text)
+    {
+        // No cross-platform clipboard on Silk.NET; fall back to a clearly
+        // marked stdout dump the user can copy from the terminal.
+        Console.WriteLine("─── PROFILER COPY ───");
+        Console.WriteLine(text);
+        Console.WriteLine("─── END ───");
+    }
 
     public void CreateUIButton(string id, string text, string cssJson)
         => _ui?.AddOrUpdate(id, text, cssJson);
