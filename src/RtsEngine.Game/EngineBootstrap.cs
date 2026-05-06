@@ -293,7 +293,12 @@ public sealed class EngineBootstrap
     {
         var yaml = await _assets.GetTextAsync(configPath);
         var config = PlanetConfig.FromYaml(yaml);
-        var terrainShader = await _assets.GetTextAsync("shaders/terrain.wgsl");
+        // ?v=N busts the browser's cached copy of the shader text. Bump the
+        // number when the shader's binding layout changes — a stale cached
+        // shader against a fresh WASM bind group throws "Number of entries
+        // (N) did not match expected (M)" at bind-group creation. Server
+        // ignores the query, browser treats it as a fresh URL.
+        var terrainShader = await _assets.GetTextAsync("shaders/terrain.wgsl?v=2");
 
         var mesh = new PlanetMesh(
             subdivisions: config.Subdivisions,
@@ -317,7 +322,7 @@ public sealed class EngineBootstrap
         renderer.ApplyConfig(config);
         await renderer.Setup(terrainShader);
 
-        var waterShader = await _assets.GetTextAsync("shaders/water.wgsl");
+        var waterShader = await _assets.GetTextAsync("shaders/water.wgsl?v=2");
         await renderer.SetupWater(waterShader);
 
         var atmoShader = await _assets.GetTextAsync("shaders/atmosphere.wgsl");
