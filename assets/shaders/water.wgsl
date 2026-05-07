@@ -1,55 +1,61 @@
-// Standalone water shader — used by WaterRenderer for the planet's water
-// sphere. Separate from terrain.wgsl so the water can run on its own
-// alpha-blended pipeline without affecting the opaque terrain pass.
+// Water shader — Catlike Coding "Looking Through Water" port:
+//   https://catlikecoding.com/unity/tutorials/flow/looking-through-water/
 //
-// Renders a translucent water surface with: animated DuDv-driven wave
-// distortion, normal-mapped specular + Fresnel reflection, depth-based
-// colour gradient (shallow → bright teal, deep → near-navy), shore foam,
-// and a depth-driven alpha so shallow shores fade out and the terrain
-// underneath shows through. NO terrain texture is sampled inside this
-// shader — the water material is its own colour.
+// The legacy water shader's "underwater" colour was a smoothstep on a
+// path-length proxy (`oceanDepth / cos(view-angle)`). We replace just that
+// term with the tutorial's depth-difference fog over a refracted snapshot
+// of the framebuffer: the rest of the surface treatment (Fresnel mix with
+// sky reflection, Lambert lighting, sun specular) stays so the water still
+// looks like water, only now what's *underneath* shows through correctly.
 //
-// Refraction/depth-FX upgrade (TODO when IGPU gets render-target support):
-// add bindings for sceneColor + sceneDepth textures rendered in the
-// preceding opaque pass; sample sceneColor at a DuDv-offset UV for true
-// refraction, and read sceneDepth to compute true water-column thickness
-// (currently approximated as the static `oceanDepth` uniform).
+//   throughWater = mix(fogColor, sceneColor[refractedUV], exp2(-density * d))
+//
+// where d = bgEyeDepth - waterSurfaceEyeDepth, both linearised from the
+// same log-depth projection terrain uses. The screen-space refraction
+// offset is clamped by saturate(d) so shallow shores don't bleed
+// foreground geometry sideways into the water.
 
 struct Uniforms {
     mvp: mat4x4f,
     sunDir: vec4f,
     cameraPos: vec4f,
-    // params.x = time
-    // params.y = (reserved)
-    // params.z = water column thickness in world units (= 3/4 stepHeight,
-    //            i.e. the geometric distance from the water surface sphere
-    //            down to the seabed level)
-    // params.w = (reserved)
+    // .x = time
+    // .y = waterFogDensity      (per-world-unit absorption)
+    // .z = refractionStrength   (max screen-UV offset)
+    // .w = (reserved)
     params: vec4f,
+    // .rgb = waterFogColor (the colour deep water absorbs to)
+    fogColor: vec4f,
+    // .x = viewportW (px),  .y = viewportH (px)
+    // .z = 1/viewportW,     .w = 1/viewportH
+    viewport: vec4f,
 }
 
 @binding(0) @group(0) var<uniform> u: Uniforms;
-@binding(1) @group(0) var samp: sampler;
+@binding(1) @group(0) var dudvSamp: sampler;
 @binding(2) @group(0) var waterDuDv: texture_2d<f32>;
-// (waterNormal binding removed — Dawn's `layout: 'auto'` analyser kept
-//  pruning it as unused regardless of how directly its sample fed the
-//  fragment output. Could revisit when we move to an explicit pipeline
-//  layout. For now the wave normal comes from the geometric N plus the
-//  DuDv-derived perturbation only — visually less detailed than a true
-//  normal-mapped surface but matches the auto-layout exactly.)
+@binding(3) @group(0) var sceneSamp: sampler;
+@binding(4) @group(0) var sceneColor: texture_2d<f32>;
+@binding(5) @group(0) var sceneDepth: texture_depth_2d;
+
+// Logarithmic depth — must match terrain.wgsl exactly so the depth attached
+// at sceneDepth (written by terrain) uses the same encoding the water
+// shader expects.
+const LOG_DEPTH_FAR = 10000.0;
+fn applyLogDepth(p: vec4f) -> vec4f {
+    let logZ = log2(max(1e-6, 1.0 + p.w)) / log2(1.0 + LOG_DEPTH_FAR);
+    return vec4f(p.x, p.y, logZ * p.w, p.w);
+}
+// Inverse of applyLogDepth: ndc-Z in [0,1] → linear view-space distance.
+//   ndcZ = log2(1+w) / log2(1+FAR)   ⇒   w = (1+FAR)^ndcZ - 1
+fn linearizeLogDepth(ndcZ: f32) -> f32 {
+    return pow(1.0 + LOG_DEPTH_FAR, ndcZ) - 1.0;
+}
 
 struct VSOutput {
     @builtin(position) position: vec4f,
     @location(0) worldPos: vec3f,
     @location(1) normal: vec3f,
-}
-
-// Logarithmic depth — must match terrain.wgsl exactly so the water surface
-// sorts correctly against terrain, atmosphere, sun, distant planets.
-const LOG_DEPTH_FAR = 10000.0;
-fn applyLogDepth(p: vec4f) -> vec4f {
-    let logZ = log2(max(1e-6, 1.0 + p.w)) / log2(1.0 + LOG_DEPTH_FAR);
-    return vec4f(p.x, p.y, logZ * p.w, p.w);
 }
 
 @vertex
@@ -66,6 +72,7 @@ fn vs_main(
 
 @fragment
 fn fs_main(
+    @builtin(position) fragCoord: vec4f,
     @location(0) worldPos: vec3f,
     @location(1) normal: vec3f,
 ) -> @location(0) vec4f {
@@ -73,92 +80,98 @@ fn fs_main(
     let L = normalize(u.sunDir.xyz);
     let V = normalize(u.cameraPos.xyz - worldPos);
     let t = u.params.x;
-    let oceanDepth = u.params.z;
+    let fogDensity = u.params.y;
+    let refractionStrength = u.params.z;
 
-    // Triplanar UV for sphere — pick the axis the surface normal aligns
-    // with most so the wave pattern doesn't stretch at any pole.
-    let b = max(abs(N), vec3f(0.001, 0.001, 0.001));
-    let total = b.x + b.y + b.z;
-    let wx = b.x / total;
-    let wy = b.y / total;
-    let wz = b.z / total;
+    // ── Triplanar UV for the wave pattern ─────────────────────────────
+    let absN = max(abs(N), vec3f(0.001));
+    let total = absN.x + absN.y + absN.z;
+    let wx = absN.x / total;
+    let wy = absN.y / total;
+    let wz = absN.z / total;
     let tiling = 6.0;
     var waterUV: vec2f;
     if (wy > wx && wy > wz) { waterUV = worldPos.xz * tiling; }
     else if (wx > wz)       { waterUV = worldPos.zy * tiling; }
     else                     { waterUV = worldPos.xy * tiling; }
 
-    // Animated DuDv distortion — two scrolling layers drive the wave
-    // perturbation, classic OpenGL-water approach. The DuDv samples form
-    // a small XY offset on N for the Fresnel/specular calculations below;
-    // we no longer sample a separate normal map for full tangent-space
-    // wave normals (see binding comment above).
+    // Animated DuDv distortion → tangent-space (x, y) offset.
     let moveSpeed = 0.03;
     let moveFactor = t * moveSpeed;
     let dudvUV1 = vec2f(waterUV.x + moveFactor, waterUV.y);
-    let dudv1 = textureSampleLevel(waterDuDv, samp, dudvUV1, 0.0).rg * 0.1;
+    let dudv1 = textureSampleLevel(waterDuDv, dudvSamp, dudvUV1, 0.0).rg * 0.1;
     let dudvUV2 = waterUV + vec2f(dudv1.x, dudv1.y + moveFactor);
-    let dudv2 = textureSampleLevel(waterDuDv, samp, dudvUV2, 0.0).rg * 2.0 - vec2f(1.0);
+    let dudv2 = textureSampleLevel(waterDuDv, dudvSamp, dudvUV2, 0.0).rg * 2.0 - vec2f(1.0);
 
-    // Wave normal: tilt the surface normal in tangent space by the DuDv
-    // distortion. Cheap stand-in for a proper normal map — gives the
-    // surface enough variation that the Fresnel and specular terms below
-    // sparkle plausibly without needing a second texture.
     var tang = cross(N, vec3f(0.0, 1.0, 0.0));
     if (dot(tang, tang) < 0.01) { tang = cross(N, vec3f(1.0, 0.0, 0.0)); }
     tang = normalize(tang);
     let bitang = normalize(cross(N, tang));
     let waveN = normalize(N + tang * dudv2.x * 0.3 + bitang * dudv2.y * 0.3);
 
-    // Slab-thickness path length: from this water-surface fragment, the
-    // ray going inward hits the seabed sphere after (oceanDepth / cos(view
-    // angle from N)) world units. Clamped cosine so grazing rays get a
-    // long-but-finite path. This is fake depth — when sceneDepth is wired
-    // up later, replace with `sceneDepth_at_this_pixel - water_surface_depth`.
-    let viewCos = max(dot(N, V), 0.08);
-    let pathLen = oceanDepth / viewCos;
+    // ── Screen-space depth difference (tutorial §1.2) ─────────────────
+    // Depth is read with textureLoad (no sampler) so the colour binding
+    // can keep its filtering linear sampler — WebGPU's auto-layout marks
+    // any sampler used with a depth texture as NonFiltering, which would
+    // otherwise collide with the colour binding's filtering needs.
+    let invViewport = u.viewport.zw;
+    let viewportSize = vec2<i32>(i32(u.viewport.x), i32(u.viewport.y));
+    let viewportMax = viewportSize - vec2<i32>(1);
+    let pixelCoord0 = clamp(vec2<i32>(fragCoord.xy), vec2<i32>(0), viewportMax);
+    let screenUV0 = fragCoord.xy * invViewport;
 
-    // Depth-based water colour. No terrain texture is sampled. The
-    // smoothstep range = "fog depth": path length at which the colour
-    // saturates from shallow to deep. Halved from the previous 4× so the
-    // fog reads as denser — water turns opaque-navy at shorter visible
-    // path lengths instead of staying mid-teal across most of the basin.
-    let shallowColor = vec3f(0.18, 0.55, 0.65);
-    let deepColor    = vec3f(0.02, 0.10, 0.22);
-    let depth01      = smoothstep(0.0, oceanDepth * 2.0, pathLen);
-    let throughWater = mix(shallowColor, deepColor, depth01);
+    let surfaceEye = linearizeLogDepth(fragCoord.z);
+    let bgNdcZ0 = textureLoad(sceneDepth, pixelCoord0, 0);
+    let bgEye0  = linearizeLogDepth(bgNdcZ0);
+    let depthDiff0 = max(0.0, bgEye0 - surfaceEye);
 
-    // Shore foam — splotchy noise modulated by depth proximity.
-    let depthFoamMask = 1.0 - smoothstep(0.0, oceanDepth * 1.5, pathLen);
-    let foamPattern = textureSampleLevel(waterDuDv, samp, dudvUV2 * 0.5, 0.0).g;
-    let foamShape = smoothstep(0.35, 0.65, foamPattern + depthFoamMask * 0.5);
-    let foam = foamShape * smoothstep(0.0, 1.0, depthFoamMask);
+    // ── Refraction (tutorial §2) ──────────────────────────────────────
+    // saturate(depthDiff) gates the offset so shores stay sharp.
+    // aspect compensation makes the screen-space pixel offset roughly
+    // isotropic regardless of canvas aspect ratio.
+    let aspect = u.viewport.x * invViewport.y;
+    var uvOffset = vec2f(dudv2.x, dudv2.y) * refractionStrength;
+    uvOffset.y = uvOffset.y * aspect;
+    uvOffset = uvOffset * saturate(depthDiff0);
+    var refractedUV = clamp(screenUV0 + uvOffset, vec2f(0.0), vec2f(1.0));
 
-    // Sky reflection (approximated gradient on reflected ray's Y).
+    // Re-sample depth at the refracted UV. If that pixel is in front of
+    // the water surface (we sampled sideways into a foreground occluder),
+    // discard the refraction and fall back to the straight UV.
+    let pixelCoordR = clamp(vec2<i32>(refractedUV * u.viewport.xy), vec2<i32>(0), viewportMax);
+    let bgNdcZ = textureLoad(sceneDepth, pixelCoordR, 0);
+    let bgEye  = linearizeLogDepth(bgNdcZ);
+    var diff = bgEye - surfaceEye;
+    var bgUV = refractedUV;
+    if (diff < 0.0) {
+        bgUV = screenUV0;
+        diff = depthDiff0;
+    }
+
+    // Refracted background colour (filtered linear via sceneSamp).
+    let bgColor = textureSampleLevel(sceneColor, sceneSamp, bgUV, 0.0).rgb;
+
+    // ── Underwater colour (tutorial §1.4) ─────────────────────────────
+    let fogFactor    = exp2(-fogDensity * max(diff, 0.0));
+    let throughWater = mix(u.fogColor.rgb, bgColor, fogFactor);
+
+    // ── Surface highlights (kept from the legacy shader so the water
+    //    surface still has the existing aesthetic) ──────────────────────
     let R = reflect(-V, waveN);
     let skyGrad = R.y * 0.5 + 0.5;
     let reflectColor = mix(vec3f(0.30, 0.40, 0.50), vec3f(0.50, 0.65, 0.85), skyGrad);
 
-    // Fresnel — more reflection at grazing angle.
     let refractiveFactor = pow(max(dot(V, waveN), 0.0), 0.5);
     let waterBase = mix(reflectColor, throughWater, refractiveFactor);
 
-    // Sun specular on the wave normal.
     let reflectedLight = reflect(-L, waveN);
     let spec = pow(max(dot(reflectedLight, V), 0.0), 64.0);
     let specHighlight = vec3f(1.0, 0.95, 0.85) * spec * 0.5;
 
     let NdotL = max(dot(N, L), 0.0);
     let lit = waterBase * (0.4 + NdotL * 0.6) + specHighlight;
-    let withFoam = mix(lit, vec3f(0.95, 0.97, 1.0), foam);
 
-    // Alpha — translucent at shallow, opaque at depth + foam. Shore foam
-    // forces alpha back up so it reads cleanly over whatever's beneath.
-    // When sceneDepth becomes available, use the real water-column depth
-    // instead of the path-length proxy here for a more accurate "fade in
-    // at the shoreline" effect.
-    let alphaCore = mix(0.55, 0.95, depth01);
-    let alpha = max(alphaCore, foam);
-
-    return vec4f(withFoam, alpha);
+    // Opaque output. The fog mix has already composited the refracted
+    // background into the result, so we don't blend.
+    return vec4f(lit, 1.0);
 }

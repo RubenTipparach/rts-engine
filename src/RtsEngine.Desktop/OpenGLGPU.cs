@@ -80,6 +80,23 @@ internal sealed class OpenGLGPU : IGPU, IDisposable
     private int _nextBindGroupId = 1;
     private uint _vao;
 
+    // ── Offscreen scene RT (Catlike-Coding water tutorial port) ────────────
+    // Same shape as the WebGPU JS proxy: BeginSceneFrame redirects subsequent
+    // Render*() calls onto an offscreen FBO sized to the GL viewport;
+    // GrabSceneColor blits scene→grab; EndSceneFrame blits scene→default FB.
+    // Per-texture sampler entries on bind groups (added below in DoDraw) let
+    // the water bind group mix the existing repeat-DuDv sampler with a clamp
+    // sampler for the scene textures in the same group.
+    private uint _sceneFbo, _grabFbo;
+    private uint _sceneColorTex, _sceneDepthTex, _grabColorTex;
+    private int _sceneW, _sceneH;
+    private bool _inSceneFrame;
+    private int _grabColorViewId  = -1;  // → _grabColorTex (refraction snapshot)
+    private int _sceneDepthViewId = -1;  // → _sceneDepthTex (depth-fog source)
+    // Saved at BeginSceneFrame; restored at EndSceneFrame so the post-scene
+    // UI pass renders into the full window even if the FBO is smaller.
+    private (int x, int y, int w, int h) _savedViewport;
+
     // Diagnostics for the first few frames.
     private int _drawCount;
     private int _frameLogIdx;
@@ -426,6 +443,21 @@ internal sealed class OpenGLGPU : IGPU, IDisposable
             p.CullBack = false;
         });
 
+    public Task<int> CreateRenderPipelineWater(int shaderModuleId, object[] vertexBufferLayouts)
+        => MakePipeline(shaderModuleId, vertexBufferLayouts, p =>
+        {
+            // Opaque (no blend), depth-test on, depth-write OFF, cull-back.
+            // Output is opaque because the water shader composites the
+            // scene-color background via the fog mix; depth-write off keeps
+            // the depth attachment at terrain depth so the fog math behind
+            // this fragment still sees the actual terrain.
+            p.BlendAlpha = false;
+            p.DepthTest = true;
+            p.DepthWrite = false;
+            p.CullBack = true;
+            p.CullFront = false;
+        });
+
     private Task<int> MakePipeline(int shaderModuleId, object[] vertexBufferLayouts, Action<Pipeline> tweak)
     {
         var p = new Pipeline
@@ -590,11 +622,20 @@ internal sealed class OpenGLGPU : IGPU, IDisposable
         // sampler2D reads pick up the right filtering/wrapping.
         if (bindGroupId > 0 && _bindGroups.TryGetValue(bindGroupId, out var bg))
         {
+            // Pick the group default sampler — first sampler-only entry. Used
+            // for any texture entry that doesn't carry its own samplerId. The
+            // per-texture override (texture entry with both textureViewId AND
+            // samplerId) lets a shader mix multiple samplers in one group:
+            // the water bind group needs repeat-DuDv at binding 2 and clamp
+            // for sceneColor at binding 4, all in @group(0).
             uint? groupSampler = null;
             foreach (var e in bg.Entries)
             {
                 if (e.SamplerId is int sa && sa > 0 && sa < _samplers.Count && e.TextureViewId == null)
+                {
                     groupSampler = _samplers[sa];
+                    break;
+                }
             }
 
             foreach (var e in bg.Entries)
@@ -607,8 +648,13 @@ internal sealed class OpenGLGPU : IGPU, IDisposable
                 {
                     _gl.ActiveTexture(TextureUnit.Texture0 + e.Binding);
                     _gl.BindTexture(TextureTarget.Texture2D, _textures[tv].Tex);
-                    if (groupSampler.HasValue)
-                        _gl.BindSampler((uint)e.Binding, groupSampler.Value);
+                    uint? thisSampler = null;
+                    if (e.SamplerId is int sa3 && sa3 > 0 && sa3 < _samplers.Count)
+                        thisSampler = _samplers[sa3];
+                    else if (groupSampler.HasValue)
+                        thisSampler = groupSampler.Value;
+                    if (thisSampler.HasValue)
+                        _gl.BindSampler((uint)e.Binding, thisSampler.Value);
                 }
                 else if (e.SamplerId is int sa2 && sa2 > 0 && sa2 < _samplers.Count && e.TextureViewId == null)
                 {
@@ -638,6 +684,154 @@ internal sealed class OpenGLGPU : IGPU, IDisposable
         _drawCount++;
     }
 
+    // ── Offscreen scene RT ─────────────────────────────────────────────────
+    // Mirrors GPUProxy.beginSceneFrame / endSceneFrame / grabSceneColor.
+    // Renders the world into an FBO with sampleable color + depth, then
+    // blits color → default framebuffer at frame end. Water samples the
+    // depth attachment for fog math (depth-write off makes that safe per
+    // GL 4.5 §9.3) and the grab-color blit for the refraction background.
+
+    public Task PrepareSceneTargets()
+    {
+        EnsureSceneFbo();
+        return Task.CompletedTask;
+    }
+
+    public void BeginSceneFrame()
+    {
+        EnsureSceneFbo();
+        Span<int> v = stackalloc int[4];
+        _gl.GetInteger(GLEnum.Viewport, v);
+        _savedViewport = (v[0], v[1], v[2], v[3]);
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _sceneFbo);
+        _gl.Viewport(0, 0, (uint)_sceneW, (uint)_sceneH);
+        _inSceneFrame = true;
+    }
+
+    public void GrabSceneColor()
+    {
+        if (!_inSceneFrame || _sceneFbo == 0) return;
+        // Blit scene-color → grab-color. The scene depth attachment is left
+        // bound on _sceneFbo and read in-place from the bind group during
+        // the water draw (depth-write off makes that safe).
+        _gl.BindFramebuffer(FramebufferTarget.ReadFramebuffer, _sceneFbo);
+        _gl.BindFramebuffer(FramebufferTarget.DrawFramebuffer, _grabFbo);
+        _gl.BlitFramebuffer(0, 0, _sceneW, _sceneH, 0, 0, _sceneW, _sceneH,
+            ClearBufferMask.ColorBufferBit, BlitFramebufferFilter.Nearest);
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _sceneFbo);
+    }
+
+    public void EndSceneFrame()
+    {
+        if (!_inSceneFrame) return;
+        // Composite scene color → default framebuffer. Stretch (linear) to
+        // the saved viewport so a window resize (which doesn't reallocate
+        // the FBO) shows the scene over the full window rather than a
+        // black border.
+        _gl.BindFramebuffer(FramebufferTarget.ReadFramebuffer, _sceneFbo);
+        _gl.BindFramebuffer(FramebufferTarget.DrawFramebuffer, 0);
+        _gl.BlitFramebuffer(
+            0, 0, _sceneW, _sceneH,
+            _savedViewport.x, _savedViewport.y,
+            _savedViewport.x + _savedViewport.w, _savedViewport.y + _savedViewport.h,
+            ClearBufferMask.ColorBufferBit, BlitFramebufferFilter.Linear);
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+        // Restore the original viewport so the EngineUI pass after this
+        // call renders into the full window again.
+        _gl.Viewport(_savedViewport.x, _savedViewport.y, (uint)_savedViewport.w, (uint)_savedViewport.h);
+        _inSceneFrame = false;
+    }
+
+    // OpenGL has no explicit depth-readonly attachment mode, so this is just
+    // a normal draw — the pipeline's DepthWrite=false makes sampling the
+    // bound depth attachment safe per the GL 4.5 spec (no texel write means
+    // no feedback-loop UB).
+    public void RenderWaterPass(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount)
+        => DoDraw(pipelineId, vertexBufferId, indexBufferId, bindGroupId, indexCount, 0);
+
+    public int GrabColorView  => _grabColorViewId;
+    public int SceneDepthView => _sceneDepthViewId;
+
+    private unsafe void EnsureSceneFbo()
+    {
+        Span<int> v = stackalloc int[4];
+        _gl.GetInteger(GLEnum.Viewport, v);
+        int w = v[2], h = v[3];
+        if (w <= 0 || h <= 0) return;
+        if (_sceneFbo != 0 && w == _sceneW && h == _sceneH) return;
+
+        // Tear down any previous allocation so we can rebuild at the new
+        // size. _grabColorViewId / _sceneDepthViewId stay at their fixed
+        // slots in _textures; we just swap the underlying GL texture name
+        // so existing bind groups keep working after a resize.
+        if (_sceneFbo != 0) _gl.DeleteFramebuffer(_sceneFbo);
+        if (_grabFbo  != 0) _gl.DeleteFramebuffer(_grabFbo);
+        if (_sceneColorTex != 0) _gl.DeleteTexture(_sceneColorTex);
+        if (_sceneDepthTex != 0) _gl.DeleteTexture(_sceneDepthTex);
+        if (_grabColorTex  != 0) _gl.DeleteTexture(_grabColorTex);
+
+        _sceneColorTex = _gl.GenTexture();
+        _gl.BindTexture(TextureTarget.Texture2D, _sceneColorTex);
+        _gl.TexImage2D(TextureTarget.Texture2D, 0, InternalFormat.Rgba8,
+            (uint)w, (uint)h, 0, PixelFormat.Rgba, PixelType.UnsignedByte, null);
+        _gl.TexParameter(TextureTarget.Texture2D, GLEnum.TextureMinFilter, (int)GLEnum.Linear);
+        _gl.TexParameter(TextureTarget.Texture2D, GLEnum.TextureMagFilter, (int)GLEnum.Linear);
+        _gl.TexParameter(TextureTarget.Texture2D, GLEnum.TextureWrapS, (int)GLEnum.ClampToEdge);
+        _gl.TexParameter(TextureTarget.Texture2D, GLEnum.TextureWrapT, (int)GLEnum.ClampToEdge);
+
+        _grabColorTex = _gl.GenTexture();
+        _gl.BindTexture(TextureTarget.Texture2D, _grabColorTex);
+        _gl.TexImage2D(TextureTarget.Texture2D, 0, InternalFormat.Rgba8,
+            (uint)w, (uint)h, 0, PixelFormat.Rgba, PixelType.UnsignedByte, null);
+        _gl.TexParameter(TextureTarget.Texture2D, GLEnum.TextureMinFilter, (int)GLEnum.Linear);
+        _gl.TexParameter(TextureTarget.Texture2D, GLEnum.TextureMagFilter, (int)GLEnum.Linear);
+        _gl.TexParameter(TextureTarget.Texture2D, GLEnum.TextureWrapS, (int)GLEnum.ClampToEdge);
+        _gl.TexParameter(TextureTarget.Texture2D, GLEnum.TextureWrapT, (int)GLEnum.ClampToEdge);
+
+        // Sampleable depth: 24-bit, COMPARE_MODE off so a regular sampler2D
+        // returns the raw normalised depth (matches the texelFetch path the
+        // water shader uses).
+        _sceneDepthTex = _gl.GenTexture();
+        _gl.BindTexture(TextureTarget.Texture2D, _sceneDepthTex);
+        _gl.TexImage2D(TextureTarget.Texture2D, 0, InternalFormat.DepthComponent24,
+            (uint)w, (uint)h, 0, PixelFormat.DepthComponent, PixelType.UnsignedInt, null);
+        _gl.TexParameter(TextureTarget.Texture2D, GLEnum.TextureMinFilter, (int)GLEnum.Nearest);
+        _gl.TexParameter(TextureTarget.Texture2D, GLEnum.TextureMagFilter, (int)GLEnum.Nearest);
+        _gl.TexParameter(TextureTarget.Texture2D, GLEnum.TextureWrapS, (int)GLEnum.ClampToEdge);
+        _gl.TexParameter(TextureTarget.Texture2D, GLEnum.TextureWrapT, (int)GLEnum.ClampToEdge);
+        _gl.TexParameter(TextureTarget.Texture2D, GLEnum.TextureCompareMode, (int)GLEnum.None);
+
+        _sceneFbo = _gl.GenFramebuffer();
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _sceneFbo);
+        _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0,
+            TextureTarget.Texture2D, _sceneColorTex, 0);
+        _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.DepthAttachment,
+            TextureTarget.Texture2D, _sceneDepthTex, 0);
+        var st = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+        if (st != GLEnum.FramebufferComplete)
+            Console.Error.WriteLine($"[GL] sceneFbo incomplete: 0x{(int)st:X}");
+
+        _grabFbo = _gl.GenFramebuffer();
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _grabFbo);
+        _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0,
+            TextureTarget.Texture2D, _grabColorTex, 0);
+        st = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+        if (st != GLEnum.FramebufferComplete)
+            Console.Error.WriteLine($"[GL] grabFbo incomplete: 0x{(int)st:X}");
+
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+
+        _sceneW = w;
+        _sceneH = h;
+
+        var grabEntry  = new TextureEntry { Tex = _grabColorTex,  HasMipmaps = false };
+        var depthEntry = new TextureEntry { Tex = _sceneDepthTex, HasMipmaps = false };
+        if (_grabColorViewId  == -1) { _grabColorViewId  = _textures.Count; _textures.Add(grabEntry);  }
+        else _textures[_grabColorViewId]  = grabEntry;
+        if (_sceneDepthViewId == -1) { _sceneDepthViewId = _textures.Count; _textures.Add(depthEntry); }
+        else _textures[_sceneDepthViewId] = depthEntry;
+    }
+
     public void EndFrame()
     {
         if (_frameLogIdx < 3)
@@ -654,10 +848,20 @@ internal sealed class OpenGLGPU : IGPU, IDisposable
             if (_buffers[i] != 0) _gl.DeleteBuffer(_buffers[i]);
         for (int i = 1; i < _programs.Count; i++)
             if (_programs[i] != 0) _gl.DeleteProgram(_programs[i]);
+        // _textures has aliased entries pointing at the FBO-owned textures
+        // (_grabColorTex / _sceneDepthTex). Null them out first so we don't
+        // double-delete the same GL texture name below.
+        if (_grabColorViewId  > 0 && _grabColorViewId  < _textures.Count) _textures[_grabColorViewId]  = default;
+        if (_sceneDepthViewId > 0 && _sceneDepthViewId < _textures.Count) _textures[_sceneDepthViewId] = default;
         for (int i = 1; i < _textures.Count; i++)
             if (_textures[i].Tex != 0) _gl.DeleteTexture(_textures[i].Tex);
         for (int i = 1; i < _samplers.Count; i++)
             if (_samplers[i] != 0) _gl.DeleteSampler(_samplers[i]);
+        if (_sceneFbo != 0) _gl.DeleteFramebuffer(_sceneFbo);
+        if (_grabFbo  != 0) _gl.DeleteFramebuffer(_grabFbo);
+        if (_sceneColorTex != 0) _gl.DeleteTexture(_sceneColorTex);
+        if (_sceneDepthTex != 0) _gl.DeleteTexture(_sceneDepthTex);
+        if (_grabColorTex  != 0) _gl.DeleteTexture(_grabColorTex);
         if (_vao != 0) _gl.DeleteVertexArray(_vao);
     }
 }

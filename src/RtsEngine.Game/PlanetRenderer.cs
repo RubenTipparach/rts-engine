@@ -35,13 +35,17 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
         _tUni[25] = config.Terrain.OceanLevel0 ? 1f : 0f;
         // Water sphere visibility — start it on for Earth (OceanLevel0=true),
         // off for everything else. The HUD's 🌊 Water button can override.
-        if (_water != null) _water.Visible = config.Terrain.OceanLevel0;
-        // params.z (slot 26) = water column thickness in world units.
-        // Water surface at Radius + 0.75 * StepHeight (height 0.75 in
-        // PlanetMesh.LevelH for level 0); seabed at Radius (height 0);
-        // delta = 0.75 * StepHeight. The shader uses this for depth-based
-        // absorption and shore foam.
-        _tUni[26] = 0.75f * config.StepHeight;
+        if (_water != null)
+        {
+            _water.Visible = config.Terrain.OceanLevel0;
+            // Push tutorial fog params from YAML so a designer can retune
+            // the look without touching code.
+            var fc = config.Water.FogColor;
+            float r = fc.Count > 0 ? fc[0] : 0.04f;
+            float g = fc.Count > 1 ? fc[1] : 0.18f;
+            float b = fc.Count > 2 ? fc[2] : 0.30f;
+            _water.SetFogParams(r, g, b, config.Water.FogDensity, config.Water.RefractionStrength);
+        }
     }
 
     private readonly IGPU _gpu;
@@ -186,8 +190,12 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
     public async Task SetupWater(string waterShader)
     {
         _water = new WaterRenderer(_gpu, Mesh);
-        await _water.Setup(waterShader, _config.Water.DuDvUrl, _config.Water.NormalUrl);
-        _water.SetOceanDepth(0.75f * Mesh.StepHeight);
+        await _water.Setup(waterShader, _config.Water.DuDvUrl);
+        var fc = _config.Water.FogColor;
+        float r = fc.Count > 0 ? fc[0] : 0.04f;
+        float g = fc.Count > 1 ? fc[1] : 0.18f;
+        float b = fc.Count > 2 ? fc[2] : 0.30f;
+        _water.SetFogParams(r, g, b, _config.Water.FogDensity, _config.Water.RefractionStrength);
         _water.Visible = _config.Terrain.OceanLevel0;
     }
 
@@ -294,25 +302,19 @@ public sealed class PlanetRenderer : IRenderer, IDisposable
             }
         }
 
-        // Water sphere — drawn between terrain and atmosphere on its own
-        // alpha-blended pipeline. Depth test resolves land cells (poking
-        // above the water surface) on top; alpha blend lets shallow shores
-        // fade out so the seabed/cliffs underneath show through. The
-        // WaterRenderer also picks up clearFirst when planet is hidden, so
-        // toggling planet off + water on still produces a clean frame.
+        // Water sphere — opaque pass with depth-difference fog and
+        // screen-space refraction (Catlike Coding "Looking Through Water").
+        // Caller wrapped this whole draw in BeginSceneFrame/EndSceneFrame
+        // so the terrain we just rendered lives in the offscreen scene RT.
+        // Snapshot scene color into the grab texture *before* drawing
+        // water so the water shader's sceneColor sample sees the terrain
+        // underneath; sceneDepth is the live depth attachment so the fog
+        // math has access to per-pixel terrain distance.
         if (_water != null && _water.Visible)
         {
-            // If the terrain pass didn't render (planet toggle off) the
-            // first-render rule still applies — clear the framebuffer with
-            // an empty draw before alpha-blending. Currently the WaterRenderer
-            // just always uses RenderAdditional; this is fine as long as
-            // *something* in the frame issues the clear. PlanetRenderer's
-            // patch loop did. When planet is off + water is on, pixels
-            // outside the water sphere will hold last-frame data. Acceptable
-            // for the debug toggle — fix when there's a clear-first water
-            // path or a separate "skybox" clear.
+            _gpu.GrabSceneColor();
             _water.Draw(mvpRawFloats);
-            first = false; // not used after this, but keeps the contract.
+            first = false;
         }
 
         // Atmosphere — skip when far (saves ~32 ray-sphere intersections/pixel)

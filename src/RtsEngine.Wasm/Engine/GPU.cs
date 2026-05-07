@@ -78,4 +78,30 @@ public sealed class WebGPU : IGPU
 
     public void RenderNoBind(int pipelineId, int vertexBufferId, int indexBufferId, int indexCount)
         => _js.InvokeVoidAsync("GPUProxy.renderNoBind", pipelineId, vertexBufferId, indexBufferId, indexCount);
+
+    // ── Offscreen scene-frame lifecycle ──────────────────────────────────
+    // Mirrors GPUProxy.beginSceneFrame / endSceneFrame / grabSceneColor.
+    // The JS proxy maintains the scene RT + grab textures and the stable
+    // texture-view handles; we just bridge.
+
+    public async Task PrepareSceneTargets()
+    {
+        await _js.InvokeVoidAsync("GPUProxy.prepareSceneTargets");
+        _grabColorView  = await _js.InvokeAsync<int>("GPUProxy.getGrabColorView");
+        _sceneDepthView = await _js.InvokeAsync<int>("GPUProxy.getSceneDepthView");
+    }
+    public void BeginSceneFrame()  => _js.InvokeVoidAsync("GPUProxy.beginSceneFrame");
+    public void GrabSceneColor()   => _js.InvokeVoidAsync("GPUProxy.grabSceneColor");
+    public void EndSceneFrame()    => _js.InvokeVoidAsync("GPUProxy.endSceneFrame");
+
+    private int _grabColorView  = -1;
+    private int _sceneDepthView = -1;
+    public int GrabColorView  => _grabColorView;
+    public int SceneDepthView => _sceneDepthView;
+
+    public void RenderWaterPass(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount)
+        => _js.InvokeVoidAsync("GPUProxy.renderWaterPass", pipelineId, vertexBufferId, indexBufferId, bindGroupId, indexCount);
+
+    public async Task<int> CreateRenderPipelineWater(int shaderModuleId, object[] vertexBufferLayouts)
+        => await _js.InvokeAsync<int>("GPUProxy.createRenderPipelineWater", shaderModuleId, vertexBufferLayouts);
 }

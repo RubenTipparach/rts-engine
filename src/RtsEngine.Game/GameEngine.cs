@@ -337,6 +337,20 @@ public class GameEngine
 
         float elapsed = Elapsed();
 
+        // Wrap every frame's world rendering in an offscreen scene-pass.
+        // Water samples the grabbed scene color + scene depth for tutorial-
+        // style refraction + depth fog; this same bracket also gives us
+        // a single composite blit at frame end which keeps the swap chain
+        // clean for the EngineUI / HUD overlay drawn outside the bracket.
+        // Cost is ~one viewport-size blit for non-water modes too — cheap
+        // enough that uniform behaviour beats a conditional path.
+        _gpu.BeginSceneFrame();
+
+        // Tell the water shader the current viewport so it can convert
+        // fragCoord → screen UV correctly. Pushed every frame so the
+        // value tracks window/canvas resizes.
+        _planet.Water?.SetViewport(_app.CanvasWidth, _app.CanvasHeight);
+
         // Transition tick takes precedence over the normal per-mode render
         // — renders the in-between frame and advances the animation.
         if (_transition.IsActive && _solarSystem != null)
@@ -367,6 +381,7 @@ public class GameEngine
                 }
             }
 
+            _gpu.EndSceneFrame();
             _hud.Sync();
             _app.RenderUI();
             OnFrameRendered?.Invoke();
@@ -380,6 +395,11 @@ public class GameEngine
             using (Profiler.Scope($"{Mode}.RenderTick"))
                 await mode.RenderTick(elapsed);
         }
+
+        // Composite the scene RT to the swap chain. Subsequent UI draws
+        // target the swap chain directly so they aren't subject to the
+        // scene RT's depth state.
+        _gpu.EndSceneFrame();
 
         // Platform UI overlay. WASM uses HTML buttons that draw themselves;
         // desktop rasterises an EngineUI quad mesh.

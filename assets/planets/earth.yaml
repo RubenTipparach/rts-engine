@@ -28,6 +28,17 @@ terrain:
 water:
   dudvUrl:  textures/water_dudv.png
   normalUrl: textures/water_normal.png
+  # Catlike Coding "Looking Through Water" tuning knobs.
+  # fogColor    = colour the water absorbs to at depth.
+  # fogDensity  = per-world-unit absorption rate. Earth's stepHeight is
+  #               0.04 and the water column is ~0.03 wu, so a density
+  #               around 8 fades the seabed out over a few cells.
+  # refractionStrength = max screen-UV offset from wave-normal-driven
+  #               refraction. 0.04 reads as plausible chop-on-the-surface
+  #               distortion without smearing the cliffs underneath.
+  fogColor: [0.04, 0.18, 0.30]
+  fogDensity: 8.0
+  refractionStrength: 0.04
 
 generation:
   seed: 42

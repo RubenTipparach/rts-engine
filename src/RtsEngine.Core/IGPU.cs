@@ -62,4 +62,64 @@ public interface IGPU
 
     /// <summary>Creates a line-list pipeline. For wireframe overlays (cell outlines, debug lines).</summary>
     Task<int> CreateRenderPipelineLines(int shaderModuleId, object[] vertexBufferLayouts);
+
+    // ── Offscreen scene rendering (Catlike-Coding "Looking Through Water"
+    //    style depth fog + refraction). ────────────────────────────────────
+    //
+    // Inside the BeginSceneFrame / EndSceneFrame bracket, every Render*()
+    // call targets an offscreen color+depth RT the same size as the canvas
+    // instead of the swap chain. The depth is sampleable, and a separate
+    // grab-color texture can be snapshotted at any point so a later pass
+    // (water) can sample the pre-pass scene as a refraction background.
+    //
+    // GrabSceneColor copies the current scene-color into the grab texture.
+    // EndSceneFrame composites the scene RT onto the swap chain.
+    //
+    // SceneDepthView and GrabColorView are stable texture-view handles
+    // (registered with the proxy's view table) suitable for passing to
+    // CreateBindGroup. They survive the lifetime of the proxy — backend
+    // owns the underlying texture.
+
+    /// <summary>Allocate the scene RT + grab snapshot up front so
+    /// <see cref="SceneDepthView"/> / <see cref="GrabColorView"/> are usable
+    /// in <see cref="CreateBindGroup"/> at setup time. Idempotent.</summary>
+    Task PrepareSceneTargets();
+
+    /// <summary>Begin offscreen scene rendering. Subsequent Render*() calls
+    /// target the scene RT until <see cref="EndSceneFrame"/> is called.</summary>
+    void BeginSceneFrame();
+
+    /// <summary>Snapshot scene-color into the grab texture so subsequent
+    /// passes (water) can sample the pre-water framebuffer as a refraction
+    /// background. Must be inside a Begin/End scene-frame bracket.</summary>
+    void GrabSceneColor();
+
+    /// <summary>Composite the scene RT onto the swap chain and end
+    /// scene-frame mode. Subsequent Render*() calls target the swap chain
+    /// again (e.g. EngineUI's HUD pass).</summary>
+    void EndSceneFrame();
+
+    /// <summary>Variant of <see cref="RenderAdditional"/> for the water
+    /// pass: scene depth attached read-only so the bound depth texture can
+    /// also be sampled in the bind group (the shader needs both depth-test
+    /// against terrain depth AND depth-difference math). The pipeline must
+    /// have depth-write disabled.</summary>
+    void RenderWaterPass(int pipelineId, int vertexBufferId, int indexBufferId, int bindGroupId, int indexCount);
+
+    /// <summary>Pipeline variant for the water sphere: opaque (no blend),
+    /// depth-test on, depth-write OFF, cull-back. The shader composites the
+    /// refracted background via the fog mix, so the output is opaque; the
+    /// depth attachment stays at terrain depth so subsequent passes still
+    /// sort against actual terrain.</summary>
+    Task<int> CreateRenderPipelineWater(int shaderModuleId, object[] vertexBufferLayouts);
+
+    /// <summary>Stable texture-view handle for the grab snapshot
+    /// (refraction background). Suitable for <see cref="CreateBindGroup"/>;
+    /// returns -1 before <see cref="PrepareSceneTargets"/> has been called.</summary>
+    int GrabColorView { get; }
+
+    /// <summary>Stable texture-view handle for the live scene-depth texture
+    /// (depth-difference fog). Suitable for <see cref="CreateBindGroup"/>;
+    /// returns -1 before <see cref="PrepareSceneTargets"/> has been called.</summary>
+    int SceneDepthView { get; }
 }

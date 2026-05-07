@@ -9,6 +9,22 @@
     let depthTexture = null;
     let depthTextureSize = [0, 0];
 
+    // Offscreen scene RT (Catlike-Coding water-tutorial port). Allocated
+    // once at first use; the scene FBO mirrors the canvas so we render
+    // the world into it and copyTextureToTexture-blit to the swap chain
+    // at frame end. Water samples sceneDepth for the depth-difference
+    // fog math and grabColor (snapshotted between terrain and water) for
+    // the refraction background. Allocate-once because WebGPU bind groups
+    // capture views at creation; resizing would orphan the water bind
+    // group and we'd need a rebuild dance to support that.
+    let sceneColorTex = null;     // RENDER_ATTACHMENT + TEXTURE_BINDING + COPY_SRC
+    let sceneDepthTex = null;     // RENDER_ATTACHMENT + TEXTURE_BINDING (depth24plus)
+    let grabColorTex  = null;     // TEXTURE_BINDING + COPY_DST (snapshot)
+    let sceneSize = [0, 0];
+    let inSceneFrame = false;
+    let grabColorViewId = -1;     // stable handle in textureViews[]
+    let sceneDepthViewId = -1;
+
     const shaderModules = [null];
     const pipelines = [null];
     const buffers = [null];
@@ -37,6 +53,44 @@
         });
         depthTextureSize = [canvas.width, canvas.height];
         return depthTexture;
+    }
+
+    // Allocate the scene RT + grab once. We don't reallocate on canvas
+    // resize because WebGPU bind groups capture views at creation time —
+    // recreating the textures would orphan the water bind group. Canvas
+    // resizes during a session render at the original size (cropped or
+    // stretched at composite time); fixed-size canvases are unaffected.
+    function ensureSceneTargets() {
+        if (!canvas || !device) return;
+        if (sceneColorTex) return;
+        const w = canvas.width, h = canvas.height;
+        if (w <= 0 || h <= 0) return;
+
+        sceneColorTex = device.createTexture({
+            size: [w, h],
+            format: canvasFormat,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT
+                 | GPUTextureUsage.TEXTURE_BINDING
+                 | GPUTextureUsage.COPY_SRC,
+        });
+        grabColorTex = device.createTexture({
+            size: [w, h],
+            format: canvasFormat,
+            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+        });
+        sceneDepthTex = device.createTexture({
+            size: [w, h],
+            format: 'depth24plus',
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        sceneSize = [w, h];
+
+        // Stable handles registered in the textureViews table so C# can
+        // pass them to CreateBindGroup like any other texture binding.
+        const grabView  = grabColorTex.createView();
+        const depthView = sceneDepthTex.createView({ aspect: 'depth-only' });
+        grabColorViewId  = textureViews.length; textureViews.push(grabView);
+        sceneDepthViewId = textureViews.length; textureViews.push(depthView);
     }
 
     window.GPUProxy = {
@@ -73,7 +127,16 @@
                     return false;
                 }
                 canvasFormat = navigator.gpu.getPreferredCanvasFormat();
-                context.configure({ device, format: canvasFormat, alphaMode: 'premultiplied' });
+                // COPY_DST so endSceneFrame can copyTextureToTexture from
+                // the offscreen scene RT into the swap-chain image. Set on
+                // BOTH the init configure AND the resizeCanvas reconfigure
+                // (the ResizeObserver fires immediately at startup).
+                context.configure({
+                    device,
+                    format: canvasFormat,
+                    alphaMode: 'premultiplied',
+                    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
+                });
                 return true;
             } catch (e) {
                 window.GPUProxyInitError = 'WebGPU init failed: ' + (e?.message ?? e);
@@ -210,20 +273,31 @@
             return register(bindGroups, bg);
         },
 
+        // Pick the colour/depth views for this draw based on whether we
+        // are inside BeginSceneFrame / EndSceneFrame. Inside the bracket,
+        // every Render*() call lands in the offscreen scene RT; outside,
+        // it goes to the swap chain (existing behaviour).
+        // (Closure helpers — not part of the public GPUProxy surface.)
+
         render(pipelineId, vertexBufferId, indexBufferId, bindGroupId, indexCount) {
             if (!device || !context) return;
-            const depthTex = ensureDepthTexture();
+            const colorView = inSceneFrame
+                ? sceneColorTex.createView()
+                : context.getCurrentTexture().createView();
+            const depthView = inSceneFrame
+                ? sceneDepthTex.createView({ aspect: 'depth-only' })
+                : ensureDepthTexture().createView();
 
             const encoder = device.createCommandEncoder();
             const pass = encoder.beginRenderPass({
                 colorAttachments: [{
-                    view: context.getCurrentTexture().createView(),
+                    view: colorView,
                     clearValue: { r: 0.02, g: 0.02, b: 0.06, a: 1.0 },
                     loadOp: 'clear',
                     storeOp: 'store',
                 }],
                 depthStencilAttachment: {
-                    view: depthTex.createView(),
+                    view: depthView,
                     depthClearValue: 1.0,
                     depthLoadOp: 'clear',
                     depthStoreOp: 'store',
@@ -242,18 +316,52 @@
 
         renderAdditional(pipelineId, vertexBufferId, indexBufferId, bindGroupId, indexCount) {
             if (!device || !context) return;
-            const depthTex = ensureDepthTexture();
+            const colorView = inSceneFrame
+                ? sceneColorTex.createView()
+                : context.getCurrentTexture().createView();
+            const depthView = inSceneFrame
+                ? sceneDepthTex.createView({ aspect: 'depth-only' })
+                : ensureDepthTexture().createView();
             const encoder = device.createCommandEncoder();
             const pass = encoder.beginRenderPass({
                 colorAttachments: [{
-                    view: context.getCurrentTexture().createView(),
+                    view: colorView,
                     loadOp: 'load',
                     storeOp: 'store',
                 }],
                 depthStencilAttachment: {
-                    view: depthTex.createView(),
+                    view: depthView,
                     depthLoadOp: 'load',
                     depthStoreOp: 'store',
+                },
+            });
+            pass.setPipeline(pipelines[pipelineId]);
+            pass.setVertexBuffer(0, buffers[vertexBufferId]);
+            pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
+            pass.setBindGroup(0, bindGroups[bindGroupId]);
+            pass.drawIndexed(indexCount);
+            pass.end();
+            device.queue.submit([encoder.finish()]);
+        },
+
+        // Variant of renderAdditional for the water pass: depth attached
+        // read-only so the same depth texture can be sampled by the bound
+        // pipeline (the water shader needs depth-test against terrain
+        // depth AND a per-pixel depth read for the fog math). The
+        // pipeline must have depth-write disabled — WebGPU validates
+        // this against depthReadOnly:true.
+        renderWaterPass(pipelineId, vertexBufferId, indexBufferId, bindGroupId, indexCount) {
+            if (!device || !context || !inSceneFrame) return;
+            const encoder = device.createCommandEncoder();
+            const pass = encoder.beginRenderPass({
+                colorAttachments: [{
+                    view: sceneColorTex.createView(),
+                    loadOp: 'load',
+                    storeOp: 'store',
+                }],
+                depthStencilAttachment: {
+                    view: sceneDepthTex.createView({ aspect: 'depth-only' }),
+                    depthReadOnly: true,
                 },
             });
             pass.setPipeline(pipelines[pipelineId]);
@@ -358,18 +466,95 @@
             return register(pipelines, pipeline);
         },
 
+        // Opaque (no blend), depth-test, depth-write OFF, cull-back. The
+        // water shader composites the refracted background through the fog
+        // mix, so the output is opaque; depth-write off keeps the depth
+        // attachment at terrain depth so other water fragments and post-
+        // water passes still sort correctly against actual geometry.
+        createRenderPipelineWater(shaderModuleId, vertexBufferLayouts) {
+            const pipeline = device.createRenderPipeline({
+                layout: 'auto',
+                vertex: {
+                    module: shaderModules[shaderModuleId],
+                    entryPoint: 'vs_main',
+                    buffers: vertexBufferLayouts.map(l => ({
+                        arrayStride: l.arrayStride,
+                        attributes: l.attributes.map(a => ({
+                            format: a.format, offset: a.offset, shaderLocation: a.shaderLocation,
+                        })),
+                    })),
+                },
+                fragment: {
+                    module: shaderModules[shaderModuleId],
+                    entryPoint: 'fs_main',
+                    targets: [{ format: canvasFormat }],
+                },
+                primitive: { topology: 'triangle-list', cullMode: 'back' },
+                depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less' },
+            });
+            return register(pipelines, pipeline);
+        },
+
+        // ── Offscreen scene-frame lifecycle ──────────────────────────────
+        prepareSceneTargets() { ensureSceneTargets(); },
+        getGrabColorView()    { return grabColorViewId;  },
+        getSceneDepthView()   { return sceneDepthViewId; },
+
+        beginSceneFrame() {
+            ensureSceneTargets();
+            inSceneFrame = true;
+        },
+
+        // Snapshot scene-color → grab so the water shader can sample a
+        // stable refraction background captured before water draws.
+        grabSceneColor() {
+            if (!device || !inSceneFrame || !sceneColorTex || !grabColorTex) return;
+            const encoder = device.createCommandEncoder();
+            encoder.copyTextureToTexture(
+                { texture: sceneColorTex },
+                { texture: grabColorTex },
+                [sceneSize[0], sceneSize[1], 1]
+            );
+            device.queue.submit([encoder.finish()]);
+        },
+
+        // Composite the offscreen scene RT → swap chain via
+        // copyTextureToTexture (cheaper than a full-screen quad pass).
+        // Subsequent Render*() calls go back to the swap chain so the
+        // EngineUI / HUD pass renders on top of the composited frame.
+        endSceneFrame() {
+            if (!device || !context || !inSceneFrame || !sceneColorTex) {
+                inSceneFrame = false;
+                return;
+            }
+            const swapTex = context.getCurrentTexture();
+            const encoder = device.createCommandEncoder();
+            encoder.copyTextureToTexture(
+                { texture: sceneColorTex },
+                { texture: swapTex },
+                [Math.min(sceneSize[0], swapTex.width), Math.min(sceneSize[1], swapTex.height), 1]
+            );
+            device.queue.submit([encoder.finish()]);
+            inSceneFrame = false;
+        },
+
         renderOverlay(pipelineId, vertexBufferId, indexBufferId, bindGroupId, indexCount) {
             if (!device || !context) return;
-            const depthTex = ensureDepthTexture();
+            const colorView = inSceneFrame
+                ? sceneColorTex.createView()
+                : context.getCurrentTexture().createView();
+            const depthView = inSceneFrame
+                ? sceneDepthTex.createView({ aspect: 'depth-only' })
+                : ensureDepthTexture().createView();
             const encoder = device.createCommandEncoder();
             const pass = encoder.beginRenderPass({
                 colorAttachments: [{
-                    view: context.getCurrentTexture().createView(),
+                    view: colorView,
                     loadOp: 'load',
                     storeOp: 'store',
                 }],
                 depthStencilAttachment: {
-                    view: depthTex.createView(),
+                    view: depthView,
                     depthClearValue: 1.0,
                     depthLoadOp: 'clear',
                     depthStoreOp: 'store',
@@ -386,16 +571,21 @@
 
         renderNoBind(pipelineId, vertexBufferId, indexBufferId, indexCount) {
             if (!device || !context) return;
-            const depthTex = ensureDepthTexture();
+            const colorView = inSceneFrame
+                ? sceneColorTex.createView()
+                : context.getCurrentTexture().createView();
+            const depthView = inSceneFrame
+                ? sceneDepthTex.createView({ aspect: 'depth-only' })
+                : ensureDepthTexture().createView();
             const encoder = device.createCommandEncoder();
             const pass = encoder.beginRenderPass({
                 colorAttachments: [{
-                    view: context.getCurrentTexture().createView(),
+                    view: colorView,
                     loadOp: 'load',
                     storeOp: 'store',
                 }],
                 depthStencilAttachment: {
-                    view: depthTex.createView(),
+                    view: depthView,
                     depthLoadOp: 'load',
                     depthStoreOp: 'store',
                 },
