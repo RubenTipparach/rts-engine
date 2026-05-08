@@ -155,7 +155,17 @@
             const rect = canvas.getBoundingClientRect();
             canvas.width  = Math.floor(rect.width  * dpr);
             canvas.height = Math.floor(rect.height * dpr);
-            context.configure({ device, format: canvasFormat, alphaMode: 'premultiplied' });
+            // Must keep COPY_DST in the swap-chain usage flags every time
+            // we re-configure: endSceneFrame uses copyTextureToTexture from
+            // the offscreen scene RT into the swap-chain image. Without
+            // this flag, the copy is rejected and every frame after the
+            // initial resize-observer fire errors. Same flags as init().
+            context.configure({
+                device,
+                format: canvasFormat,
+                alphaMode: 'premultiplied',
+                usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
+            });
         },
 
         // ── Shader / Buffer / Pipeline ──────────────────────────
