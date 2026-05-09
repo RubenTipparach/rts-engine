@@ -287,6 +287,14 @@ public class GameEngine
     private async Task Tick()
     {
         Profiler.BeginFrame();
+        // Open ONE command encoder for the whole frame. All render calls
+        // appended in TickInner share it (and reuse the open render pass when
+        // load/clear ops match), so the frame ends with a single queue.submit
+        // instead of one per draw — the dominant WebGPU cost on the web. The
+        // scene-frame bracket (BeginSceneFrame/EndSceneFrame, opened inside
+        // TickInner) nests cleanly inside this encoder: scene-RT passes and
+        // grab/composite copies all share the same submit.
+        _gpu.BeginFrame();
         try
         {
             using (Profiler.Scope("Tick"))
@@ -299,6 +307,10 @@ public class GameEngine
             // frozen window with no diagnostic.
             Console.Error.WriteLine($"[tick] EXCEPTION: {e.GetType().Name}: {e.Message}");
             Console.Error.WriteLine(e.StackTrace);
+        }
+        finally
+        {
+            _gpu.EndFrame();
         }
         Profiler.EndFrame();
         // Push a fresh snapshot to the platform overlay every frame while the

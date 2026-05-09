@@ -34,6 +34,153 @@
     const samplers = [null];
     const indexFormats = new Map(); // bufferId → 'uint16' | 'uint32'
 
+    // ── Per-frame batching ──────────────────────────────────────────
+    // The hot path used to be one createCommandEncoder + beginRenderPass +
+    // queue.submit per draw call (and every Blazor → JS interop call carries
+    // its own marshalling cost). With 20 terrain patches + water + atmosphere
+    // + outline + UI + units + HP bars + path lines that's 40+ submits per
+    // frame. queue.submit is a sync point — it tanks WebGPU performance.
+    //
+    // Instead, beginFrame opens ONE encoder for the whole frame; each render*
+    // call appends a draw to the currently-open pass; we only end the pass +
+    // start a new one when the load/clear ops actually change (Render clears
+    // color+depth, RenderOverlay clears depth, RenderAdditional/RenderNoBind
+    // load both). endFrame ends the open pass and submits once.
+    let frameEncoder = null;
+    let frameColorView = null;
+    let frameDepthView = null;
+    let openPass = null;
+    let openColorOp = '';   // 'clear' | 'load'
+    let openDepthOp = '';   // 'clear' | 'load'
+    // 'swap' or 'scene'. Tracks which target the currently-open pass
+    // attaches to so the scene-frame bracket forces a pass restart on
+    // entry/exit (different colour + depth attachments).
+    let openPassTarget = '';
+    // True if the currently-open pass uses depthReadOnly:true (water pass).
+    // That mode is incompatible with the regular pass attachment shape, so
+    // a switch in either direction forces a new pass.
+    let openPassDepthReadOnly = false;
+
+    // Buffers read by draws in the currently-recorded (but not yet submitted)
+    // command encoder. queue.writeBuffer is queued and executes before the
+    // next submit, so writing a buffer that's already been bound by a
+    // recorded draw would clobber the value that draw expected to read.
+    // We detect that hazard and flush (submit + reopen the encoder) before
+    // the offending write — see flushHazard() / writeBuffer().
+    //
+    // Hot example: RtsRenderer.DrawInstance reuses one _ubo across N units,
+    // doing WriteBuffer + RenderAdditional per unit. Without this guard, all
+    // N units would render with the LAST writeBuffer's contents.
+    const frameReadBuffers = new Set();
+
+    function flushHazardIfNeeded(bufferId) {
+        if (!frameEncoder) return;
+        if (!frameReadBuffers.has(bufferId)) return;
+        if (openPass) { openPass.end(); openPass = null; }
+        device.queue.submit([frameEncoder.finish()]);
+        frameEncoder = device.createCommandEncoder();
+        frameReadBuffers.clear();
+        openColorOp = '';
+        openDepthOp = '';
+        openPassTarget = '';
+        openPassDepthReadOnly = false;
+    }
+
+    function noteRead(bufferId) {
+        if (bufferId) frameReadBuffers.add(bufferId);
+    }
+
+    function startPassIfNeeded(colorOp, depthOp) {
+        if (!frameEncoder) {
+            // No frame open — fall back to legacy single-draw pass so callers
+            // outside the BeginFrame/EndFrame wrap still work. This path
+            // creates and submits its own encoder.
+            return null;
+        }
+        const target = inSceneFrame ? 'scene' : 'swap';
+        // Reuse the open pass only if EVERY attachment-shaping flag matches
+        // (load/clear ops, target, regular vs water-pass depth mode).
+        if (openPass
+            && openColorOp === colorOp
+            && openDepthOp === depthOp
+            && openPassTarget === target
+            && !openPassDepthReadOnly) {
+            return openPass;
+        }
+        if (openPass) { openPass.end(); openPass = null; }
+        const colorAttachment = {
+            view: viewForTarget('color', target),
+            loadOp: colorOp === 'clear' ? 'clear' : 'load',
+            storeOp: 'store',
+        };
+        if (colorOp === 'clear') colorAttachment.clearValue = { r: 0.02, g: 0.02, b: 0.06, a: 1.0 };
+        const depthAttachment = {
+            view: viewForTarget('depth', target),
+            depthLoadOp: depthOp === 'clear' ? 'clear' : 'load',
+            depthStoreOp: 'store',
+        };
+        if (depthOp === 'clear') depthAttachment.depthClearValue = 1.0;
+        openPass = frameEncoder.beginRenderPass({
+            colorAttachments: [colorAttachment],
+            depthStencilAttachment: depthAttachment,
+        });
+        openColorOp = colorOp;
+        openDepthOp = depthOp;
+        openPassTarget = target;
+        openPassDepthReadOnly = false;
+        return openPass;
+    }
+
+    // Variant for the water draw: scene depth attached read-only so the
+    // pipeline can also sample it from the bind group while the pass
+    // depth-tests against it. Always targets the scene RT (water only
+    // makes sense inside a scene frame).
+    function startWaterPassIfNeeded() {
+        if (!frameEncoder || !inSceneFrame) return null;
+        if (openPass && openPassDepthReadOnly && openPassTarget === 'scene') {
+            return openPass;
+        }
+        if (openPass) { openPass.end(); openPass = null; }
+        openPass = frameEncoder.beginRenderPass({
+            colorAttachments: [{
+                view: viewForTarget('color', 'scene'),
+                loadOp: 'load',
+                storeOp: 'store',
+            }],
+            depthStencilAttachment: {
+                view: viewForTarget('depth', 'scene'),
+                depthReadOnly: true,
+            },
+        });
+        openColorOp = 'load';
+        openDepthOp = '';
+        openPassTarget = 'scene';
+        openPassDepthReadOnly = true;
+        return openPass;
+    }
+
+    // Resolve the colour or depth view for a given target. Cached at the
+    // start of the frame for the swap chain (getCurrentTexture isn't stable
+    // across calls within a frame); the scene RT views can be created on
+    // the fly cheaply since the underlying textures are stable.
+    function viewForTarget(kind, target) {
+        if (target === 'scene') {
+            return kind === 'color'
+                ? sceneColorTex.createView()
+                : sceneDepthTex.createView({ aspect: 'depth-only' });
+        }
+        return kind === 'color' ? frameColorView : frameDepthView;
+    }
+
+    // Force-close the open pass (target/mode about to change). Cheap when
+    // there's nothing open.
+    function endOpenPass() {
+        if (openPass) { openPass.end(); openPass = null; }
+        openColorOp = '';
+        openDepthOp = '';
+        openPassDepthReadOnly = false;
+    }
+
     function register(table, obj) {
         const id = table.length;
         table.push(obj);
@@ -236,6 +383,11 @@
         },
 
         writeBuffer(bufferId, floatData) {
+            // If a draw in the currently-open encoder already binds this
+            // buffer, flushing here keeps the frame correct. The flushed
+            // submit becomes one of (typically) very few mid-frame submits
+            // — only the RTS per-unit UBO pattern triggers it.
+            flushHazardIfNeeded(bufferId);
             device.queue.writeBuffer(buffers[bufferId], 0, new Float32Array(floatData));
         },
 
@@ -280,26 +432,73 @@
                     throw new Error('bind group entry missing bufferId/textureViewId/samplerId');
                 }),
             });
+            // Stash the buffer ids referenced by this bind group so render*()
+            // can register them with frameReadBuffers (drives the
+            // writeBuffer-after-draw hazard detector).
+            bg.__bufferIds = [];
+            for (const e of entries) {
+                if (e.bufferId !== undefined && e.bufferId !== null) bg.__bufferIds.push(e.bufferId);
+            }
             return register(bindGroups, bg);
         },
 
-        // Pick the colour/depth views for this draw based on whether we
-        // are inside BeginSceneFrame / EndSceneFrame. Inside the bracket,
-        // every Render*() call lands in the offscreen scene RT; outside,
-        // it goes to the swap chain (existing behaviour).
-        // (Closure helpers — not part of the public GPUProxy surface.)
+        beginFrame() {
+            if (!device || !context) return;
+            // Resolve the swapchain + depth view ONCE per frame —
+            // getCurrentTexture is not stable across multiple calls in a frame
+            // and creating a fresh view per draw was extra GC churn anyway.
+            // Scene-RT views are resolved on the fly (cheap; underlying
+            // textures are stable).
+            frameColorView = context.getCurrentTexture().createView();
+            const depthTex = ensureDepthTexture();
+            frameDepthView = depthTex ? depthTex.createView() : null;
+            frameEncoder = device.createCommandEncoder();
+            openPass = null;
+            openColorOp = '';
+            openDepthOp = '';
+            openPassTarget = '';
+            openPassDepthReadOnly = false;
+            frameReadBuffers.clear();
+        },
+
+        endFrame() {
+            if (!frameEncoder) return;
+            if (openPass) { openPass.end(); openPass = null; }
+            device.queue.submit([frameEncoder.finish()]);
+            frameEncoder = null;
+            frameColorView = null;
+            frameDepthView = null;
+            openPassTarget = '';
+            openPassDepthReadOnly = false;
+            frameReadBuffers.clear();
+        },
 
         render(pipelineId, vertexBufferId, indexBufferId, bindGroupId, indexCount) {
             if (!device || !context) return;
+            const pass = startPassIfNeeded('clear', 'clear');
+            if (pass) {
+                const bg = bindGroups[bindGroupId];
+                pass.setPipeline(pipelines[pipelineId]);
+                pass.setVertexBuffer(0, buffers[vertexBufferId]);
+                pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
+                pass.setBindGroup(0, bg);
+                pass.drawIndexed(indexCount);
+                noteRead(vertexBufferId); noteRead(indexBufferId);
+                if (bg && bg.__bufferIds) for (const id of bg.__bufferIds) noteRead(id);
+                return;
+            }
+            // Legacy unbatched path — only hit if a caller forgets BeginFrame.
+            // Picks scene-RT views when inSceneFrame so the fallback still
+            // works during the offscreen pass; outside the bracket it
+            // targets the swap chain.
             const colorView = inSceneFrame
                 ? sceneColorTex.createView()
                 : context.getCurrentTexture().createView();
             const depthView = inSceneFrame
                 ? sceneDepthTex.createView({ aspect: 'depth-only' })
                 : ensureDepthTexture().createView();
-
             const encoder = device.createCommandEncoder();
-            const pass = encoder.beginRenderPass({
+            const p = encoder.beginRenderPass({
                 colorAttachments: [{
                     view: colorView,
                     clearValue: { r: 0.02, g: 0.02, b: 0.06, a: 1.0 },
@@ -313,19 +512,30 @@
                     depthStoreOp: 'store',
                 },
             });
-
-            pass.setPipeline(pipelines[pipelineId]);
-            pass.setVertexBuffer(0, buffers[vertexBufferId]);
-            pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
-            pass.setBindGroup(0, bindGroups[bindGroupId]);
-            pass.drawIndexed(indexCount);
-            pass.end();
-
+            p.setPipeline(pipelines[pipelineId]);
+            p.setVertexBuffer(0, buffers[vertexBufferId]);
+            p.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
+            p.setBindGroup(0, bindGroups[bindGroupId]);
+            p.drawIndexed(indexCount);
+            p.end();
             device.queue.submit([encoder.finish()]);
         },
 
         renderAdditional(pipelineId, vertexBufferId, indexBufferId, bindGroupId, indexCount) {
             if (!device || !context) return;
+            const pass = startPassIfNeeded('load', 'load');
+            if (pass) {
+                const bg = bindGroups[bindGroupId];
+                pass.setPipeline(pipelines[pipelineId]);
+                pass.setVertexBuffer(0, buffers[vertexBufferId]);
+                pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
+                pass.setBindGroup(0, bg);
+                pass.drawIndexed(indexCount);
+                noteRead(vertexBufferId); noteRead(indexBufferId);
+                if (bg && bg.__bufferIds) for (const id of bg.__bufferIds) noteRead(id);
+                return;
+            }
+            // Legacy fallback when BeginFrame wasn't called.
             const colorView = inSceneFrame
                 ? sceneColorTex.createView()
                 : context.getCurrentTexture().createView();
@@ -333,7 +543,7 @@
                 ? sceneDepthTex.createView({ aspect: 'depth-only' })
                 : ensureDepthTexture().createView();
             const encoder = device.createCommandEncoder();
-            const pass = encoder.beginRenderPass({
+            const p = encoder.beginRenderPass({
                 colorAttachments: [{
                     view: colorView,
                     loadOp: 'load',
@@ -345,12 +555,12 @@
                     depthStoreOp: 'store',
                 },
             });
-            pass.setPipeline(pipelines[pipelineId]);
-            pass.setVertexBuffer(0, buffers[vertexBufferId]);
-            pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
-            pass.setBindGroup(0, bindGroups[bindGroupId]);
-            pass.drawIndexed(indexCount);
-            pass.end();
+            p.setPipeline(pipelines[pipelineId]);
+            p.setVertexBuffer(0, buffers[vertexBufferId]);
+            p.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
+            p.setBindGroup(0, bindGroups[bindGroupId]);
+            p.drawIndexed(indexCount);
+            p.end();
             device.queue.submit([encoder.finish()]);
         },
 
@@ -362,8 +572,22 @@
         // this against depthReadOnly:true.
         renderWaterPass(pipelineId, vertexBufferId, indexBufferId, bindGroupId, indexCount) {
             if (!device || !context || !inSceneFrame) return;
+            const pass = startWaterPassIfNeeded();
+            if (pass) {
+                const bg = bindGroups[bindGroupId];
+                pass.setPipeline(pipelines[pipelineId]);
+                pass.setVertexBuffer(0, buffers[vertexBufferId]);
+                pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
+                pass.setBindGroup(0, bg);
+                pass.drawIndexed(indexCount);
+                noteRead(vertexBufferId); noteRead(indexBufferId);
+                if (bg && bg.__bufferIds) for (const id of bg.__bufferIds) noteRead(id);
+                return;
+            }
+            // Legacy fallback (no BeginFrame in flight) — submit a one-off
+            // encoder so the water draw still works in unbatched mode.
             const encoder = device.createCommandEncoder();
-            const pass = encoder.beginRenderPass({
+            const p = encoder.beginRenderPass({
                 colorAttachments: [{
                     view: sceneColorTex.createView(),
                     loadOp: 'load',
@@ -374,12 +598,12 @@
                     depthReadOnly: true,
                 },
             });
-            pass.setPipeline(pipelines[pipelineId]);
-            pass.setVertexBuffer(0, buffers[vertexBufferId]);
-            pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
-            pass.setBindGroup(0, bindGroups[bindGroupId]);
-            pass.drawIndexed(indexCount);
-            pass.end();
+            p.setPipeline(pipelines[pipelineId]);
+            p.setVertexBuffer(0, buffers[vertexBufferId]);
+            p.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
+            p.setBindGroup(0, bindGroups[bindGroupId]);
+            p.drawIndexed(indexCount);
+            p.end();
             device.queue.submit([encoder.finish()]);
         },
 
@@ -513,19 +737,38 @@
         beginSceneFrame() {
             ensureSceneTargets();
             inSceneFrame = true;
+            // The next render*() will see inSceneFrame=true and (via
+            // startPassIfNeeded's target check) end the swap-chain pass
+            // and start a new one against the scene RT. Force-end now so
+            // the very first scene-RT draw doesn't try to re-use a swap
+            // chain pass.
+            endOpenPass();
         },
 
         // Snapshot scene-color → grab so the water shader can sample a
         // stable refraction background captured before water draws.
+        // Encoded into the shared frame encoder so it composes with
+        // beginFrame/endFrame batching (one queue.submit per frame).
         grabSceneColor() {
             if (!device || !inSceneFrame || !sceneColorTex || !grabColorTex) return;
-            const encoder = device.createCommandEncoder();
-            encoder.copyTextureToTexture(
-                { texture: sceneColorTex },
-                { texture: grabColorTex },
-                [sceneSize[0], sceneSize[1], 1]
-            );
-            device.queue.submit([encoder.finish()]);
+            // Copy must be outside any open pass.
+            endOpenPass();
+            if (frameEncoder) {
+                frameEncoder.copyTextureToTexture(
+                    { texture: sceneColorTex },
+                    { texture: grabColorTex },
+                    [sceneSize[0], sceneSize[1], 1]
+                );
+            } else {
+                // Legacy path — no frame open, submit our own encoder.
+                const encoder = device.createCommandEncoder();
+                encoder.copyTextureToTexture(
+                    { texture: sceneColorTex },
+                    { texture: grabColorTex },
+                    [sceneSize[0], sceneSize[1], 1]
+                );
+                device.queue.submit([encoder.finish()]);
+            }
         },
 
         // Composite the offscreen scene RT → swap chain via
@@ -537,19 +780,42 @@
                 inSceneFrame = false;
                 return;
             }
+            // Close any open scene-RT pass before encoding the copy.
+            endOpenPass();
             const swapTex = context.getCurrentTexture();
-            const encoder = device.createCommandEncoder();
-            encoder.copyTextureToTexture(
-                { texture: sceneColorTex },
-                { texture: swapTex },
-                [Math.min(sceneSize[0], swapTex.width), Math.min(sceneSize[1], swapTex.height), 1]
-            );
-            device.queue.submit([encoder.finish()]);
+            if (frameEncoder) {
+                frameEncoder.copyTextureToTexture(
+                    { texture: sceneColorTex },
+                    { texture: swapTex },
+                    [Math.min(sceneSize[0], swapTex.width), Math.min(sceneSize[1], swapTex.height), 1]
+                );
+            } else {
+                const encoder = device.createCommandEncoder();
+                encoder.copyTextureToTexture(
+                    { texture: sceneColorTex },
+                    { texture: swapTex },
+                    [Math.min(sceneSize[0], swapTex.width), Math.min(sceneSize[1], swapTex.height), 1]
+                );
+                device.queue.submit([encoder.finish()]);
+            }
             inSceneFrame = false;
         },
 
         renderOverlay(pipelineId, vertexBufferId, indexBufferId, bindGroupId, indexCount) {
             if (!device || !context) return;
+            const pass = startPassIfNeeded('load', 'clear');
+            if (pass) {
+                const bg = bindGroups[bindGroupId];
+                pass.setPipeline(pipelines[pipelineId]);
+                pass.setVertexBuffer(0, buffers[vertexBufferId]);
+                pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
+                pass.setBindGroup(0, bg);
+                pass.drawIndexed(indexCount);
+                noteRead(vertexBufferId); noteRead(indexBufferId);
+                if (bg && bg.__bufferIds) for (const id of bg.__bufferIds) noteRead(id);
+                return;
+            }
+            // Legacy fallback when BeginFrame wasn't called.
             const colorView = inSceneFrame
                 ? sceneColorTex.createView()
                 : context.getCurrentTexture().createView();
@@ -557,7 +823,7 @@
                 ? sceneDepthTex.createView({ aspect: 'depth-only' })
                 : ensureDepthTexture().createView();
             const encoder = device.createCommandEncoder();
-            const pass = encoder.beginRenderPass({
+            const p = encoder.beginRenderPass({
                 colorAttachments: [{
                     view: colorView,
                     loadOp: 'load',
@@ -570,17 +836,27 @@
                     depthStoreOp: 'store',
                 },
             });
-            pass.setPipeline(pipelines[pipelineId]);
-            pass.setVertexBuffer(0, buffers[vertexBufferId]);
-            pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
-            pass.setBindGroup(0, bindGroups[bindGroupId]);
-            pass.drawIndexed(indexCount);
-            pass.end();
+            p.setPipeline(pipelines[pipelineId]);
+            p.setVertexBuffer(0, buffers[vertexBufferId]);
+            p.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
+            p.setBindGroup(0, bindGroups[bindGroupId]);
+            p.drawIndexed(indexCount);
+            p.end();
             device.queue.submit([encoder.finish()]);
         },
 
         renderNoBind(pipelineId, vertexBufferId, indexBufferId, indexCount) {
             if (!device || !context) return;
+            const pass = startPassIfNeeded('load', 'load');
+            if (pass) {
+                pass.setPipeline(pipelines[pipelineId]);
+                pass.setVertexBuffer(0, buffers[vertexBufferId]);
+                pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
+                pass.drawIndexed(indexCount);
+                noteRead(vertexBufferId); noteRead(indexBufferId);
+                return;
+            }
+            // Legacy fallback when BeginFrame wasn't called.
             const colorView = inSceneFrame
                 ? sceneColorTex.createView()
                 : context.getCurrentTexture().createView();
@@ -588,7 +864,7 @@
                 ? sceneDepthTex.createView({ aspect: 'depth-only' })
                 : ensureDepthTexture().createView();
             const encoder = device.createCommandEncoder();
-            const pass = encoder.beginRenderPass({
+            const p = encoder.beginRenderPass({
                 colorAttachments: [{
                     view: colorView,
                     loadOp: 'load',
@@ -600,11 +876,11 @@
                     depthStoreOp: 'store',
                 },
             });
-            pass.setPipeline(pipelines[pipelineId]);
-            pass.setVertexBuffer(0, buffers[vertexBufferId]);
-            pass.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
-            pass.drawIndexed(indexCount);
-            pass.end();
+            p.setPipeline(pipelines[pipelineId]);
+            p.setVertexBuffer(0, buffers[vertexBufferId]);
+            p.setIndexBuffer(buffers[indexBufferId], indexFormats.get(indexBufferId) || 'uint16');
+            p.drawIndexed(indexCount);
+            p.end();
             device.queue.submit([encoder.finish()]);
         },
 

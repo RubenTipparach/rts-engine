@@ -104,4 +104,12 @@ public sealed class WebGPU : IGPU
 
     public async Task<int> CreateRenderPipelineWater(int shaderModuleId, object[] vertexBufferLayouts)
         => await _js.InvokeAsync<int>("GPUProxy.createRenderPipelineWater", shaderModuleId, vertexBufferLayouts);
+
+    // PR #12 batching lifecycle: beginFrame opens one command encoder JS-side,
+    // every Render*() appends to it (re-using the open render pass when the
+    // load/clear ops match), and endFrame submits once. Composes naturally
+    // with the scene-frame lifecycle above: BeginFrame > BeginSceneFrame >
+    // (draws) > EndSceneFrame > UI draws > EndFrame.
+    public void BeginFrame() => _js.InvokeVoidAsync("GPUProxy.beginFrame");
+    public void EndFrame()   => _js.InvokeVoidAsync("GPUProxy.endFrame");
 }
