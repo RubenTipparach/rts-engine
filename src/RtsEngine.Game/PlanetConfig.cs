@@ -55,6 +55,23 @@ public sealed class WaterConfig
 {
     public string DuDvUrl { get; set; } = "textures/water_dudv.png";
     public string NormalUrl { get; set; } = "textures/water_normal.png";
+
+    /// <summary>RGB colour the water absorbs to at depth (Catlike Coding's
+    /// "_WaterFogColor" knob). Mixed with the refracted background by
+    /// <c>exp2(-fogDensity * depthDifference)</c>. Default = murky teal.</summary>
+    public List<float> FogColor { get; set; } = new() { 0.04f, 0.18f, 0.30f };
+
+    /// <summary>Per-world-unit absorption rate. Larger = murkier water.
+    /// At depthDifference = 1 / fogDensity, ~50% of the background remains.
+    /// Earth at planet scale (stepHeight ≈ 0.04 wu, water column ≈ 0.03 wu)
+    /// reads well around 5–15.</summary>
+    public float FogDensity { get; set; } = 8.0f;
+
+    /// <summary>Maximum screen-UV offset from wave-normal-driven refraction
+    /// (Catlike Coding's "_RefractionStrength" knob); 0..0.1 is the useful
+    /// range. Multiplied by <c>saturate(depthDifference)</c> in the shader
+    /// so shores don't bleed.</summary>
+    public float RefractionStrength { get; set; } = 0.04f;
 }
 
 public sealed class GenerationConfig
